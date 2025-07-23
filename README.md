@@ -12,6 +12,7 @@ Ubuntu 22.04 (x86_64):
 > git clone https://github.com/weliveindetail/llvm-autojit
 > CC=clang-20 CXX=clang++-20 cmake -Sllvm -Bbuild -GNinja \
         -DCMAKE_BUILD_TYPE=Debug \
+        -DCMAKE_C_FLAGS="-Wno-unused-parameter" \
         -DCMAKE_INSTALL_PREFIX=$(pwd)/build-install \
         -DLLVM_TARGETS_TO_BUILD="ARM;AArch64;X86" \
         -DLLVM_ENABLE_PROJECTS="clang;lld" \
@@ -23,17 +24,40 @@ Ubuntu 22.04 (x86_64):
         -DLLVM_EXTERNAL_PROJECTS=llvm-autojit \
         -DLLVM_EXTERNAL_LLVM_AUTOJIT_SOURCE_DIR=$(pwd)/llvm-autojit
 > ninja -C build check-autojit
--- Testing: 5 tests, 5 workers --
-PASS: AutoJIT :: debug.cpp (1 of 5)
-PASS: AutoJIT :: extract.cpp (2 of 5)
-PASS: AutoJIT :: runtime.cpp (3 of 5)
-PASS: AutoJIT :: archives.cpp (4 of 5)
-PASS: AutoJIT :: cus.cpp (5 of 5)
+-- Testing: 8 tests, 8 workers --
+PASS: AutoJIT :: debug.cpp (1 of 8)
+PASS: AutoJIT :: extract.cpp (2 of 8)
+PASS: AutoJIT :: tpde-cstdio.cpp (3 of 8)
+PASS: AutoJIT :: runtime.cpp (4 of 8)
+PASS: AutoJIT :: archives.cpp (5 of 8)
+PASS: AutoJIT :: cus.cpp (6 of 8)
+PASS: AutoJIT :: tpde-string.cpp (7 of 8)
+XFAIL: AutoJIT :: tpde-format.cpp (8 of 8)
 
-Testing Time: 8.84s
+Testing Time: 35.56s
 
-Total Discovered Tests: 5
-  Passed: 5 (100.00%)
+Total Discovered Tests: 8
+  Passed           : 7 (87.50%)
+  Expectedly Failed: 1 (12.50%)
+```
+
+## Build with TPDE
+
+```
+> git -C llvm-autojit submodule update --init --recursive
+> git apply llvm-autojit/deps/tpde/llvm.616f2b685b06.patch
+Applied patch to 'clang/include/clang/Basic/CodeGenOptions.def' cleanly.
+Applied patch to 'clang/include/clang/Driver/Options.td' cleanly.
+Applied patch to 'clang/lib/CodeGen/BackendUtil.cpp' cleanly.
+Applied patch to 'clang/lib/CodeGen/CMakeLists.txt' cleanly.
+Applied patch to 'clang/lib/Driver/ToolChains/Clang.cpp' cleanly.
+Applied patch to 'clang/lib/Driver/ToolChains/Flang.cpp' cleanly.
+Applied patch to 'flang/include/flang/Frontend/CodeGenOptions.def' cleanly.
+Applied patch to 'flang/lib/Frontend/CMakeLists.txt' cleanly.
+Applied patch to 'flang/lib/Frontend/CompilerInvocation.cpp' cleanly.
+Applied patch to 'flang/lib/Frontend/FrontendActions.cpp' cleanly.
+> ln -s $(pwd)/llvm-autojit/deps/tpde clang/lib/CodeGen/tpde2
+> cmake -DAUTOJIT_ENABLE_TPDE=On build
 ```
 
 ## Benchmark
