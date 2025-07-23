@@ -4,7 +4,7 @@
 // REQUIRES: llvm-debug
 
 // RUN: %clang -fpass-plugin=%autojit_plugin %s -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -rdynamic -o %t.exe
-// RUN: %t.exe 2>&1 | FileCheck %s
+// RUN: env AUTOJIT_DEBUG=On %t.exe 2>&1 | FileCheck %s
 
 // CHECK: Looking up { (_Z3subii$llvm_autojit_module_{{[0-9a-f]*}}, RequiredSymbol) } in [ ("main", MatchAllSymbols) ] (required state: Ready)
 // CHECK: Dispatching MaterializationUnits...
@@ -16,7 +16,6 @@
 // CHECK: Query successfully completed
 // CHECK: Done dispatching MaterializationUnits
 // CHECK: autojit-runtime: Materialized function _Z3subii
-// CHECK: autojit-runtime: Function pointer patched at
 // CHECK: Ending ExecutionSession
 // CHECK: Destroying JITDylib main
 namespace llvm {

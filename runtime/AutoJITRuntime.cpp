@@ -29,6 +29,14 @@
 using namespace llvm;
 using namespace llvm::orc;
 
+static bool g_autojit_debug = false;
+#define AUTOJIT_DEBUG(...)                                                     \
+  do {                                                                         \
+    if (g_autojit_debug) {                                                     \
+      __VA_ARGS__;                                                             \
+    }                                                                          \
+  } while (false)
+
 namespace {
 
 static std::unique_ptr<LLJIT> g_jit;
@@ -36,6 +44,19 @@ static std::unordered_set<const char *> g_materialized;
 static std::vector<const char *> g_registered_modules;
 static std::mutex g_materialize_mutex;
 static bool g_llvm_initialized = false;
+static bool g_autojit_debug_initialized = false;
+
+void initializeAutoJITDebug() {
+  if (g_autojit_debug_initialized)
+    return;
+  if (const char *Var = std::getenv("AUTOJIT_DEBUG")) {
+    std::string Val{Var};
+    std::transform(Val.begin(), Val.end(), Val.begin(), ::tolower);
+    if (Val == "1" || Val == "on" || Val == "true" || Val == "yes")
+      g_autojit_debug = true;
+  }
+  g_autojit_debug_initialized = true;
+}
 
 void initializeLLVM() {
   if (!g_llvm_initialized) {
@@ -107,7 +128,8 @@ void preprocessFuncDefinition(Function &F, StringRef ModuleGUID) {
   // Inject unique symbol for implementation
   if (F.getLinkage() != GlobalValue::ExternalLinkage) {
     F.setLinkage(GlobalValue::ExternalLinkage);
-    errs() << "Promoting linkage for lazy function " << F.getName() << "\n";
+    AUTOJIT_DEBUG(dbgs() << "Promoting linkage for lazy function "
+                         << F.getName() << "\n");
   }
 }
 
@@ -143,8 +165,9 @@ void loadModule(LLJIT &JIT, StringRef FilePath) {
   }
 
   std::string SourcePath = M->getSourceFileName();
-  errs() << "autojit-runtime: Scheduling module for materialization "
-         << FilePath << " (source: " << SourcePath << ")\n";
+  AUTOJIT_DEBUG(
+      dbgs() << "autojit-runtime: Scheduling module for materialization "
+             << FilePath << " (source: " << SourcePath << ")\n");
 
   // FIXME: SourcePath alone isn't reliable
   std::string ModuleGUID = createGUID(SourcePath);
@@ -191,6 +214,7 @@ private:
 
 LLJIT &initializeAutoJIT() {
   if (!g_jit) {
+    initializeAutoJITDebug();
     auto Exe = dlopenHostProcess();
 
     LLJITBuilder B;
@@ -222,20 +246,22 @@ LLJIT &initializeAutoJIT() {
         std::move(Exe), (*J)->getDataLayout().getGlobalPrefix(), FindAllSyms,
         nullptr));
 
-    (*J)->getIRTransformLayer().setTransform(
-        [](ThreadSafeModule TSM,
-           MaterializationResponsibility &R) -> Expected<ThreadSafeModule> {
-          auto Err = TSM.withModuleDo([&](Module &M) -> Error {
-            for (Function &F : M)
-              if (!F.isDeclaration())
-                errs() << "Adding lazy function to JIT: " << F.getName()
-                       << "\n";
-            return Error::success();
+    AUTOJIT_DEBUG({
+      (*J)->getIRTransformLayer().setTransform(
+          [](ThreadSafeModule TSM,
+             MaterializationResponsibility &R) -> Expected<ThreadSafeModule> {
+            auto Err = TSM.withModuleDo([&](Module &M) -> Error {
+              for (Function &F : M)
+                if (!F.isDeclaration())
+                  dbgs() << "Adding lazy function to JIT: " << F.getName()
+                         << "\n";
+              return Error::success();
+            });
+            if (Err)
+              return std::move(Err);
+            return std::move(TSM);
           });
-          if (Err)
-            return std::move(Err);
-          return std::move(TSM);
-        });
+    });
 
     for (const char *Path : g_registered_modules) {
       if (!g_materialized.contains(Path)) {
@@ -279,21 +305,12 @@ extern "C" void __llvm_autojit_materialize(const char *FuncName,
 
   // Get the compiled function pointer
   void *FuncPtr = (void *)FuncSymbol->getValue();
-  if (!FuncPtr) {
-    errs() << "autojit-runtime: Failed to get pointer to function " << FuncName
-           << "\n";
-    return;
-  }
+  AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Materialized function " << FuncName
+                       << " from " << FilePath << " at address " << FuncPtr
+                       << "\n");
 
-  errs() << "autojit-runtime: Materialized function " << FuncName << " from "
-         << FilePath << " at address " << FuncPtr << "\n";
-
-  // Patch the function pointer in the original code
-  // This updates the global function pointer that the original function checks
+  // Patch the pointer that is checked by the function frame in static code
   *FuncPtrAddr = FuncPtr;
-
-  errs() << "autojit-runtime: Function pointer patched at address "
-         << FuncPtrAddr << " with value " << FuncPtr << "\n";
 }
 
 extern "C" void __llvm_autojit_register(const char *FilePath) {
@@ -303,7 +320,10 @@ extern "C" void __llvm_autojit_register(const char *FilePath) {
   }
 
   std::lock_guard<std::mutex> Lock(g_materialize_mutex);
-  errs() << "autojit-runtime: Registering module " << FilePath << "\n";
+
+  initializeAutoJITDebug();
+  AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Registering module " << FilePath
+                       << "\n");
 
   for (const char *RegisteredPath : g_registered_modules)
     if (strcmp(RegisteredPath, FilePath) == 0)

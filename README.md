@@ -145,7 +145,8 @@ sys   0m0,025s
 ## Expected log output
 
 ```
-./$ time bzip2/build_autojit/bzip2 -1 bzip2/inputs/data1.txt
+> export AUTOJIT_DEBUG=On
+> time bzip2/build_autojit/bzip2 -1 bzip2/inputs/data1.txt
 autojit-runtime: Registering module /tmp/autojit_2d1387ca92e7b83c7aa238c36b76c79a.bc
 autojit-runtime: Registering module /tmp/autojit_2868f90adcbf0268b9c7bff1285a8ae9.bc
 ...
