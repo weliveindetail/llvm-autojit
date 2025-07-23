@@ -9,7 +9,7 @@
 // RUN: rm -f %t_lib.a
 // RUN: %ar cq %t_lib.a %t_add.o %t_multiply.o %t_hello.o
 // RUN: %clang %t.o -Wl,--whole-archive %t_lib.a -Wl,--no-whole-archive -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -rdynamic -o %t_lib.exe
-// RUN: %t_lib.exe 2>&1 | %FileCheck %s
+// RUN: %t_lib.exe 2>&1 | FileCheck %s
 
 // CHECK: Registering module /tmp/autojit_
 // CHECK: Registering module /tmp/autojit_

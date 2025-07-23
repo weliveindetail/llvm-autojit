@@ -7,11 +7,11 @@
 //
 // RUN: %clang -o %t_1.exe %t_add.o %t_multiply.o %t_hello.o %t.o \
 // RUN:        -lautojit-runtime -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir
-// RUN: %t_1.exe 2>&1 | %FileCheck %s
+// RUN: %t_1.exe 2>&1 | FileCheck %s
 //
 // RUN: %clang -o %t_2.exe %t_add.o %t_multiply.o %t_hello.o -fpass-plugin=%autojit_plugin %s \
 // RUN:        -lautojit-runtime -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir
-// RUN: %t_2.exe 2>&1 | %FileCheck %s
+// RUN: %t_2.exe 2>&1 | FileCheck %s
 
 // CHECK: AutoJIT Runtime Test
 // CHECK: Hello from AutoJIT!

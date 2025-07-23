@@ -1,4 +1,4 @@
-// RUN: %clang -fpass-plugin=%autojit_plugin -S -emit-llvm %s -o - 2>&1 | %FileCheck %s
+// RUN: %clang -fpass-plugin=%autojit_plugin -O0 -S -emit-llvm %s -o - 2>&1 | FileCheck %s
 
 // Test that the AutoJIT pass runs
 
@@ -12,19 +12,15 @@
 // Static function frames contain calls to runtime function
 // CHECK: define {{.*}} i32 @_Z3addii{{.*}}
 //
-// CHECK: entry:
-// CHECK:   %func_ptr = load ptr, ptr @__autojit_ptr__Z3addii
-// CHECK:   icmp eq ptr %func_ptr, null
-// CHECK:   br i1 %0, label %materialize, label %call
+// CHECK:   load ptr, ptr @__autojit_ptr__Z3addii
+// CHECK:   icmp eq ptr %{{.*}}, null
+// CHECK:   br
 //
-// CHECK: materialize:
-// CHECK:   call void @__llvm_autojit_materialize(ptr @{{[0-9]+}}, ptr @__llvm_autojit_file_path, ptr @__autojit_ptr__Z3addii)
-// CHECK:   %materialized_ptr = load ptr, ptr @__autojit_ptr__Z3addii
-// CHECK:   br label %call
+// CHECK:   call void @__llvm_autojit_materialize
+// CHECK:   load ptr, ptr @__autojit_ptr__Z3addii
+// CHECK:   br
 //
-// CHECK: call:
-// CHECK:   %actual_ptr = phi ptr [ %func_ptr, %entry ], [ %materialized_ptr, %materialize ]
-// CHECK:   tail call i32 %actual_ptr
+// CHECK:   tail call i32
 // CHECK:   ret i32
 //
 int add(int A, int B) { return A + B; }

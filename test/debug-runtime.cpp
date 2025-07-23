@@ -1,5 +1,8 @@
 // Test debug options for the AutoJIT runtime
 
+// This only works if LLVM was built in debug-mode
+// REQUIRES: llvm-debug
+
 // RUN: %clang -fpass-plugin=%autojit_plugin %s -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -rdynamic -o %t.exe
 // RUN: %t.exe 2>&1 | FileCheck %s
 
@@ -16,8 +19,6 @@
 // CHECK: autojit-runtime: Function pointer patched at
 // CHECK: Ending ExecutionSession
 // CHECK: Destroying JITDylib main
-
-// This only works if LLVM was built in debug-mode
 namespace llvm {
   extern bool DebugFlag;
   extern void setCurrentDebugType(const char *Type);

@@ -3,7 +3,7 @@
 //
 // RUN: %clang -fpass-plugin=%autojit_plugin -c %s -o %t.o
 // RUN: %clang %t.o -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -rdynamic -o %t.exe
-// RUN: %t.exe 2>&1 | %FileCheck %s
+// RUN: %t.exe 2>&1 | FileCheck %s
 
 // CHECK: AutoJIT Runtime Test
 // CHECK: Hello from AutoJIT!
