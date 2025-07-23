@@ -1,4 +1,5 @@
 #include "AutoJITRuntime.h"
+#include "AutoJITConfig.h"
 
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
@@ -15,7 +16,9 @@
 
 #include "tpde-llvm/LLVMCompiler.hpp"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -75,6 +78,16 @@ static std::string createGUID(Twine SourcePath) {
   SmallString<32> Result;
   MD5::stringifyResult(Hash, Result);
   return Result.str().str();
+}
+
+static bool useTPDE() {
+  if (const char* Var = std::getenv("AUTOJIT_USE_TPDE")) {
+    std::string Val{Var};
+    std::transform(Val.begin(), Val.end(), Val.begin(), ::tolower);
+    if (Val == "1" || Val == "on" || Val == "true" || Val == "yes")
+      return true;
+  }
+  return false;
 }
 
 std::string promoteUnique(Twine FuncName, Twine ModuleGUID) {
@@ -181,10 +194,20 @@ LLJIT &initializeAutoJIT() {
     auto Exe = dlopenHostProcess();
 
     LLJITBuilder B;
-    B.CreateCompileFunction = [](JITTargetMachineBuilder JTMB)
-        -> Expected<std::unique_ptr<IRCompileLayer::IRCompiler>> {
-      return std::make_unique<TPDECompiler>(JTMB);
-    };
+    if (useTPDE()) {
+#if defined(AUTOJIT_ENABLE_TPDE)
+      B.CreateCompileFunction = [](JITTargetMachineBuilder JTMB)
+          -> Expected<std::unique_ptr<IRCompileLayer::IRCompiler>> {
+        return std::make_unique<TPDECompiler>(JTMB);
+      };
+#else
+      errs() << "autojit-runtime: environment has AUTOJIT_USE_TPDE=On, but "
+             << "this runtime does not support it. Either rebuild the "
+             << "runtime with AUTOJIT_ENABLE_TPD=On or export "
+             << "AUTOJIT_USE_TPDE=Off to use the native LLVM backend\n";
+      exit(1);
+#endif
+    }
 
     auto J = B.create();
     if (!J) {

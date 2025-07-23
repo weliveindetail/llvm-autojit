@@ -1,6 +1,5 @@
 # Build the AutoJIT runtime library
 if(AUTOJIT_ENABLE_TPDE)
-  # TODO: Add define AUTOJIT_ENABLE_TPDE in C++
   set(tpde_libs tpde tpde_llvm)
 endif()
 
@@ -19,3 +18,6 @@ add_llvm_library(autojit-runtime SHARED
   LINK_LIBS
     ${tpde_libs}
   )
+
+# Root directory has the generated config header
+target_include_directories(autojit-runtime PRIVATE ${AUTOJIT_CONFIG_FILE_DIR})

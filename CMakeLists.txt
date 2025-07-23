@@ -5,6 +5,12 @@ set(CMAKE_CXX_EXTENSIONS NO)
 
 option(AUTOJIT_ENABLE_TPDE "Build the autojit-runtime with TPDE as codegen backend" OFF)
 
+set(AUTOJIT_CONFIG_FILE_DIR ${CMAKE_CURRENT_BINARY_DIR})
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/AutoJITConfig.h.in
+  ${CMAKE_CURRENT_BINARY_DIR}/AutoJITConfig.h
+)
+
 if(NOT DEFINED LLVM_MAIN_SRC_DIR)
   cmake_minimum_required(VERSION 3.20.0)
   project(llvm-autojit)

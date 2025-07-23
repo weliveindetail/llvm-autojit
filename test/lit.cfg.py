@@ -17,10 +17,18 @@ config.substitutions.append(('%clang', 'clang++'))
 config.substitutions.append(('%ar', 'llvm-ar'))
 config.substitutions.append(('%ranlib', 'llvm-ranlib'))
 
-# Enable/disable features
-config.available_features.add('shell')
+import os
+config.environment['PATH'] = os.path.pathsep.join((config.llvm_tools_dir, config.environment.get('PATH', '')))
 
-# Add plugin support feature when plugins are enabled
+if 'AUTOJIT_USE_TPDE' in os.environ:
+    use_tpde = os.environ.get('AUTOJIT_USE_TPDE')
+else:
+    use_tpde = config.enable_tpde
+
+config.environment['AUTOJIT_USE_TPDE'] = use_tpde
+print("Running regression tests with TPDE:", use_tpde)
+
+config.available_features.add('shell')
 if hasattr(config, 'enable_plugins') and config.enable_plugins:
     config.available_features.add('plugins')
 

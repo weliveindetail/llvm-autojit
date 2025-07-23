@@ -22,23 +22,47 @@ Ubuntu 22.04 (x86_64):
         -DLLVM_LINK_LLVM_DYLIB=On \
         -DLLVM_USE_LINKER=lld \
         -DLLVM_EXTERNAL_PROJECTS=llvm-autojit \
-        -DLLVM_EXTERNAL_LLVM_AUTOJIT_SOURCE_DIR=$(pwd)/llvm-autojit
+        -DLLVM_EXTERNAL_LLVM_AUTOJIT_SOURCE_DIR=$(pwd)/llvm-autojit \
+        -DAUTOJIT_ENABLE_TPDE=On
+
 > ninja -C build check-autojit
--- Testing: 8 tests, 8 workers --
-PASS: AutoJIT :: debug.cpp (1 of 8)
-PASS: AutoJIT :: extract.cpp (2 of 8)
-PASS: AutoJIT :: tpde-cstdio.cpp (3 of 8)
-PASS: AutoJIT :: runtime.cpp (4 of 8)
-PASS: AutoJIT :: archives.cpp (5 of 8)
-PASS: AutoJIT :: cus.cpp (6 of 8)
-PASS: AutoJIT :: tpde-string.cpp (7 of 8)
-XFAIL: AutoJIT :: tpde-format.cpp (8 of 8)
+Running regression tests with TPDE: On
+-- Testing: 9 tests, 9 workers --
+PASS: AutoJIT :: debug-plugin.cpp (1 of 9)
+PASS: AutoJIT :: extract.cpp (2 of 9)
+PASS: AutoJIT :: debug-runtime.cpp (3 of 9)
+PASS: AutoJIT :: tpde-cstdio.cpp (4 of 9)
+PASS: AutoJIT :: runtime.cpp (5 of 9)
+PASS: AutoJIT :: archives.cpp (6 of 9)
+PASS: AutoJIT :: cus.cpp (7 of 9)
+PASS: AutoJIT :: tpde-string.cpp (8 of 9)
+XFAIL: AutoJIT :: tpde-format.cpp (9 of 9)
 
-Testing Time: 35.56s
+Testing Time: 35.21s
 
-Total Discovered Tests: 8
-  Passed           : 7 (87.50%)
-  Expectedly Failed: 1 (12.50%)
+Total Discovered Tests: 9
+  Passed           : 8 (88.89%)
+  Expectedly Failed: 1 (11.11%)
+
+> export AUTOJIT_USE_TPDE=Off
+> ninja -C build check-autojit
+Running regression tests with TPDE: Off
+-- Testing: 9 tests, 9 workers --
+PASS: AutoJIT :: extract.cpp (1 of 9)
+PASS: AutoJIT :: debug-plugin.cpp (2 of 9)
+PASS: AutoJIT :: tpde-cstdio.cpp (3 of 9)
+PASS: AutoJIT :: debug-runtime.cpp (4 of 9)
+PASS: AutoJIT :: runtime.cpp (5 of 9)
+PASS: AutoJIT :: archives.cpp (6 of 9)
+PASS: AutoJIT :: cus.cpp (7 of 9)
+PASS: AutoJIT :: tpde-string.cpp (8 of 9)
+XFAIL: AutoJIT :: tpde-format.cpp (9 of 9)
+
+Testing Time: 35.43s
+
+Total Discovered Tests: 9
+  Passed           : 8 (88.89%)
+  Expectedly Failed: 1 (11.11%)
 ```
 
 ## Build with TPDE

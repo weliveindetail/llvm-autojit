@@ -1,0 +1,6 @@
+#ifndef AUTOJIT_CONFIG_H
+#define AUTOJIT_CONFIG_H
+
+#cmakedefine AUTOJIT_ENABLE_TPDE
+
+#endif // AUTOJIT_CONFIG_H
