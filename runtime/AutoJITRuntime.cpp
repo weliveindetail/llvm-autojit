@@ -1,5 +1,7 @@
 #include "AutoJITRuntime.h"
+
 #include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/IRTransformLayer.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/IR/LLVMContext.h"
@@ -10,6 +12,9 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include "tpde-llvm/LLVMCompiler.hpp"
+
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -143,10 +148,45 @@ void loadModule(LLJIT &JIT, StringRef FilePath) {
   }
 }
 
+// TODO: Is tpde_llvm thread-safe? Can we make it concurrent?
+class TPDECompiler : public IRCompileLayer::IRCompiler {
+public:
+  TPDECompiler(JITTargetMachineBuilder JTMB)
+      : IRCompiler(
+            llvm::orc::irManglingOptionsFromTargetOptions(JTMB.getOptions())) {
+    Compiler = tpde_llvm::LLVMCompiler::create(JTMB.getTargetTriple());
+    assert(Compiler != nullptr && "Unknown architecture");
+  }
+
+  Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
+    auto Buffer = std::make_unique<std::vector<uint8_t>>();
+    if (!Compiler->compile_to_elf(M, *Buffer)) {
+      errs() << "autojit-runtime: TPDE Failed to compile IR file: "
+             << M.getName() << "\n";
+      exit(1);
+    }
+    StringRef BufferRef{reinterpret_cast<char *>(Buffer->data()),
+                        Buffer->size()};
+    Buffers.push_back(std::move(Buffer));
+    return MemoryBuffer::getMemBuffer(BufferRef, "", false);
+  }
+
+private:
+  std::unique_ptr<tpde_llvm::LLVMCompiler> Compiler;
+  std::vector<std::unique_ptr<std::vector<uint8_t>>> Buffers;
+};
+
 LLJIT &initializeAutoJIT() {
   if (!g_jit) {
     auto Exe = dlopenHostProcess();
-    auto J = LLJITBuilder().create();
+
+    LLJITBuilder B;
+    B.CreateCompileFunction = [](JITTargetMachineBuilder JTMB)
+        -> Expected<std::unique_ptr<IRCompileLayer::IRCompiler>> {
+      return std::make_unique<TPDECompiler>(JTMB);
+    };
+
+    auto J = B.create();
     if (!J) {
       errs() << "autojit-runtime: Failed to create JIT: " << J.takeError()
              << "\n";

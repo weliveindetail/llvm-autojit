@@ -3,6 +3,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS NO)
 
+option(AUTOJIT_ENABLE_TPDE "Build the autojit-runtime with TPDE as codegen backend" OFF)
+
 if(NOT DEFINED LLVM_MAIN_SRC_DIR)
   cmake_minimum_required(VERSION 3.20.0)
   project(llvm-autojit)
