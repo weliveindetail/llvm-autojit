@@ -86,60 +86,77 @@ Applied patch to 'flang/lib/Frontend/FrontendActions.cpp' cleanly.
 
 ## Benchmark
 
-For now compile-times are longer:
+Run benchmarks:
 ```
 > ninja -C build install-autojit-bench
 > cd build-install/benchmark
 > ./setup.sh
 Cloning into 'llvm-autojit-bench'...
-remote: Enumerating objects: 45881, done.
-remote: Counting objects: 100% (5/5), done.
-remote: Compressing objects: 100% (5/5), done.
-remote: Total 45881 (delta 0), reused 0 (delta 0), pack-reused 45876 (from 2)
-Receiving objects: 100% (45881/45881), 126.97 MiB | 41.35 MiB/s, done.
-Resolving deltas: 100% (12874/12874), done.
-Updating files: 100% (55349/55349), done.
-
+...
 Setting up benchmark 401.bzip2
 Building regular binary..
 ...
-If you got this far and the "cmp"s didn't complain, it looks
-like you're in business.
-..
 real  0m4,969s
 user  0m4,561s
 sys   0m0,380s
 
 Building AutoJIT binary..
 ...
-If you got this far and the "cmp"s didn't complain, it looks
-like you're in business.
-...
 real  0m12,518s
 user  0m11,822s
 sys   0m0,407s
-```
-
-Run-times as well:
-```
-Generating test files..
-Run-time regular:
-real  0m0,803s
-user  0m0,801s
-sys   0m0,002s
-Run-time autojit:
-real  0m2,269s
-user  0m2,205s
-sys   0m0,020s
 
 Run-time regular:
-real  0m1,744s
-user  0m1,735s
-sys   0m0,009s
+0m0,946s f5de26e14d257254235039aabd5ec18c
+...
+
 Run-time autojit:
-real  0m3,567s
-user  0m3,264s
-sys   0m0,025s
+0m0,997s f5de26e14d257254235039aabd5ec18c
+...
+```
+
+## Early-stage results
+
+Debug builds of 401.bzip2 from spec2006-CPU (`-O0 -g`) and small sample sizes (~10 repetitions) on a single x86_64 Linux machine. Take it with a grain of salt.
+
+### Compile-time
+
+No compile-time gains in release build of autojit plugin and runtime in LLVM/clang 20:
+```
+regular autojit
+ 0.729s  0.515s
+ 0.622s  0.490s
+ 0.489s  0.731s
+ 0.500s  1.115s
+ 0.568s  0.730s
+ 0.839s  0.651s
+ ------  ------
+  0.62s   0.70s  -->  0.89x speedup
+```
+
+Using a debug-toolchain, we do see a small speedup:
+```
+regular autojit
+ 4.155s  3.557s
+ 4.041s  3.645s
+ ------  ------
+ 4.098s  3.601s  -->  1.14x speedup
+```
+
+### Run-time
+
+autojit using the native LLVM backend:
+```
+regular autojit speedup abs = rel   hash
+  0.95s   1.11s    -0.16s = 0.86x	  f5de26e14d257254235039aabd5ec18c
+  1.79s   1.98s    -0.19s = 0.90x   11c2d00a1ab55557475a16746baa9af7
+```
+
+autojit using TPDE:
+```
+regular autojit speedup abs = rel   hash
+  0.97s   0.97s        0s = 1.00x	  f5de26e14d257254235039aabd5ec18c
+  1.79s   1.78s    -0.01s = 0.99x   11c2d00a1ab55557475a16746baa9af7
 ```
 
 ## Runtime debug logs
