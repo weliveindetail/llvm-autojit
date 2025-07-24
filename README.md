@@ -142,11 +142,11 @@ user  0m3,264s
 sys   0m0,025s
 ```
 
-## Expected log output
+## Runtime debug logs
 
 ```
 > export AUTOJIT_DEBUG=On
-> time bzip2/build_autojit/bzip2 -1 bzip2/inputs/data1.txt
+> bzip2/build_autojit/bzip2 -1 inputs/data1.txt
 autojit-runtime: Registering module /tmp/autojit_2d1387ca92e7b83c7aa238c36b76c79a.bc
 autojit-runtime: Registering module /tmp/autojit_2868f90adcbf0268b9c7bff1285a8ae9.bc
 ...
@@ -160,8 +160,4 @@ Adding lazy function to JIT: mySIGSEGVorSIGBUScatcher$llvm_autojit_module_2d1387
 libunwind: __unw_add_dynamic_fde: bad fde: FDE is really a CIE
 autojit-runtime: Materialized function main from /tmp/autojit_2d1387ca92e7b83c7aa238c36b76c79a.bc at address 0x79960725d070
 autojit-runtime: Function pointer patched at address 0x5f3af2e71bf8 with value 0x79960725d070
-
-real    0m2,641s
-user    0m2,352s
-sys     0m0,039s
 ```
