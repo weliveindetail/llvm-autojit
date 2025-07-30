@@ -1,6 +1,6 @@
 # Build the AutoJIT runtime library
 if(AUTOJIT_ENABLE_TPDE)
-  set(tpde_libs tpde tpde_llvm)
+  set(tpde_libs tpde_llvm)
 endif()
 
 add_llvm_library(autojit-runtime SHARED

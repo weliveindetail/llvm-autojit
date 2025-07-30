@@ -27,6 +27,11 @@ if(NOT DEFINED LLVM_MAIN_SRC_DIR)
   set(LLVM_NO_RTTI 1)
 endif()
 
+if(AUTOJIT_ENABLE_TPDE)
+  add_compile_options(-Wno-unused-parameter)
+  add_subdirectory(deps/tpde)
+endif()
+
 # Add subdirectories for plugin and runtime
 add_subdirectory(plugin)
 add_subdirectory(runtime)

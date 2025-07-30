@@ -14,7 +14,9 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
+#if defined(AUTOJIT_ENABLE_TPDE)
 #include "tpde-llvm/LLVMCompiler.hpp"
+#endif
 
 #include <algorithm>
 #include <cstdio>
