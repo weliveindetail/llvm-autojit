@@ -10,18 +10,6 @@
 // RUN: strings %t.o | FileCheck --check-prefix=CHECK-OBJ %s
 // CHECK-OBJ: /tmp/autojit_{{[0-9a-f]+}}.ll
 
-namespace llvm {
-  extern bool DebugFlag;
-  extern void setCurrentDebugType(const char *Type);
-}
-struct EnableLLVMDebugType {
-  EnableLLVMDebugType(const char *Name) {
-    llvm::DebugFlag = true;
-    llvm::setCurrentDebugType("orc");
-  }
-};
-static EnableLLVMDebugType EnableDebugTypeOrc("orc");
-
 int main() {
   return 0;
 }

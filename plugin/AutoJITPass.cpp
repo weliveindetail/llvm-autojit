@@ -81,13 +81,38 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       F->eraseFromParent();
     }
 
-    // TODO: export internal global values to runtime functions
-    //for (GlobalVariable &GV : LazyM->globals()) {
-    //  if (GV.hasInitializer()) {
-    //    GV.setInitializer(nullptr);
-    //    GV.setLinkage(GlobalValue::ExternalLinkage);
-    //  }
-    //}
+    // Export internal global values to runtime functions
+    for (GlobalVariable &LazyGV : LazyM->globals()) {
+      if (LazyGV.hasAtLeastLocalUnnamedAddr()) {
+        if (LLVM_UNLIKELY(AutoJITDebug))
+          dbgs() << "Skip global variable: " << LazyGV.getName() << "\n";
+        continue;
+      }
+      if (!LazyGV.hasExternalLinkage()) {
+        // FIXME: ORC assertion: Resolving symbol with incorrect flags
+        StringRef OriginalName = LazyGV.getName();
+        if (GlobalVariable *StaticGV =
+                M.getGlobalVariable(OriginalName, true)) {
+          std::string NewName =
+              (OriginalName + "_autojit_module_" + getModuleGUID(*LazyM)).str();
+          StaticGV->setLinkage(GlobalValue::ExternalLinkage);
+          StaticGV->setName(NewName);
+          LazyGV.setName(NewName);
+          if (LLVM_UNLIKELY(AutoJITDebug)) {
+            dbgs() << "Promote linkage for global variable: " << OriginalName
+                   << " --> " << NewName << "\n";
+          }
+        } else if (LLVM_UNLIKELY(AutoJITDebug)) {
+          errs() << "Failed to find global variable in static module: "
+                 << OriginalName << "\n";
+          exit(1);
+        }
+      }
+      if (LazyGV.hasInitializer())
+        LazyGV.setInitializer(nullptr);
+      LazyGV.setLinkage(GlobalValue::ExternalLinkage);
+      LazyGV.setDSOLocal(false);
+    }
 
     // Save all original functions to one file
     std::string FilePath = saveModule(*LazyM, "");
@@ -236,7 +261,8 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
 
     InitFunc->addFnAttr(Attribute::NoUnwind);
 
-    saveModule(M, "_static");
+    if (LLVM_UNLIKELY(AutoJITDebug))
+      saveModule(M, "_static");
 
     return ModuleChanged ? PreservedAnalyses::none() : PreservedAnalyses::all();
   }
@@ -255,7 +281,7 @@ private:
     return Result.str().str();
   }
 
-  std::string saveModule(const Module &M, StringRef Suffix) {
+  std::string getModuleGUID(const Module &M) {
     // Get the original source file path from the module
     std::string SourcePath = M.getName().str();
     if (SourcePath.empty()) {
@@ -264,7 +290,11 @@ private:
       exit(1);
     }
 
-    std::string GUID = generateGUID(SourcePath);
+    return generateGUID(SourcePath);
+  }
+
+  std::string saveModule(const Module &M, StringRef Suffix) {
+    std::string GUID = getModuleGUID(M);
     std::string FileExtension = AutoJITDebug ? ".ll" : ".bc";
     std::string FilePath =
         "/tmp/autojit_" + GUID + Suffix.str() + FileExtension;
@@ -274,7 +304,7 @@ private:
     std::error_code EC;
     raw_fd_ostream OS(FilePath, EC, sys::fs::OF_None);
     if (EC) {
-      errs() << "autojit-plugin error: Failed to save " << SourcePath
+      errs() << "autojit-plugin error: Failed to save " << M.getName()
              << " module: " << EC.message() << "\n";
       exit(1);
     }
@@ -282,7 +312,7 @@ private:
     if (LLVM_UNLIKELY(AutoJITDebug)) {
       // Output LLVM IR as text
       M.print(OS, nullptr);
-      errs() << "autojit-plugin: " << FilePath << " (source: " << SourcePath
+      errs() << "autojit-plugin: " << FilePath << " (source: " << M.getName()
              << ")\n";
     } else {
       // Output bitcode
