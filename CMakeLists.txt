@@ -64,7 +64,6 @@ add_dependencies(install-autojit install-autojit-runtime install-autojit-headers
 
 # TODO: Detect and support other hosts
 file(GLOB BENCH_SCRIPTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmark/ubuntu2204/*.sh")
-message(${BENCH_SCRIPTS})
 install(PROGRAMS ${BENCH_SCRIPTS}
   DESTINATION benchmark
   COMPONENT autojit-bench-scripts

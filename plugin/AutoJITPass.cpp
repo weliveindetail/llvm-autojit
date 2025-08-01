@@ -33,9 +33,6 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       errs() << "autojit-plugin: Processing module " << M.getName() << "\n";
     }
 
-    LLVMContext &Context = M.getContext();
-    bool ModuleChanged = false;
-
     // Collect all functions to process
     std::unordered_set<std::string> FunctionsToKeepStatic;
     std::unordered_set<std::string> FunctionsToLazify;
@@ -44,37 +41,28 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     for (Function &F : *LazyM) {
       if (F.isDeclaration())
         continue;
-      StringRef FuncName = F.getName();
-      if (FuncName == "__llvm_autojit_materialize") {
-        errs() << "autojit-plugin error: Module contains function with "
-                  "reserved name __llvm_autojit_materialize\n";
-        exit(1);
-      }
-      // Static initializers are not lazified
-      if (FuncName.starts_with("_GLOBAL__sub_I_") ||
-          FuncName.starts_with("_GLOBAL__sub_D_") ||
-          FuncName.starts_with("__cxx_global_var_init") ||
-          FuncName.starts_with("_ZN__")) {
+      if (lazifyFunction(F)) {
+        FunctionsToLazify.insert(F.getName().str());
+      } else {
         FunctionsToKeepStatic.insert(F.getName().str());
         F.dropAllReferences();
+        //F.replaceAllUsesWith(nullptr);
         if (LLVM_UNLIKELY(AutoJITDebug)) {
-          errs() << "autojit-plugin: Skipping static initializer " << FuncName
-                 << "\n";
+          errs() << "autojit-plugin: Skip " << F.getName() << "\n";
         }
-        continue;
       }
-      assert(!FunctionsToLazify.contains(FuncName.str()));
-      FunctionsToLazify.insert(FuncName.str());
     }
 
     // If no functions to process, return early
-    if (FunctionsToLazify.empty()) {
+    if (FunctionsToLazify.empty())
       return PreservedAnalyses::all();
-    }
 
     // Delete list of static inits and then initializers themselves
     if (GlobalVariable *Ctors = LazyM->getNamedGlobal("llvm.global_ctors")) {
       Ctors->eraseFromParent();
+    }
+    if (GlobalVariable *Dtors = LazyM->getNamedGlobal("llvm.global_dtors")) {
+      Dtors->eraseFromParent();
     }
     for (const std::string &FuncName : FunctionsToKeepStatic) {
       Function *F = LazyM->getFunction(FuncName);
@@ -102,7 +90,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
             dbgs() << "Promote linkage for global variable: " << OriginalName
                    << " --> " << NewName << "\n";
           }
-        } else if (LLVM_UNLIKELY(AutoJITDebug)) {
+        } else {
           errs() << "Failed to find global variable in static module: "
                  << OriginalName << "\n";
           exit(1);
@@ -120,6 +108,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     // Declare the runtime function __llvm_autojit_materialize
     // Updated signature: void __llvm_autojit_materialize(char* func_name, char*
     // bitcode_path, void** func_ptr_addr)
+    LLVMContext &Context = M.getContext();
     FunctionType *MaterializeFT = FunctionType::get(
         Type::getVoidTy(Context),
         {PointerType::get(Context, 0),  // Function name
@@ -230,8 +219,6 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       } else {
         Builder.CreateRet(Call);
       }
-
-      ModuleChanged = true;
     }
 
     // Register the lazy module from the static initializer
@@ -264,10 +251,26 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     if (LLVM_UNLIKELY(AutoJITDebug))
       saveModule(M, "_static");
 
-    return ModuleChanged ? PreservedAnalyses::none() : PreservedAnalyses::all();
+    return PreservedAnalyses::none();
   }
 
 private:
+  static bool lazifyFunction(Function &F) {
+    if (F.hasAvailableExternallyLinkage())
+      return false;
+    if (F.hasHiddenVisibility())
+      return false;
+    StringRef FuncName = F.getName();
+    assert(FuncName != "__llvm_autojit_materialize" && "reserved name");
+    if (FuncName.starts_with("_GLOBAL__sub_"))
+      return false;
+    if (FuncName.starts_with("__cxx_global_var_init"))
+      return false;
+    if (FuncName.starts_with("_ZN__"))
+      return false;
+    return true;
+  }
+
   std::string generateGUID(const std::string &SourcePath) {
     // Generate MD5 hash of the source path
     MD5 Hasher;

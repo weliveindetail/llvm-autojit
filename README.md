@@ -115,6 +115,22 @@ Run-time autojit:
 ...
 ```
 
+```
+Setting up benchmark clang
+Building regular binary..
+[4208/4208] Creating executable symlink bin/clang
+
+real    19m49,047s
+user    300m46,767s
+sys     9m51,952s
+[4208/4208] Creating executable symlink bin/clang
+
+Building AutoJIT binary..
+real    19m56,053s
+user    301m44,659s
+sys     9m53,479s
+```
+
 ## Early-stage results
 
 Debug builds of 401.bzip2 from spec2006-CPU (`-O0 -g`) and small sample sizes (~10 repetitions) on a single x86_64 Linux machine. Take it with a grain of salt.

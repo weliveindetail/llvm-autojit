@@ -21,8 +21,14 @@ export LDFLAGS="-fuse-ld=lld -B$(pwd)/../bin"
 export AUTOJIT_PLUGIN="$(pwd)/../lib/autojit.so"
 export AUTOJIT_RUNTIME_DIR="$(pwd)/../lib"
 
-rm -rf bzip2
-./setup_bzip2.sh $(pwd)/llvm-autojit-bench
+#rm -rf bzip2
+#./setup_bzip2.sh $(pwd)/llvm-autojit-bench/spec-cpu2006
+
+rm -rf llc
+./setup_llc.sh $(pwd)/llvm-autojit-bench/llvm-project
+
+rm -rf clang/build_autojit
+./setup_clang.sh $(pwd)/llvm-autojit-bench/llvm-project
 
 #echo "Setting up benchmark environment"
 #
