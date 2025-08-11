@@ -20,6 +20,7 @@ set(AUTOJIT_TEST_DEPENDS
   llvm-ranlib
   llvm-config
   clang
+  opt
   FileCheck
   count
   not
