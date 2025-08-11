@@ -75,7 +75,7 @@ add_custom_target(install-autojit-bench
   COMMENT "Installing AutoJIT benchmark"
 )
 
-add_dependencies(install-autojit-bench install-autojit install-LLVM install-clang install-clang-cpp install-clang-resource-headers install-lld)
+add_dependencies(install-autojit-bench install-autojit install-LLVM install-opt install-clang install-clang-cpp install-clang-resource-headers install-lld)
 
 # Add testing support
 if(NOT DEFINED LLVM_MAIN_SRC_DIR)

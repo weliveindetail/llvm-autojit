@@ -336,5 +336,14 @@ llvmGetPassPluginInfo() {
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
                   MPM.addPass(AutoJITPass());
                 });
+            PB.registerPipelineParsingCallback(
+                [](StringRef Name, ModulePassManager &PM,
+                   ArrayRef<PassBuilder::PipelineElement> InnerPipeline) {
+                  if (Name.lower() == "autojit") {
+                    PM.addPass(AutoJITPass());
+                    return true;
+                  }
+                  return false;
+                });
           }};
 }
