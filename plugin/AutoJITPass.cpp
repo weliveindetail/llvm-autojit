@@ -1,9 +1,12 @@
+#include "TPDEBackends.h"
+
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/CommandLine.h"
@@ -15,6 +18,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+
 #include <algorithm>
 #include <string>
 #include <unordered_set>
@@ -325,8 +329,19 @@ private:
 
 } // end anonymous namespace
 
+namespace llvm {
+
+LLVM_ABI Target &getTheX86_32Target();
+LLVM_ABI Target &getTheX86_64Target();
+
+} // namespace llvm
+
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
+#if defined(AUTOJIT_ENABLE_TPDE)
+  RegisterTargetMachine<X86TargetMachineTPDE> X(getTheX86_32Target());
+  RegisterTargetMachine<X86TargetMachineTPDE> Y(getTheX86_64Target());
+#endif
   return {.APIVersion = LLVM_PLUGIN_API_VERSION,
           .PluginName = "AutoJIT Pass",
           .PluginVersion = "v0.1",
