@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+cd bzip2/build_regular
+make \
+  CC="@CMAKE_INSTALL_PREFIX@/bin/clang" \
+  CXX="@CMAKE_INSTALL_PREFIX@/bin/clang++" \
+  CFLAGS="-O0 -g" \
+  LDFLAGS="-fuse-ld=lld -B@CMAKE_INSTALL_PREFIX@/bin"

@@ -62,20 +62,20 @@ add_custom_target(install-autojit-headers
 
 add_dependencies(install-autojit install-autojit-runtime install-autojit-headers)
 
-# TODO: Detect and support other hosts
-file(GLOB BENCH_SCRIPTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmark/ubuntu2204/*.sh")
-message(${BENCH_SCRIPTS})
-install(PROGRAMS ${BENCH_SCRIPTS}
-  DESTINATION benchmark
-  COMPONENT autojit-bench-scripts
-)
+# Detect OS and include appropriate benchmark scripts
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Detect Linux distribution and version
+  if(EXISTS "/etc/os-release")
+    file(READ "/etc/os-release" OS_RELEASE)
+    if(OS_RELEASE MATCHES "Ubuntu.*22\\.04")
+      add_subdirectory(benchmark/ubuntu2204)
+    endif()
+  endif()
+endif()
 
-add_custom_target(install-autojit-bench
-  COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR} --component autojit-bench-scripts
-  COMMENT "Installing AutoJIT benchmark"
-)
-
-add_dependencies(install-autojit-bench install-autojit install-LLVM install-opt install-clang install-clang-cpp install-clang-resource-headers install-lld)
+if(TARGET install-autojit-bench)
+  add_dependencies(install-autojit-bench install-autojit install-LLVM install-opt install-clang install-clang-cpp install-clang-resource-headers install-lld)
+endif()
 
 # Add testing support
 if(NOT DEFINED LLVM_MAIN_SRC_DIR)
