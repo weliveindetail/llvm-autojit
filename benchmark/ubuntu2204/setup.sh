@@ -21,8 +21,9 @@ export LDFLAGS="-fuse-ld=lld -B$(pwd)/../bin"
 export AUTOJIT_PLUGIN="$(pwd)/../lib/autojit.so"
 export AUTOJIT_RUNTIME_DIR="$(pwd)/../lib"
 
-#rm -rf bzip2
-#./setup_bzip2.sh $(pwd)/llvm-autojit-bench/spec-cpu2006
+rm -rf bzip2
+./bzip2.sh
+exit 0
 
 rm -rf llc
 ./setup_llc.sh $(pwd)/llvm-autojit-bench/llvm-project
