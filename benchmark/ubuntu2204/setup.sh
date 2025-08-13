@@ -22,12 +22,4 @@ export AUTOJIT_PLUGIN="$(pwd)/../lib/autojit.so"
 export AUTOJIT_RUNTIME_DIR="$(pwd)/../lib"
 
 rm -rf bzip2
-./setup_bzip2.sh $(pwd)/llvm-autojit-bench
-
-#echo "Setting up benchmark environment"
-#
-#set -x
-#sudo add-apt-repository ppa:sosy-lab/benchmarking
-#sudo apt update && sudo apt install benchexec
-#pip3 install --user benchexec coloredlogs
-#set +x
+./bzip2.sh
