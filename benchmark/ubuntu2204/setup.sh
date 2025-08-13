@@ -1,7 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
 if [ ! -d "llvm-autojit-bench" ]; then
+    echo "Fetching benchmark code.."
     git clone https://github.com/weliveindetail/llvm-autojit-bench llvm-autojit-bench
 fi
 
@@ -13,28 +14,3 @@ if [ ! -d "inputs" ]; then
         head -c $((1024 * 1024 * 5 * i)) /dev/urandom | base64 > inputs/data${i}.txt
     done
 fi
-
-export CC="$(pwd)/../bin/clang"
-export CXX="$(pwd)/../bin/clang++"
-export CFLAGS="-O0 -g"
-export LDFLAGS="-fuse-ld=lld -B$(pwd)/../bin"
-export AUTOJIT_PLUGIN="$(pwd)/../lib/autojit.so"
-export AUTOJIT_RUNTIME_DIR="$(pwd)/../lib"
-
-rm -rf bzip2
-./bzip2.sh
-exit 0
-
-rm -rf llc
-./setup_llc.sh $(pwd)/llvm-autojit-bench/llvm-project
-
-rm -rf clang/build_autojit
-./setup_clang.sh $(pwd)/llvm-autojit-bench/llvm-project
-
-#echo "Setting up benchmark environment"
-#
-#set -x
-#sudo add-apt-repository ppa:sosy-lab/benchmarking
-#sudo apt update && sudo apt install benchexec
-#pip3 install --user benchexec coloredlogs
-#set +x

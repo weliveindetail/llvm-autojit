@@ -6,11 +6,11 @@ mkdir bzip2
 
 # Regular bench
 echo "Building regular binary.."
-./timeavg.py --clean bzip2-regular-clean.sh --runs 20 bzip2-regular-build.sh
+./timeavg.py --setup bzip2-regular-setup.sh --runs 20 bzip2-regular-build.sh
 
 # AutoJIT bench
 echo "Building AutoJIT binary.."
-./timeavg.py --clean bzip2-autojit-clean.sh --runs 20 bzip2-autojit-build.sh
+./timeavg.py --setup bzip2-autojit-setup.sh --runs 20 bzip2-autojit-build.sh
 
 # Runtime bench
 rm -rf bzip2/outputs
