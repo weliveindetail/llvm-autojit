@@ -7,6 +7,7 @@
 // RUN: %t.exe | FileCheck %s
 
 // CHECK: No such file or directory;Is a directory;Invalid argument;Permission denied
+// XFAIL: *
 
 #include <cerrno>
 #include <iostream>

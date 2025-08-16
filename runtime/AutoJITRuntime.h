@@ -12,8 +12,7 @@ extern "C" {
 /// function
 /// \param FuncPtrAddr Address of the function pointer to patch with the
 /// materialized function
-void __llvm_autojit_materialize(const char *FuncName, const char *FilePath,
-                                void **FuncPtrAddr);
+void __llvm_autojit_materialize(void **GuidInPtrOut);
 
 /// AutoJIT runtime function that registers a module for lazy loading.
 /// This function is called by static initializers injected by the AutoJIT

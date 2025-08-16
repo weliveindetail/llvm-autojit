@@ -31,6 +31,18 @@ static cl::opt<bool> AutoJITDebug(
 
 namespace {
 
+static GlobalValue::GUID uniqueGUID(Twine ModName, Twine FuncName) {
+  auto UniqueName = (ModName + ":" + FuncName).str();
+  return GlobalValue::getGUID(UniqueName);
+}
+
+static std::string guidToFnName(GlobalValue::GUID Guid) {
+  std::string Buffer;
+  raw_string_ostream OS(Buffer);
+  OS << "__autojit_fn_" << Guid;
+  return OS.str();
+}
+
 struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
     if (LLVM_UNLIKELY(AutoJITDebug)) {
@@ -39,14 +51,18 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
 
     // Collect all functions to process
     std::unordered_set<std::string> FunctionsToKeepStatic;
-    std::unordered_set<std::string> FunctionsToLazify;
+    StringMap<GlobalValue::GUID> FunctionsToLazify;
     std::unique_ptr<Module> LazyM = CloneModule(M);
 
     for (Function &F : *LazyM) {
       if (F.isDeclaration())
         continue;
+      auto ModName = M.getName();
+      auto FuncName = F.getName();
       if (lazifyFunction(F)) {
-        FunctionsToLazify.insert(F.getName().str());
+        auto FuncGUID = uniqueGUID(ModName, FuncName);
+        FunctionsToLazify[FuncName] = FuncGUID;
+        F.setName(guidToFnName(FuncGUID));
       } else {
         FunctionsToKeepStatic.insert(F.getName().str());
         F.dropAllReferences();
@@ -115,9 +131,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     LLVMContext &Context = M.getContext();
     FunctionType *MaterializeFT = FunctionType::get(
         Type::getVoidTy(Context),
-        {PointerType::get(Context, 0),  // Function name
-         PointerType::get(Context, 0),  // Bitcode path
-         PointerType::get(Context, 0)}, // Function pointer address
+        {PointerType::get(Context, 0)}, // Function GUID in, pointer address out
         false);
 
     FunctionCallee MaterializeFunc =
@@ -136,16 +150,17 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
         ConstantDataArray::getString(Context, FilePath);
     GlobalVariable *FilePathGV = new GlobalVariable(
         M, FilePathConstant->getType(), true, GlobalValue::PrivateLinkage,
-        FilePathConstant, "__llvm_autojit_file_path");
+        FilePathConstant, "__llvm_autojit_lazy_file");
     FilePathGV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
 
-    for (const std::string &FuncName : FunctionsToLazify) {
+    for (const auto &[FuncName, FuncGUID] : FunctionsToLazify) {
       if (LLVM_UNLIKELY(AutoJITDebug)) {
         errs() << "autojit-plugin: Lazify function " << FuncName << "\n";
       }
 
       // Create a global function pointer for this function
       Function *F = M.getFunction(FuncName);
+      //F->setName(guidToFnName(FuncGUID));
       PointerType *FuncPtrType = PointerType::getUnqual(Context);
       GlobalVariable *FuncPtrGV = new GlobalVariable(
           M, FuncPtrType, false, GlobalValue::InternalLinkage,
@@ -176,13 +191,17 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       Builder.SetInsertPoint(MaterializeBB);
 
       // Create global string for function name
-      GlobalVariable *FuncNameGV = Builder.CreateGlobalString(F->getName());
-      Value *FuncNamePtr = Builder.CreateConstGEP2_32(
-          FuncNameGV->getValueType(), FuncNameGV, 0, 0);
+      //GlobalVariable *FuncNameGV = Builder.CreateGlobalString(F->getName());
+      //Value *FuncNamePtr = Builder.CreateConstGEP2_32(
+      //    FuncNameGV->getValueType(), FuncNameGV, 0, 0);
+      //
+      //// Get pointer to file path string
+      //Value *FilePathPtr = Builder.CreateConstGEP2_32(
+      //    FilePathGV->getValueType(), FilePathGV, 0, 0);
 
-      // Get pointer to file path string
-      Value *FilePathPtr = Builder.CreateConstGEP2_32(
-          FilePathGV->getValueType(), FilePathGV, 0, 0);
+      Value *V64  = ConstantInt::get(Type::getInt64Ty(Context), FuncGUID);
+      Value *VPtr = Builder.CreateIntToPtr(V64, PointerType::getUnqual(Context));
+      Builder.CreateStore(VPtr, FuncPtrGV);
 
       // Get pointer to the function pointer global for patching
       Value *FuncPtrAddr = Builder.CreateBitCast(
@@ -190,8 +209,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
 
       // Call the materialize function with function name, file path, and
       // function pointer address
-      Builder.CreateCall(MaterializeFunc,
-                         {FuncNamePtr, FilePathPtr, FuncPtrAddr});
+      Builder.CreateCall(MaterializeFunc, {FuncPtrAddr});
 
       // Reload the function pointer (should be patched by runtime)
       Value *MaterializedPtr =
@@ -261,8 +279,6 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
 private:
   static bool lazifyFunction(Function &F) {
     if (F.hasAvailableExternallyLinkage())
-      return false;
-    if (F.hasHiddenVisibility())
       return false;
     StringRef FuncName = F.getName();
     assert(FuncName != "__llvm_autojit_materialize" && "reserved name");

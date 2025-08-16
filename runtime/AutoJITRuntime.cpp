@@ -39,6 +39,13 @@ static bool g_autojit_debug = false;
     }                                                                          \
   } while (false)
 
+#if !defined(NDEBUG)
+namespace llvm {
+  extern bool DebugFlag;
+  extern void setCurrentDebugType(const char *Type);
+}
+#endif
+
 namespace {
 
 static std::unique_ptr<LLJIT> g_jit;
@@ -54,8 +61,13 @@ void initializeAutoJITDebug() {
   if (const char *Var = std::getenv("AUTOJIT_DEBUG")) {
     std::string Val{Var};
     std::transform(Val.begin(), Val.end(), Val.begin(), ::tolower);
-    if (Val == "1" || Val == "on" || Val == "true" || Val == "yes")
+    if (Val == "1" || Val == "on" || Val == "true" || Val == "yes") {
       g_autojit_debug = true;
+#if !defined(NDEBUG)
+      llvm::DebugFlag = true;
+      llvm::setCurrentDebugType("orc");
+#endif
+    }
   }
   g_autojit_debug_initialized = true;
 }
@@ -103,6 +115,18 @@ static std::string createGUID(Twine SourcePath) {
   return Result.str().str();
 }
 
+static GlobalValue::GUID uniqueGUID(Twine ModName, Twine FuncName) {
+  auto UniqueName = (ModName + ":" + FuncName).str();
+  return GlobalValue::getGUID(UniqueName);
+}
+
+static std::string guidToFnName(GlobalValue::GUID Guid) {
+  std::string Buffer;
+  raw_string_ostream OS(Buffer);
+  OS << "__autojit_fn_" << Guid;
+  return OS.str();
+}
+
 static bool useTPDE() {
   if (const char* Var = std::getenv("AUTOJIT_USE_TPDE")) {
     std::string Val{Var};
@@ -120,7 +144,7 @@ std::string promoteUnique(Twine FuncName, Twine ModuleGUID) {
 void preprocessFuncDefinition(Function &F, StringRef ModuleGUID) {
   // Keep calling original function frame in static code
   auto OriginalName = F.getName();
-  F.setName(promoteUnique(OriginalName, ModuleGUID));
+  //F.setName(promoteUnique(OriginalName, ModuleGUID));
 
   Function *ProxyFunc =
       Function::Create(F.getFunctionType(), Function::ExternalLinkage,
@@ -279,10 +303,8 @@ LLJIT &initializeAutoJIT() {
 }
 } // namespace
 
-extern "C" void __llvm_autojit_materialize(const char *FuncName,
-                                           const char *FilePath,
-                                           void **FuncPtrAddr) {
-  if (!FuncName || !FilePath || !FuncPtrAddr) {
+extern "C" void __llvm_autojit_materialize(void **GuidInPtrOut) {
+  if (!GuidInPtrOut || *GuidInPtrOut == nullptr) {
     errs() << "autojit-runtime: Invalid parameters\n";
     exit(1);
   }
@@ -291,28 +313,31 @@ extern "C" void __llvm_autojit_materialize(const char *FuncName,
   initializeLLVM();
 
   LLJIT &JIT = initializeAutoJIT();
-  if (!g_materialized.contains(FilePath)) {
-    loadModule(JIT, FilePath);
-    g_materialized.insert(FilePath);
+  for (const char *Path : g_registered_modules) {
+    if (!g_materialized.contains(Path)) {
+      AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Loading module late " << Path << "\n");
+      loadModule(JIT, Path);
+      g_materialized.insert(Path);
+    }
   }
 
   // Look up the function symbol
-  std::string ImplName = promoteUnique(FuncName, extractGUID(FilePath));
+  //std::string ImplName = promoteUnique(FuncName, extractGUID(FilePath));
+  GlobalValue::GUID Guid = reinterpret_cast<uintptr_t>(*GuidInPtrOut);
+  std::string ImplName = guidToFnName(Guid);
   auto FuncSymbol = JIT.lookup(ImplName);
   if (!FuncSymbol) {
-    errs() << "autojit-runtime: Function " << FuncName << " not found in "
-           << FilePath << " (" << FuncSymbol.takeError() << ")\n";
+    errs() << "autojit-runtime: Function " << ImplName << " not found: " << FuncSymbol.takeError() << "\n";
     exit(1);
   }
 
   // Get the compiled function pointer
   void *FuncPtr = (void *)FuncSymbol->getValue();
-  AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Materialized function " << FuncName
-                       << " from " << FilePath << " at address " << FuncPtr
-                       << "\n");
+  AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Materialized function " << ImplName
+                       << " at address " << FuncPtr << "\n");
 
   // Patch the pointer that is checked by the function frame in static code
-  *FuncPtrAddr = FuncPtr;
+  *GuidInPtrOut = FuncPtr;
 }
 
 extern "C" void __llvm_autojit_register(const char *FilePath) {

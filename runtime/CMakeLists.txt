@@ -14,6 +14,7 @@ add_llvm_library(autojit-runtime SHARED
     Native
     Support
     Target
+    lib/clang/20/lib/x86_64-unknown-linux-gnu/liborc_rt.a
 
   LINK_LIBS
     ${tpde_libs}

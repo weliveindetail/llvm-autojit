@@ -74,7 +74,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 if(TARGET install-autojit-bench)
-  add_dependencies(install-autojit-bench install-autojit install-LLVM install-clang install-clang-cpp install-clang-resource-headers install-lld)
+  add_dependencies(install-autojit-bench
+    install-autojit install-LLVM
+    install-clang install-clang-cpp install-clang-resource-headers
+    install-lld install-compiler-rt
+  )
 endif()
 
 # Add testing support

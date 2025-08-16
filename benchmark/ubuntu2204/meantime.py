@@ -4,13 +4,13 @@ import timeit
 import subprocess
 
 def average_times(exec, setup, teardown, runs):
-    timer = timeit.Timer(lambda: subprocess.run([exec], capture_output=True))
+    timer = timeit.Timer(lambda: subprocess.run([exec], capture_output=True, check=True))
     def bench():
         if setup:
-            subprocess.run([setup], capture_output=True)
+            subprocess.run([setup], capture_output=True, check=True)
         elapsed = timer.timeit(number=1)
         if teardown:
-            subprocess.run([teardown], capture_output=True)
+            subprocess.run([teardown], capture_output=True, check=True)
         return elapsed
     runtimes = []
     for _ in range(runs):
