@@ -22,3 +22,4 @@ add_llvm_library(autojit-runtime SHARED
 
 # Root directory has the generated config header
 target_include_directories(autojit-runtime PRIVATE ${AUTOJIT_CONFIG_FILE_DIR})
+target_link_options(autojit-runtime PRIVATE -Wl,-Bsymbolic)
