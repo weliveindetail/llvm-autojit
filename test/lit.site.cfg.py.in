@@ -9,6 +9,7 @@ config.target_triple = "@TARGET_TRIPLE@"
 config.enable_shared = @ENABLE_SHARED@
 config.enable_plugins = @LLVM_ENABLE_PLUGINS@
 config.enable_tpde = "@AUTOJIT_ENABLE_TPDE@"
+config.enable_orc_rt = "@AUTOJIT_ENABLE_ORC_RUNTIME@"
 
 # Support substitution of the tools_dir with user parameters. This is
 # used when we can't determine the tool dir at configuration time.

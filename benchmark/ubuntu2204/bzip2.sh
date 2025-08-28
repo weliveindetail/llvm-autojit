@@ -27,14 +27,14 @@ mkdir bzip2/outputs
 echo ""
 echo "Run-time regular:"
 ./meantime.py --runs 3 bzip2-regular-run.sh
-md5sum bzip2/outputs/data1_regular.txt
-md5sum bzip2/outputs/data2_regular.txt
+md5sum bzip2/outputs/data1_regular.txt.bz2
+md5sum bzip2/outputs/data2_regular.txt.bz2
 
 echo ""
 echo "Run-time autojit:"
 ./meantime.py --runs 3 bzip2-autojit-run.sh
-md5sum bzip2/outputs/data1_autojit.txt
-md5sum bzip2/outputs/data2_autojit.txt
+md5sum bzip2/outputs/data1_autojit.txt.bz2
+md5sum bzip2/outputs/data2_autojit.txt.bz2
 
 echo ""
 echo ""

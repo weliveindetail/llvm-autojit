@@ -34,3 +34,6 @@ if hasattr(config, 'enable_plugins') and config.enable_plugins:
 
 if config.build_type == "Debug":
     config.available_features.add('llvm-debug')
+
+if config.enable_orc_rt == "On":
+    config.available_features.add('orc-rt')

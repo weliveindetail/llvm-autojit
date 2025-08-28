@@ -9,6 +9,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
@@ -19,6 +20,7 @@
 #endif
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -45,6 +47,11 @@ namespace llvm {
   extern void setCurrentDebugType(const char *Type);
 }
 #endif
+
+extern "C" {
+extern const unsigned char _binary_liborc_rt_start[];
+extern const unsigned char _binary_liborc_rt_end[];
+}
 
 namespace {
 
@@ -187,6 +194,25 @@ LLJIT &initializeAutoJIT() {
     auto Exe = dlopenHostProcess();
 
     LLJITBuilder B;
+
+#if defined(AUTOJIT_ENABLE_ORC_RUNTIME)
+    const char *OrcRtStart =
+        reinterpret_cast<const char *>(_binary_liborc_rt_start);
+    const char *OrcRtEnd =
+        reinterpret_cast<const char *>(_binary_liborc_rt_end);
+    StringRef OrcRuntimeData(OrcRtStart, OrcRtEnd - OrcRtStart);
+    AUTOJIT_DEBUG({
+      auto MemRngStr = format("[0x%" PRIx64 ", 0x%" PRIx64 "]",
+                              reinterpret_cast<uintptr_t>(OrcRtStart),
+                              reinterpret_cast<uintptr_t>(OrcRtEnd));
+      dbgs()
+          << "autojit-runtime: Install embedded orc-runtime from memory range "
+          << MemRngStr << "\n";
+    });
+    B.setPlatformSetUp(orc::ExecutorNativePlatform(
+        MemoryBuffer::getMemBuffer(OrcRuntimeData, "orc_rt", false)));
+#endif
+
     if (useTPDE()) {
 #if defined(AUTOJIT_ENABLE_TPDE)
       B.CreateCompileFunction = [](JITTargetMachineBuilder JTMB)

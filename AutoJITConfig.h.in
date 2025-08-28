@@ -2,5 +2,6 @@
 #define AUTOJIT_CONFIG_H
 
 #cmakedefine AUTOJIT_ENABLE_TPDE
+#cmakedefine AUTOJIT_ENABLE_ORC_RUNTIME
 
 #endif // AUTOJIT_CONFIG_H
