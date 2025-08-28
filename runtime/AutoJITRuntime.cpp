@@ -3,11 +3,15 @@
 
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
+#include "llvm/ExecutionEngine/Orc/EPCDynamicLibrarySearchGenerator.h"
 #include "llvm/ExecutionEngine/Orc/IRTransformLayer.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -88,15 +92,32 @@ void initializeLLVM() {
   }
 }
 
-sys::DynamicLibrary dlopenHostProcess() {
-  std::string ErrMsg;
-  auto Exe = sys::DynamicLibrary::getPermanentLibrary(nullptr, &ErrMsg);
-  if (!Exe.isValid()) {
-    errs() << "autojit-runtime: Failed to dlopen main executable: " << ErrMsg
-           << "\n";
-    exit(1);
+static bool useTPDE() {
+  if (const char* Var = std::getenv("AUTOJIT_USE_TPDE")) {
+    std::string Val{Var};
+    std::transform(Val.begin(), Val.end(), Val.begin(), ::tolower);
+    if (Val == "1" || Val == "on" || Val == "true" || Val == "yes")
+      return true;
   }
-  return Exe;
+  return false;
+}
+
+static std::string getModuleGUID(const std::string &SourcePath) {
+  // Generate MD5 hash of the source path
+  MD5 Hasher;
+  Hasher.update(SourcePath);
+  MD5::MD5Result Hash;
+  Hasher.final(Hash);
+
+  // Convert to hex string
+  SmallString<32> Result;
+  MD5::stringifyResult(Hash, Result);
+  return Result.str().str();
+}
+
+static GlobalValue::GUID getFunctionGUID(Twine ModName, Twine FuncName) {
+  auto UniqueName = (ModName + ":" + FuncName).str();
+  return GlobalValue::getGUID(UniqueName);
 }
 
 static std::string guidToFnName(GlobalValue::GUID Guid) {
@@ -106,13 +127,12 @@ static std::string guidToFnName(GlobalValue::GUID Guid) {
   return OS.str();
 }
 
-static bool useTPDE() {
-  if (const char* Var = std::getenv("AUTOJIT_USE_TPDE")) {
-    std::string Val{Var};
-    std::transform(Val.begin(), Val.end(), Val.begin(), ::tolower);
-    if (Val == "1" || Val == "on" || Val == "true" || Val == "yes")
-      return true;
-  }
+static bool isStaticInit(const Function &F) {
+  StringRef FuncName = F.getName();
+  if (FuncName.starts_with("_GLOBAL__sub_"))
+    return true;
+  if (FuncName.starts_with("__cxx_global_var_init"))
+    return true;
   return false;
 }
 
@@ -151,6 +171,70 @@ void loadModule(LLJIT &JIT, StringRef FilePath) {
   AUTOJIT_DEBUG(
       dbgs() << "autojit-runtime: Scheduling module for materialization "
              << FilePath << " (source: " << SourcePath << ")\n");
+  if (SourcePath.empty()) {
+    errs() << "autojit-runtime error: Source path must not be empty\n";
+    exit(1);
+  }
+
+  std::unordered_set<Function *> DropFunctions;
+
+  for (Function &F : *M) {
+    if (F.isDeclaration())
+      continue;
+    if (isStaticInit(F)) {
+      AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Drop " << F.getName() << " (static init)\n");
+      DropFunctions.insert(&F);
+      F.dropAllReferences();
+      continue;
+    }
+    if (F.hasAvailableExternallyLinkage()) {
+      AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Drop " << F.getName() << " (dupe for cross-module inlining)\n");
+      DropFunctions.insert(&F);
+      F.dropAllReferences();
+      continue;
+    }
+    if (F.hasHiddenVisibility() || F.hasLocalLinkage()) {
+      AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Keep " << F.getName() << " (local definition)\n");
+      continue;
+    }
+
+    std::string OriginalName = F.getName().str();
+    GlobalValue::GUID G = getFunctionGUID(SourcePath, OriginalName);
+    std::string ImplName = guidToFnName(G);
+    F.setName(ImplName);
+    AUTOJIT_DEBUG(
+        dbgs() << "autojit-runtime: Import "
+               << OriginalName << " as " << ImplName << ")\n");
+
+    // This declarartion causes the JIT to lookup the symbol in the host process
+    // and resolve it to the static function frame. This keeps funtion pointers
+    // stable.
+    Function *ProxyDecl =
+        Function::Create(F.getFunctionType(), Function::ExternalLinkage,
+                          OriginalName, *M);
+    F.replaceAllUsesWith(ProxyDecl);
+  }
+
+  if (GlobalVariable *Ctors = M->getNamedGlobal("llvm.global_ctors")) {
+    Ctors->eraseFromParent();
+  }
+  for (Function *F : DropFunctions) {
+    F->removeFromParent();
+  }
+
+  // Local definitions get exposed and must not collide
+  std::string UniquePostfix = "_autojit_module_" + getModuleGUID(SourcePath);
+
+  for (GlobalVariable &GV : M->globals()) {
+    if (GV.hasAtLeastLocalUnnamedAddr()) {
+      AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Keep definiton for " << GV.getName() << " (local copy of unnamed_addr)\n");
+      continue;
+    }
+    AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Turn into declaration " << GV.getName() << "\n");
+    GV.dropAllReferences();
+    GV.setInitializer(nullptr);
+    GV.setLinkage(GlobalValue::ExternalLinkage);
+  }
 
   // Add the module to the JIT
   if (auto Err =
@@ -191,9 +275,17 @@ private:
 LLJIT &initializeAutoJIT() {
   if (!g_jit) {
     initializeAutoJITDebug();
-    auto Exe = dlopenHostProcess();
+    //auto Exe = dlopenHostProcess();
 
     LLJITBuilder B;
+//    auto EPC = SelfExecutorProcessControl::Create();
+//    if (LLVM_UNLIKELY(!EPC)) {
+//      errs() << "autojit-runtime: Failed to create EPC: " << EPC.takeError()
+//             << "\n";
+//      exit(1);
+//    }
+//
+//    B.setExecutorProcessControl(std::move(*EPC));
 
 #if defined(AUTOJIT_ENABLE_ORC_RUNTIME)
     const char *OrcRtStart =
@@ -228,6 +320,16 @@ LLJIT &initializeAutoJIT() {
 #endif
     }
 
+//    B.setProcessSymbolsJITDylibSetup([&Exe](LLJIT &J) -> Expected<JITDylibSP> {
+//      auto &ES = J.getExecutionSession();
+//      auto &JD = ES.createBareJITDylib("<Process Symbols>");
+//      auto G = std::make_unique<EPCDynamicLibrarySearchGenerator>(ES, Exe.getOSSpecificHandle());
+//      if (!G)
+//        return G.takeError();
+//      JD.addGenerator(std::move(*G));
+//      return &JD;
+//    });
+
     auto J = B.create();
     if (!J) {
       errs() << "autojit-runtime: Failed to create JIT: " << J.takeError()
@@ -235,11 +337,13 @@ LLJIT &initializeAutoJIT() {
       exit(1);
     }
 
-    auto &JD = (*J)->getMainJITDylib();
-    auto FindAllSyms = orc::DynamicLibrarySearchGenerator::SymbolPredicate();
-    JD.addGenerator(std::make_unique<DynamicLibrarySearchGenerator>(
-        std::move(Exe), (*J)->getDataLayout().getGlobalPrefix(), FindAllSyms,
-        nullptr));
+    //(*J)->defaultLinkOrder().begin();
+
+    //auto &JD = (*J)->getMainJITDylib();
+    //auto FindAllSyms = orc::DynamicLibrarySearchGenerator::SymbolPredicate();
+    //JD.addGenerator(std::make_unique<DynamicLibrarySearchGenerator>(
+    //    std::move(Exe), (*J)->getDataLayout().getGlobalPrefix(), FindAllSyms,
+    //    nullptr));
 
     AUTOJIT_DEBUG({
       (*J)->getIRTransformLayer().setTransform(
@@ -248,7 +352,7 @@ LLJIT &initializeAutoJIT() {
             auto Err = TSM.withModuleDo([&](Module &M) -> Error {
               for (Function &F : M)
                 if (!F.isDeclaration())
-                  dbgs() << "Adding lazy function to JIT: " << F.getName()
+                  dbgs() << "autojit-runtime: Adding lazy function to JIT: " << F.getName()
                          << "\n";
               return Error::success();
             });

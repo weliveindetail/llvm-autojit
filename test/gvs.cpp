@@ -14,6 +14,7 @@
 
 int SimpleGV = 42;
 
+// Static initializer is in static code
 struct DumpSimpleGVStaticAddr {
   DumpSimpleGVStaticAddr() {
     printf("SimpleGV static = %lx\n", reinterpret_cast<uintptr_t>(&SimpleGV));
@@ -23,6 +24,7 @@ struct DumpSimpleGVStaticAddr {
 
 static DumpSimpleGVStaticAddr DumperGV;
 
+// Function body is JITed
 int main() {
   printf("SimpleGV lazy = %lx\n", reinterpret_cast<uintptr_t>(&SimpleGV));
   printf("DumperGV lazy = %lx\n", reinterpret_cast<uintptr_t>(&DumperGV));

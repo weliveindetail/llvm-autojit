@@ -2,7 +2,6 @@
 // TODO: Get away without `-Wl,--whole-archive`?
 //
 // RUN: %clang -fpass-plugin=%autojit_plugin -c %s -o %t.o
-// RUN: %clang -fpass-plugin=%autojit_plugin -S -emit-llvm %S/Inputs/add.cpp -o %t_add.ll
 // RUN: %clang -fpass-plugin=%autojit_plugin -c %S/Inputs/add.cpp -o %t_add.o
 // RUN: %clang -fpass-plugin=%autojit_plugin -c %S/Inputs/hello.cpp -o %t_hello.o
 // RUN: %clang -fpass-plugin=%autojit_plugin -c %S/Inputs/multiply.cpp -o %t_multiply.o

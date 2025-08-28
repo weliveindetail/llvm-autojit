@@ -1,0 +1,26 @@
+# CC=clang-20 CXX=clang++-20 cmake \
+#     -GNinja -Sllvm -Bbuild \
+#     -Cllvm-autojit/cmake/cache/Distribution.cmake \
+#     -DCMAKE_BUILD_TYPE=Debug \
+#     -DCMAKE_INSTALL_PREFIX=$(pwd)/build-install \
+#     -DLLVM_EXTERNAL_PROJECTS=llvm-autojit \
+#     -DLLVM_EXTERNAL_LLVM_AUTOJIT_SOURCE_DIR=$(pwd)/llvm-autojit \
+#     -DAUTOJIT_ENABLE_TPDE=On
+
+set(LLVM_TARGETS_TO_BUILD "AArch64;X86")
+set(LLVM_ENABLE_PROJECTS "clang;lld")
+set(LLVM_ENABLE_RUNTIMES "compiler-rt")
+set(LLVM_ENABLE_LIBCXX On)
+set(LLVM_BUILD_LLVM_DYLIB On)
+set(LLVM_LINK_LLVM_DYLIB On)
+set(LLVM_USE_LINKER lld)
+
+set(COMPILER_RT_BUILD_ORC On)
+set(COMPILER_RT_BUILD_BUILTINS Off)
+set(COMPILER_RT_BUILD_SANITIZERS Off)
+set(COMPILER_RT_BUILD_XRAY Off)
+set(COMPILER_RT_BUILD_LIBFUZZER Off)
+set(COMPILER_RT_BUILD_PROFILE Off)
+set(COMPILER_RT_BUILD_CTX_PROFILE Off)
+set(COMPILER_RT_BUILD_MEMPROF Off)
+set(COMPILER_RT_BUILD_GWP_ASAN Off)

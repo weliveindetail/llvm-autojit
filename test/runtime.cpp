@@ -1,5 +1,4 @@
 // Minimal executable test that uses libautojit-runtime.so
-// For debugging compile with -Xclang -load -Xclang %autojit_plugin -mllvm -autojit-debug
 //
 // RUN: %clang -fpass-plugin=%autojit_plugin -c %s -o %t.o
 // RUN: %clang %t.o -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -rdynamic -o %t.exe

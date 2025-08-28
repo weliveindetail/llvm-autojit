@@ -2,11 +2,11 @@
 
 // Test that the AutoJIT pass runs
 
-// Path to lazy module
-// CHECK: @__llvm_autojit_lazy_file = private unnamed_addr constant [49 x i8] c"/tmp/autojit_7cbf95157f77aa3acf3d3653fb89d070.bc\00"
-
 // Pointer to lazy function materialization
 // CHECK: @__autojit_ptr__Z3addii = internal global ptr null
+
+// Path to lazy module
+// CHECK: @__llvm_autojit_lazy_file = private unnamed_addr constant [49 x i8] c"/tmp/autojit_7cbf95157f77aa3acf3d3653fb89d070.bc\00"
 
 // Static function frames contain calls to runtime function
 // CHECK: define {{.*}} i32 @_Z3addii{{.*}}

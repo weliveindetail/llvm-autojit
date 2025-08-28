@@ -3,6 +3,8 @@
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
@@ -12,6 +14,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MD5.h"
 #include "llvm/Support/Path.h"
@@ -20,6 +23,7 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <algorithm>
+#include <regex>
 #include <string>
 #include <unordered_set>
 
@@ -45,91 +49,45 @@ static std::string guidToFnName(GlobalValue::GUID Guid) {
 
 struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
+    if (M.getNamedValue("__llvm_autojit_register") ||
+        M.getNamedValue("__llvm_autojit_materialize")) {
+      errs() << "autojit-plugin: Skipping module " << M.getName() << "\n";
+      return PreservedAnalyses::all();
+    }
+
     if (LLVM_UNLIKELY(AutoJITDebug)) {
       errs() << "autojit-plugin: Processing module " << M.getName() << "\n";
     }
 
-    // Collect all functions to process
-    std::unordered_set<std::string> FunctionsToKeepStatic;
-    StringMap<GlobalValue::GUID> FunctionsToLazify;
-    std::unique_ptr<Module> LazyM = CloneModule(M);
+    // Local definitions get exposed and must not collide
+    std::string UniquePostfix = "_autojit_module_" + getModuleGUID(M);
 
-    for (Function &F : *LazyM) {
-      if (F.isDeclaration())
-        continue;
-      auto ModName = M.getName();
-      auto FuncName = F.getName();
-      if (lazifyFunction(F)) {
-        auto FuncGUID = uniqueGUID(ModName, FuncName);
-        FunctionsToLazify[FuncName] = FuncGUID;
-        F.setName(guidToFnName(FuncGUID));
-        F.setLinkage(GlobalValue::ExternalLinkage);
-      } else {
-        FunctionsToKeepStatic.insert(F.getName().str());
-        F.dropAllReferences();
-        F.setLinkage(GlobalValue::ExternalLinkage);
+    for (GlobalVariable &GV : M.globals()) {
+      if (GV.hasAtLeastLocalUnnamedAddr()) {
         if (LLVM_UNLIKELY(AutoJITDebug)) {
-          errs() << "autojit-plugin: Skip " << F.getName() << "\n";
+          errs() << "autojit-plugin: Keep variable " << GV.getName() << "\n";
         }
-      }
-    }
-
-    // If no functions to process, return early
-    if (FunctionsToLazify.empty())
-      return PreservedAnalyses::all();
-
-    // Delete list of static inits and then initializers themselves
-    if (GlobalVariable *Ctors = LazyM->getNamedGlobal("llvm.global_ctors")) {
-      Ctors->eraseFromParent();
-    }
-    if (GlobalVariable *Dtors = LazyM->getNamedGlobal("llvm.global_dtors")) {
-      Dtors->eraseFromParent();
-    }
-    for (const std::string &FuncName : FunctionsToKeepStatic) {
-      Function *F = LazyM->getFunction(FuncName);
-      F->eraseFromParent();
-    }
-
-    // Export internal global values to runtime functions
-    for (GlobalVariable &LazyGV : LazyM->globals()) {
-      if (LazyGV.hasAtLeastLocalUnnamedAddr()) {
-        if (LLVM_UNLIKELY(AutoJITDebug))
-          dbgs() << "Skip global variable: " << LazyGV.getName() << "\n";
         continue;
       }
-      if (!LazyGV.hasExternalLinkage()) {
-        // FIXME: ORC assertion: Resolving symbol with incorrect flags
-        StringRef OriginalName = LazyGV.getName();
-        if (GlobalVariable *StaticGV =
-                M.getGlobalVariable(OriginalName, true)) {
-          std::string NewName =
-              (OriginalName + "_autojit_module_" + getModuleGUID(*LazyM)).str();
-          StaticGV->setLinkage(GlobalValue::ExternalLinkage);
-          StaticGV->setName(NewName);
-          LazyGV.setName(NewName);
-          LazyGV.setComdat(nullptr);
-          if (LLVM_UNLIKELY(AutoJITDebug)) {
-            dbgs() << "Promote linkage for global variable: " << OriginalName
-                   << " --> " << NewName << "\n";
-          }
-        } else {
-          errs() << "Failed to find global variable in static module: "
-                 << OriginalName << "\n";
-          exit(1);
+      GV.setDSOLocal(false);
+      if (GV.hasLocalLinkage()) {
+        std::string NewName = (GV.getName() + UniquePostfix).str();
+        if (LLVM_UNLIKELY(AutoJITDebug)) {
+          errs() << "autojit-plugin: Promote variable " << GV.getName()
+                 << " as " << NewName << "\n";
         }
+        GV.setName(NewName);
+        GV.setLinkage(GlobalValue::ExternalLinkage);
+        continue;
       }
-      if (LazyGV.hasInitializer())
-        LazyGV.setInitializer(nullptr);
-      LazyGV.setLinkage(GlobalValue::ExternalLinkage);
-      LazyGV.setDSOLocal(false);
+      if (LLVM_UNLIKELY(AutoJITDebug)) {
+        errs() << "autojit-plugin: Keep variable " << GV.getName() << "\n";
+      }
     }
 
-    // Save all original functions to one file
-    std::string FilePath = saveModule(*LazyM, "");
+    // Save original module to disk
+    std::string FilePath = saveModule(M, "");
 
-    // Declare the runtime function __llvm_autojit_materialize
-    // Updated signature: void __llvm_autojit_materialize(char* func_name, char*
-    // bitcode_path, void** func_ptr_addr)
     LLVMContext &Context = M.getContext();
     FunctionType *MaterializeFT = FunctionType::get(
         Type::getVoidTy(Context),
@@ -139,104 +97,95 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     FunctionCallee MaterializeFunc =
         M.getOrInsertFunction("__llvm_autojit_materialize", MaterializeFT);
 
-    // Declare the runtime function __llvm_autojit_register
-    FunctionType *RegisterFT = FunctionType::get(
-        Type::getVoidTy(Context), {PointerType::getUnqual(Context)}, // FilePath
-        false);
+    auto ModName = M.getName();
+    std::unordered_set<Function *> DropFunctions;
 
-    FunctionCallee RegisterFunc =
-        M.getOrInsertFunction("__llvm_autojit_register", RegisterFT);
-
-    // Create global string for file path
-    Constant *FilePathConstant =
-        ConstantDataArray::getString(Context, FilePath);
-    GlobalVariable *FilePathGV = new GlobalVariable(
-        M, FilePathConstant->getType(), true, GlobalValue::PrivateLinkage,
-        FilePathConstant, "__llvm_autojit_lazy_file");
-    FilePathGV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
-
-    for (const auto &[FuncName, FuncGUID] : FunctionsToLazify) {
-      if (LLVM_UNLIKELY(AutoJITDebug)) {
-        errs() << "autojit-plugin: Lazify function " << FuncName << "\n";
+    for (Function &F : M) {
+      if (F.isDeclaration())
+        continue;
+      if (isStaticInit(F)) {
+        if (LLVM_UNLIKELY(AutoJITDebug)) {
+          errs() << "autojit-plugin: Keep static init " << F.getName() << "\n";
+        }
+        continue;
+      }
+      if (F.hasHiddenVisibility() || F.hasLocalLinkage()) {
+        if (LLVM_UNLIKELY(AutoJITDebug)) {
+          errs() << "autojit-plugin: Drop " << F.getName() << "\n";
+        }
+        DropFunctions.insert(&F);
+        F.dropAllReferences();
+        continue;
+      }
+      if (F.hasAvailableExternallyLinkage()) {
+        if (LLVM_UNLIKELY(AutoJITDebug)) {
+          errs() << "autojit-plugin: Keep " << F.getName() << " (dupe for cross-module inlining)\n";
+        }
+        continue;
       }
 
-      // Create a global function pointer for this function
-      Function *F = M.getFunction(FuncName);
-      //F->setName(guidToFnName(FuncGUID));
+      appendToUsed(M, &F);
+      auto FuncName = F.getName();
+      auto FuncGUID = uniqueGUID(ModName, FuncName);
+      if (LLVM_UNLIKELY(AutoJITDebug)) {
+        errs() << "autojit-plugin: Lazify function " << FuncName << " as "
+               << guidToFnName(FuncGUID) << "\n";
+      }
+
       PointerType *FuncPtrType = PointerType::getUnqual(Context);
       GlobalVariable *FuncPtrGV = new GlobalVariable(
           M, FuncPtrType, false, GlobalValue::InternalLinkage,
           ConstantPointerNull::get(FuncPtrType),
-          "__autojit_ptr_" + F->getName());
+          "__autojit_ptr_" + F.getName());
+      F.dropAllReferences();
 
-      // Clear the function body
-      F->deleteBody();
-
-      // Create new entry block with patchable trampoline
-      BasicBlock *EntryBB = BasicBlock::Create(Context, "entry", F);
+      // Replace body with patchable trampoline
+      BasicBlock *EntryBB = BasicBlock::Create(Context, "entry", &F);
       IRBuilder<> Builder(EntryBB);
 
-      // Load the function pointer
       Value *FuncPtr = Builder.CreateLoad(FuncPtrType, FuncPtrGV, "func_ptr");
-
-      // Check if function pointer is null (not yet materialized)
       Value *IsNull =
           Builder.CreateICmpEQ(FuncPtr, ConstantPointerNull::get(FuncPtrType));
 
-      // Create basic blocks for materialize and call paths
-      BasicBlock *MaterializeBB = BasicBlock::Create(Context, "materialize", F);
-      BasicBlock *CallBB = BasicBlock::Create(Context, "call", F);
-
+      // Prepare materialize and call paths
+      BasicBlock *MaterializeBB = BasicBlock::Create(Context, "materialize", &F);
+      BasicBlock *CallBB = BasicBlock::Create(Context, "call", &F);
       Builder.CreateCondBr(IsNull, MaterializeBB, CallBB);
 
-      // Materialize block: call runtime to materialize function
+      // Materialize block calls runtime: GUID in, ptr out
       Builder.SetInsertPoint(MaterializeBB);
-
       Value *V64  = ConstantInt::get(Type::getInt64Ty(Context), FuncGUID);
       Value *VPtr = Builder.CreateIntToPtr(V64, PointerType::getUnqual(Context));
       Builder.CreateStore(VPtr, FuncPtrGV);
-
-      // Get pointer to the function pointer global for patching
       Value *FuncPtrAddr = Builder.CreateBitCast(
           FuncPtrGV, PointerType::getUnqual(PointerType::getUnqual(Context)));
-
-      // Call the materialize function with function name, file path, and
-      // function pointer address
       Builder.CreateCall(MaterializeFunc, {FuncPtrAddr});
-
-      // Reload the function pointer (should be patched by runtime)
       Value *MaterializedPtr =
           Builder.CreateLoad(FuncPtrType, FuncPtrGV, "materialized_ptr");
-
       Builder.CreateBr(CallBB);
 
-      // Call block: call the actual function (either materialized or reloaded)
+      // Call block calls actual function through ptr and returns
       Builder.SetInsertPoint(CallBB);
-
       PHINode *ActualPtr = Builder.CreatePHI(FuncPtrType, 2, "actual_ptr");
       ActualPtr->addIncoming(FuncPtr, EntryBB);
       ActualPtr->addIncoming(MaterializedPtr, MaterializeBB);
-
-      // Collect function arguments
       SmallVector<Value *, 8> Args;
-      for (Argument &Arg : F->args()) {
+      for (Argument &Arg : F.args())
         Args.push_back(&Arg);
-      }
-
-      // Call the function through the pointer
-      CallInst *Call =
-          Builder.CreateCall(F->getFunctionType(), ActualPtr, Args);
+      CallInst *Call = Builder.CreateCall(F.getFunctionType(), ActualPtr, Args);
       Call->setTailCall(true);
-
-      // Create appropriate return instruction
-      if (F->getReturnType()->isVoidTy()) {
+      if (F.getReturnType()->isVoidTy()) {
         Builder.CreateRetVoid();
       } else {
         Builder.CreateRet(Call);
       }
     }
 
-    // Register the lazy module from the static initializer
+    for (Function *F : DropFunctions) {
+      F->removeFromParent();
+    }
+
+    // Add static initializer that registers lazy file path
     FunctionType *InitFT =
         FunctionType::get(Type::getVoidTy(Context), {}, false);
     StringRef SourceFile = llvm::sys::path::filename(M.getSourceFileName());
@@ -244,57 +193,44 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
         InitFT, GlobalValue::InternalLinkage,
         Twine("_GLOBAL__sub_I_") + SourceFile + "_llvm_autojit_init", M);
     InitFunc->setSection(".text.startup");
+    InitFunc->addFnAttr(Attribute::NoUnwind);
 
-    // Create function body
     BasicBlock *InitBB = BasicBlock::Create(Context, "entry", InitFunc);
     IRBuilder<> InitBuilder(InitBB);
+    FunctionType *RegisterFT = FunctionType::get(
+        Type::getVoidTy(Context), {PointerType::getUnqual(Context)},
+        false);
+    FunctionCallee RegisterFunc =
+        M.getOrInsertFunction("__llvm_autojit_register", RegisterFT);
 
-    // Get pointer to file path string
+    Constant *FilePathConstant =
+        ConstantDataArray::getString(Context, FilePath);
+    GlobalVariable *FilePathGV = new GlobalVariable(
+        M, FilePathConstant->getType(), true, GlobalValue::PrivateLinkage,
+        FilePathConstant, "__llvm_autojit_lazy_file");
+    FilePathGV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
     Value *FilePathPtr = InitBuilder.CreateConstGEP2_32(
         FilePathGV->getValueType(), FilePathGV, 0, 0);
 
-    // Call __llvm_autojit_register with the file path
     InitBuilder.CreateCall(RegisterFunc, {FilePathPtr});
     InitBuilder.CreateRetVoid();
 
-    // Add initializer with runtime library priority
+    // Use runtime library priority so that all modules are registered before
+    // we run the first user function.
     appendToGlobalCtors(M, InitFunc, 100);
     appendToUsed(M, InitFunc);
-
-    InitFunc->addFnAttr(Attribute::NoUnwind);
-
-    if (LLVM_UNLIKELY(AutoJITDebug))
-      saveModule(M, "_static");
 
     return PreservedAnalyses::none();
   }
 
 private:
-  static bool lazifyFunction(Function &F) {
-    if (F.hasAvailableExternallyLinkage())
-      return false;
+  static bool isStaticInit(const Function &F) {
     StringRef FuncName = F.getName();
-    assert(FuncName != "__llvm_autojit_materialize" && "reserved name");
     if (FuncName.starts_with("_GLOBAL__sub_"))
-      return false;
+      return true;
     if (FuncName.starts_with("__cxx_global_var_init"))
-      return false;
-    if (FuncName.starts_with("_ZN__"))
-      return false;
-    return true;
-  }
-
-  std::string generateGUID(const std::string &SourcePath) {
-    // Generate MD5 hash of the source path
-    MD5 Hasher;
-    Hasher.update(SourcePath);
-    MD5::MD5Result Hash;
-    Hasher.final(Hash);
-
-    // Convert to hex string
-    SmallString<32> Result;
-    MD5::stringifyResult(Hash, Result);
-    return Result.str().str();
+      return true;
+    return false;
   }
 
   std::string getModuleGUID(const Module &M) {
@@ -306,7 +242,16 @@ private:
       exit(1);
     }
 
-    return generateGUID(SourcePath);
+    // Generate MD5 hash of the source path
+    MD5 Hasher;
+    Hasher.update(SourcePath);
+    MD5::MD5Result Hash;
+    Hasher.final(Hash);
+
+    // Convert to hex string
+    SmallString<32> Result;
+    MD5::stringifyResult(Hash, Result);
+    return Result.str().str();
   }
 
   std::string saveModule(const Module &M, StringRef Suffix) {
