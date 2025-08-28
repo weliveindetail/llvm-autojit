@@ -86,77 +86,34 @@ Applied patch to 'flang/lib/Frontend/FrontendActions.cpp' cleanly.
 
 ## Benchmark
 
+Clean `-O0 -g` debug builds of 401.bzip2 from spec2006-CPU on a single x86_64 Linux machine. Take it with a grain of salt.
+
 Run benchmarks:
 ```
 > ninja -C build install-autojit-bench
 > cd build-install/benchmark
 > ./setup.sh
-Cloning into 'llvm-autojit-bench'...
-...
-Setting up benchmark 401.bzip2
+Generating test files..
+> $ ./run_all.sh
+Benchmark 401.bzip2
 Building regular binary..
-...
-real  0m4,969s
-user  0m4,561s
-sys   0m0,380s
-
+  In 50 runs mean (min/max) time in seconds was: 3.871 (3.641 / 4.268)
 Building AutoJIT binary..
-...
-real  0m12,518s
-user  0m11,822s
-sys   0m0,407s
+  In 50 runs mean (min/max) time in seconds was: 3.564 (3.336 / 3.792)
+
+AutoJIT cache file sizes:
+  Static files: 0 kb
+  Dynamic files: 514 kb
 
 Run-time regular:
-0m0,946s f5de26e14d257254235039aabd5ec18c
-...
+  In 3 runs mean (min/max) time in seconds was: 1.855 (1.761 / 1.999)
+d41d8cd98f00b204e9800998ecf8427e  bzip2/outputs/data1_regular.txt
+178b1561661d56c9bd4111d6b28adbc4  bzip2/outputs/data2_regular.txt
 
 Run-time autojit:
-0m0,997s f5de26e14d257254235039aabd5ec18c
-...
-```
-
-## Early-stage results
-
-Debug builds of 401.bzip2 from spec2006-CPU (`-O0 -g`) and small sample sizes (~10 repetitions) on a single x86_64 Linux machine. Take it with a grain of salt.
-
-### Compile-time
-
-No compile-time gains in release build of autojit plugin and runtime in LLVM/clang 20:
-```
-regular autojit
- 0.729s  0.515s
- 0.622s  0.490s
- 0.489s  0.731s
- 0.500s  1.115s
- 0.568s  0.730s
- 0.839s  0.651s
- ------  ------
-  0.62s   0.70s  -->  0.89x speedup
-```
-
-Using a debug-toolchain, we do see a small speedup:
-```
-regular autojit
- 4.155s  3.557s
- 4.041s  3.645s
- ------  ------
- 4.098s  3.601s  -->  1.14x speedup
-```
-
-### Run-time
-
-autojit using the native LLVM backend:
-```
-regular autojit speedup abs = rel   hash
-  0.95s   1.11s    -0.16s = 0.86x	  f5de26e14d257254235039aabd5ec18c
-  1.79s   1.98s    -0.19s = 0.90x   11c2d00a1ab55557475a16746baa9af7
-```
-
-autojit using TPDE:
-```
-regular autojit speedup abs = rel   hash
-  0.97s   0.97s        0s = 1.00x	  f5de26e14d257254235039aabd5ec18c
-  1.79s   1.78s    -0.01s = 0.99x   11c2d00a1ab55557475a16746baa9af7
+  In 3 runs mean (min/max) time in seconds was: 4.009 (3.892 / 4.109)
+d41d8cd98f00b204e9800998ecf8427e  bzip2/outputs/data1_autojit.txt
+178b1561661d56c9bd4111d6b28adbc4  bzip2/outputs/data2_autojit.txt
 ```
 
 ## Runtime debug logs

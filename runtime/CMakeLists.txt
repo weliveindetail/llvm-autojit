@@ -3,6 +3,7 @@ if(AUTOJIT_ENABLE_TPDE)
   set(tpde_libs tpde_llvm)
 endif()
 
+# TODO: bundle lib/clang/20/lib/x86_64-unknown-linux-gnu/liborc_rt.a
 add_llvm_library(autojit-runtime SHARED
   AutoJITRuntime.cpp
 

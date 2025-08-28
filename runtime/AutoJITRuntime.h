@@ -4,22 +4,17 @@
 extern "C" {
 #endif
 
-/// AutoJIT runtime function that materializes (loads and executes) the original
-/// implementation of a function from an IR file.
+/// AutoJIT runtime function to materialize a user function that the plugin
+/// outlined at compile-time. The incoming value for the sole parameter points
+/// to the GUID that was selected for the function at compile-time. The outgoing
+/// value is the address of the finalized function in memory.
 ///
-/// \param FuncName The name of the function to materialize
-/// \param FilePath The path to the IR file (.bc or .ll) containing the original
-/// function
-/// \param FuncPtrAddr Address of the function pointer to patch with the
-/// materialized function
-void __llvm_autojit_materialize(const char *FuncName, const char *FilePath,
-                                void **FuncPtrAddr);
+void __llvm_autojit_materialize(void **GuidInPtrOut);
 
-/// AutoJIT runtime function that registers a module for lazy loading.
-/// This function is called by static initializers injected by the AutoJIT
-/// plugin.
+/// AutoJIT runtime function to register a module with user functions. The
+/// plugin injects a self-registration initializer into each module that calls
+///  this function at load-time.
 ///
-/// \param FilePath The path to the IR file (.bc or .ll) containing the module
 void __llvm_autojit_register(const char *FilePath);
 
 #ifdef __cplusplus
