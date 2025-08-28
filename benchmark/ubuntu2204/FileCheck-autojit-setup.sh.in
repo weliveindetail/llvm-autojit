@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+rm -rf FileCheck/build_autojit
+
+# For debug mode add: -Xclang -load -Xclang @CMAKE_INSTALL_PREFIX@/lib/autojit.so -mllvm -autojit-debug
+CFLAGS="-fpass-plugin=@CMAKE_INSTALL_PREFIX@/lib/autojit.so"
+LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -Wl,--no-gc-sections -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime -rdynamic"
+
+echo "Building autojit binary.."
+CC="@CMAKE_INSTALL_PREFIX@/bin/clang" CXX="@CMAKE_INSTALL_PREFIX@/bin/clang++" cmake -GNinja \
+    -S "@LLVM_SOURCE_DIR@" \
+    -B "FileCheck/build_autojit" \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DLLVM_ENABLE_LIBCXX=On \
+    -DLLVM_USE_LINKER=lld \
+    -DCMAKE_C_FLAGS="$CFLAGS" \
+    -DCMAKE_CXX_FLAGS="$CFLAGS" \
+    -DCMAKE_EXE_LINKER_FLAGS="$LDFLAGS" \
+    -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS"

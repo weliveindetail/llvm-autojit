@@ -16,7 +16,7 @@ install(PROGRAMS ${shell_scripts} ${python_scripts}
   COMPONENT autojit-bench-scripts
 )
 
-add_custom_target(install-autojit-bench
+add_custom_target(install-autojit-bench-scripts
   COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR} --component autojit-bench-scripts
-  COMMENT "Installing AutoJIT benchmark"
+  COMMENT "Installing AutoJIT benchmark scripts"
 )

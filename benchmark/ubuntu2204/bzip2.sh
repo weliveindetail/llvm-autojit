@@ -35,3 +35,6 @@ echo "Run-time autojit:"
 ./meantime.py --runs 3 bzip2-autojit-run.sh
 md5sum bzip2/outputs/data1_autojit.txt
 md5sum bzip2/outputs/data2_autojit.txt
+
+echo ""
+echo ""
