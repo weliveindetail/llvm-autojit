@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 
-# For debug mode add CFLAGS: -Xclang -load -Xclang @CMAKE_INSTALL_PREFIX@/lib/autojit.so -mllvm -autojit-debug
+CFLAGS="-O0 -g -fpass-plugin=@CMAKE_INSTALL_PREFIX@/lib/autojit.so"
+if [ -n "$AUTOJIT_DEBUG" ]; then
+    CFLAGS="$CFLAGS -Xclang -load -Xclang @CMAKE_INSTALL_PREFIX@/lib/autojit.so -mllvm -autojit-debug"
+fi
+
 cd bzip2/build_autojit
 make \
   CC="@CMAKE_INSTALL_PREFIX@/bin/clang" \
   CXX="@CMAKE_INSTALL_PREFIX@/bin/clang++" \
-  CFLAGS="-O0 -g -fpass-plugin=@CMAKE_INSTALL_PREFIX@/lib/autojit.so" \
+  CFLAGS="$CFLAGS" \
   LDFLAGS="-fuse-ld=lld -B@CMAKE_INSTALL_PREFIX@/bin -Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -Wl,--no-gc-sections -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime -rdynamic"

@@ -6,6 +6,10 @@ rm -rf FileCheck/build_autojit
 CFLAGS="-fpass-plugin=@CMAKE_INSTALL_PREFIX@/lib/autojit.so"
 LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -Wl,--no-gc-sections -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime -rdynamic"
 
+if [ -n "$AUTOJIT_DEBUG" ]; then
+    CFLAGS="$CFLAGS -Xclang -load -Xclang @CMAKE_INSTALL_PREFIX@/lib/autojit.so -mllvm -autojit-debug"
+fi
+
 echo "Building autojit binary.."
 CC="@CMAKE_INSTALL_PREFIX@/bin/clang" CXX="@CMAKE_INSTALL_PREFIX@/bin/clang++" cmake -GNinja \
     -S "@LLVM_SOURCE_DIR@" \
