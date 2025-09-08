@@ -1,6 +1,7 @@
 #include "TPDEBackends.h"
 
 #include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/Transforms/IPO/GlobalDCE.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalValue.h"
@@ -98,8 +99,6 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
         M.getOrInsertFunction("__llvm_autojit_materialize", MaterializeFT);
 
     auto ModName = M.getName();
-    std::unordered_set<Function *> DropFunctions;
-
     for (Function &F : M) {
       if (F.isDeclaration())
         continue;
@@ -109,12 +108,11 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
         }
         continue;
       }
-      if (F.hasHiddenVisibility() || F.hasLocalLinkage()) {
+      // Symbols with hidden visibility seem to fall in the same category, but technically they are still in the ABI.
+      if (F.hasLocalLinkage()) {
         if (LLVM_UNLIKELY(AutoJITDebug)) {
           errs() << "autojit-plugin: Drop " << F.getName() << "\n";
         }
-        DropFunctions.insert(&F);
-        F.dropAllReferences();
         continue;
       }
       if (F.hasAvailableExternallyLinkage()) {
@@ -179,10 +177,6 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       } else {
         Builder.CreateRet(Call);
       }
-    }
-
-    for (Function *F : DropFunctions) {
-      F->removeFromParent();
     }
 
     // Add static initializer that registers lazy file path
@@ -307,6 +301,7 @@ llvmGetPassPluginInfo() {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
                   MPM.addPass(AutoJITPass());
+                  MPM.addPass(GlobalDCEPass());
                 });
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, ModulePassManager &PM,
