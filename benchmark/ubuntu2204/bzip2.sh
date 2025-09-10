@@ -2,24 +2,29 @@
 set -e
 
 echo "Benchmark 401.bzip2"
+rm /tmp/autojit_*
+rm -rf bzip2
 mkdir bzip2
 
 # Regular bench
-echo "Building regular binary.."
-./meantime.py --setup bzip2-regular-setup.sh --runs 20 bzip2-regular-build.sh
+echo "Compile-time regular:"
+./meantime.py --setup bzip2-regular-setup.sh --runs 10 bzip2-regular-build.sh
 
 # AutoJIT bench
-echo "Building AutoJIT binary.."
-./meantime.py --setup bzip2-autojit-setup.sh --runs 20 bzip2-autojit-build.sh
+echo "Compile-time AutoJIT:"
+./meantime.py --setup bzip2-autojit-setup.sh --runs 10 bzip2-autojit-build.sh
 
 echo ""
-echo "AutoJIT cache file sizes:"
-bytes_static=$(find /tmp -name "autojit_[0-9a-f]*_static.*" -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum+0}')
-bytes_lazy=$(find /tmp -name "autojit_[0-9a-f]*.*" ! -name "*_static.*" -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum+0}')
-kb_static=$((bytes_static/1024))
+echo "Binary sizes:"
+kb_regular=$(stat -c%s bzip2/build_regular/bzip2 | awk '{print int($1/1024)}')
+kb_autojit=$(stat -c%s bzip2/build_autojit/bzip2 | awk '{print int($1/1024)}')
+echo "  Regular: ${kb_regular} kb"
+echo "  AutoJIT: ${kb_autojit} kb"
+
+echo ""
+bytes_lazy=$(find /tmp -name "autojit_[0-9a-f]*.*" ! -name "*_static.*"  ! -name "*_incoming.*" -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum+0}')
 kb_lazy=$((bytes_lazy/1024))
-echo "  Static files: ${kb_static} kb"
-echo "  Dynamic files: ${kb_lazy} kb"
+echo "AutoJIT bitcode cache size: ${kb_lazy} kb"
 
 # Runtime bench
 rm -rf bzip2/outputs
@@ -31,7 +36,7 @@ md5sum bzip2/outputs/data1_regular.txt.bz2
 md5sum bzip2/outputs/data2_regular.txt.bz2
 
 echo ""
-echo "Run-time autojit:"
+echo "Run-time AutoJIT:"
 ./meantime.py --runs 3 bzip2-autojit-run.sh
 md5sum bzip2/outputs/data1_autojit.txt.bz2
 md5sum bzip2/outputs/data2_autojit.txt.bz2

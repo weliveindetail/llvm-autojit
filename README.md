@@ -1,6 +1,9 @@
-## Work in progress
+# llvm-autojit plugin
 
-Everything is in a [Kraut und Rüben](https://www.linguee.de/deutsch-englisch/uebersetzung/wie+kraut+und+r%C3%BCben.html) state pretty much
+Be lazy and compile your code at runtime. This project develops a compiler
+plugin that outlines function definitons to disk and a runtime library that
+compiles them on-demand. For now please consider it a case study. It works for
+simple exmaples on Linux, but it's not at all ready for production.
 
 ## Build
 
@@ -28,42 +31,24 @@ Ubuntu 22.04 (x86_64):
 
 > ninja -C build check-autojit
 Running regression tests with TPDE: On
--- Testing: 9 tests, 9 workers --
-PASS: AutoJIT :: debug-plugin.cpp (1 of 9)
-PASS: AutoJIT :: extract.cpp (2 of 9)
-PASS: AutoJIT :: debug-runtime.cpp (3 of 9)
-PASS: AutoJIT :: tpde-cstdio.cpp (4 of 9)
-PASS: AutoJIT :: runtime.cpp (5 of 9)
-PASS: AutoJIT :: archives.cpp (6 of 9)
-PASS: AutoJIT :: cus.cpp (7 of 9)
-PASS: AutoJIT :: tpde-string.cpp (8 of 9)
-XFAIL: AutoJIT :: tpde-format.cpp (9 of 9)
+-- Testing: 12 tests, 12 workers --
+PASS: AutoJIT :: opt.ll (1 of 12)
+PASS: AutoJIT :: skip.cpp (2 of 12)
+PASS: AutoJIT :: extract.cpp (3 of 12)
+PASS: AutoJIT :: debug-plugin.cpp (4 of 12)
+PASS: AutoJIT :: gvs.cpp (5 of 12)
+PASS: AutoJIT :: debug-runtime.cpp (6 of 12)
+PASS: AutoJIT :: fnptr.cpp (7 of 12)
+PASS: AutoJIT :: exceptions.cpp (8 of 12)
+PASS: AutoJIT :: runtime.cpp (9 of 12)
+PASS: AutoJIT :: archives.cpp (10 of 12)
+PASS: AutoJIT :: cus.cpp (11 of 12)
+PASS: AutoJIT :: libcxx.cpp (12 of 12)
 
-Testing Time: 35.21s
+Testing Time: 14.19s
 
-Total Discovered Tests: 9
-  Passed           : 8 (88.89%)
-  Expectedly Failed: 1 (11.11%)
-
-> export AUTOJIT_USE_TPDE=Off
-> ninja -C build check-autojit
-Running regression tests with TPDE: Off
--- Testing: 9 tests, 9 workers --
-PASS: AutoJIT :: extract.cpp (1 of 9)
-PASS: AutoJIT :: debug-plugin.cpp (2 of 9)
-PASS: AutoJIT :: tpde-cstdio.cpp (3 of 9)
-PASS: AutoJIT :: debug-runtime.cpp (4 of 9)
-PASS: AutoJIT :: runtime.cpp (5 of 9)
-PASS: AutoJIT :: archives.cpp (6 of 9)
-PASS: AutoJIT :: cus.cpp (7 of 9)
-PASS: AutoJIT :: tpde-string.cpp (8 of 9)
-XFAIL: AutoJIT :: tpde-format.cpp (9 of 9)
-
-Testing Time: 35.43s
-
-Total Discovered Tests: 9
-  Passed           : 8 (88.89%)
-  Expectedly Failed: 1 (11.11%)
+Total Discovered Tests: 12
+  Passed: 12 (100.00%)
 ```
 
 ## Build with TPDE
@@ -89,50 +74,56 @@ Applied patch to 'flang/lib/Frontend/FrontendActions.cpp' cleanly.
 
 Clean `-O0 -g` debug builds of 401.bzip2 from spec2006-CPU on a single x86_64 Linux machine. Take it with a grain of salt.
 
-Run benchmarks:
+Test bzip2 with a AutoJIT debug build:
 ```
 > ninja -C build install-autojit-bench
+> cd build-install/benchmark && ./bzip2-test.sh
+Test bzip2 with autojit
+Configure: bzip2/test-autojit-setup.log
+Build: bzip2/test-autojit-build.log
+Run: bzip2/test-autojit-run.log
+```
+
+Run benchmark with a AutoJIT release build:
+```
+> ninja -C build-release install-autojit-bench
 > cd build-install/benchmark
 > ./setup.sh
-Generating test files..
-> $ ./run_all.sh
+Fetching benchmark code..
+$ ./bzip2.sh
 Benchmark 401.bzip2
-Building regular binary..
-  In 50 runs mean (min/max) time in seconds was: 3.871 (3.641 / 4.268)
-Building AutoJIT binary..
-  In 50 runs mean (min/max) time in seconds was: 3.564 (3.336 / 3.792)
+Compile-time regular:
+  In 10 runs mean (min/max) time in seconds was: 0.807 (0.555 / 1.078)
+Compile-time AutoJIT:
+  In 10 runs mean (min/max) time in seconds was: 0.723 (0.453 / 1.124)
 
-AutoJIT cache file sizes:
-  Static files: 0 kb
-  Dynamic files: 514 kb
+Binary sizes:
+  Regular: 182 kb
+  AutoJIT: 35 kb
+
+AutoJIT bitcode cache size: 385 kb
 
 Run-time regular:
-  In 3 runs mean (min/max) time in seconds was: 1.855 (1.761 / 1.999)
-d41d8cd98f00b204e9800998ecf8427e  bzip2/outputs/data1_regular.txt
-178b1561661d56c9bd4111d6b28adbc4  bzip2/outputs/data2_regular.txt
+  In 3 runs mean (min/max) time in seconds was: 2.586 (2.434 / 2.782)
+323c74b2d7815a0b22979f45a93323e0  bzip2/outputs/data1_regular.txt.bz2
+c3c5e912092b78a8a53faa34e9d7494e  bzip2/outputs/data2_regular.txt.bz2
 
-Run-time autojit:
-  In 3 runs mean (min/max) time in seconds was: 4.009 (3.892 / 4.109)
-d41d8cd98f00b204e9800998ecf8427e  bzip2/outputs/data1_autojit.txt
-178b1561661d56c9bd4111d6b28adbc4  bzip2/outputs/data2_autojit.txt
+Run-time AutoJIT:
+  In 3 runs mean (min/max) time in seconds was: 2.829 (2.612 / 3.012)
+323c74b2d7815a0b22979f45a93323e0  bzip2/outputs/data1_autojit.txt.bz2
+c3c5e912092b78a8a53faa34e9d7494e  bzip2/outputs/data2_autojit.txt.bz2
 ```
 
-## Runtime debug logs
+## Debugging
 
-```
-> export AUTOJIT_DEBUG=On
-> bzip2/build_autojit/bzip2 -1 inputs/data1.txt
-autojit-runtime: Registering module /tmp/autojit_2d1387ca92e7b83c7aa238c36b76c79a.bc
-autojit-runtime: Registering module /tmp/autojit_2868f90adcbf0268b9c7bff1285a8ae9.bc
-...
-autojit-runtime: Scheduling module for materialization /tmp/autojit_2d1387ca92e7b83c7aa238c36b76c79a.bc (source: bzip2.c)
-Promoting linkage for lazy function mySIGSEGVorSIGBUScatcher$llvm_autojit_module_2d1387ca92e7b83c7aa238c36b76c79a
-...
-Adding lazy function to JIT: fopen_output_safely$llvm_autojit_module_2d1387ca92e7b83c7aa238c36b76c79a
-Adding lazy function to JIT: main$llvm_autojit_module_2d1387ca92e7b83c7aa238c36b76c79a
-Adding lazy function to JIT: mySIGSEGVorSIGBUScatcher$llvm_autojit_module_2d1387ca92e7b83c7aa238c36b76c79a
-...
-libunwind: __unw_add_dynamic_fde: bad fde: FDE is really a CIE
-autojit-runtime: Materialized function main from /tmp/autojit_2d1387ca92e7b83c7aa238c36b76c79a.bc at address 0x79960725d070
-autojit-runtime: Function pointer patched at address 0x5f3af2e71bf8 with value 0x79960725d070
-```
+Both, plugin and the runtime dump all available debug info if environment
+variable is set `AUTOJIT_DEBUG=On`
+
+For usage see:
+* [benchmark/ubuntu2204/bzip2-test.sh](benchmark/ubuntu2204/bzip2-test.sh)
+* [test/debug-plugin.cpp](test/debug-plugin.cpp)
+* [test/debug-runtime.cpp](test/debug-runtime.cpp)
+
+For sample output see:
+* [docs/sample-logs/bzip2-test-build.log](docs/sample-logs/bzip2-test-build.log)
+* [docs/sample-logs/bzip2-test-run.log](docs/sample-logs/bzip2-test-run.log)
