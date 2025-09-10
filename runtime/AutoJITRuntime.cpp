@@ -3,6 +3,7 @@
 
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
+#include "llvm/ExecutionEngine/Orc/Debugging/DebuggerSupport.h"
 #include "llvm/ExecutionEngine/Orc/EPCDynamicLibrarySearchGenerator.h"
 #include "llvm/ExecutionEngine/Orc/IRTransformLayer.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
@@ -274,6 +275,7 @@ private:
 
 LLJIT &initializeAutoJIT() {
   if (!g_jit) {
+    ExitOnError ExitOnErr("autojit-runtime: ");
     initializeAutoJITDebug();
     //auto Exe = dlopenHostProcess();
 
@@ -345,6 +347,8 @@ LLJIT &initializeAutoJIT() {
     //    std::move(Exe), (*J)->getDataLayout().getGlobalPrefix(), FindAllSyms,
     //    nullptr));
 
+    ExitOnErr(enableDebuggerSupport(**J));
+
     AUTOJIT_DEBUG({
       (*J)->getIRTransformLayer().setTransform(
           [](ThreadSafeModule TSM,
@@ -362,13 +366,10 @@ LLJIT &initializeAutoJIT() {
           });
     });
 
-    for (const char *Path : g_registered_modules) {
-      if (!g_materialized.contains(Path)) {
-        loadModule(**J, Path);
-        g_materialized.insert(Path);
-      }
-    }
+    for (const char *Path : g_registered_modules)
+      loadModule(**J, Path);
 
+    g_registered_modules.clear();
     g_jit = std::move(*J);
   }
 
@@ -386,13 +387,7 @@ extern "C" void __llvm_autojit_materialize(void **GuidInPtrOut) {
   initializeLLVM();
 
   LLJIT &JIT = initializeAutoJIT();
-  for (const char *Path : g_registered_modules) {
-    if (!g_materialized.contains(Path)) {
-      AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Loading module late " << Path << "\n");
-      loadModule(JIT, Path);
-      g_materialized.insert(Path);
-    }
-  }
+  assert(g_registered_modules.empty() && "Modules are registered at startup");
 
   // Look up the function symbol
   GlobalValue::GUID Guid = reinterpret_cast<uintptr_t>(*GuidInPtrOut);
