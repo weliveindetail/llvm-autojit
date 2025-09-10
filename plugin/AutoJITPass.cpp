@@ -58,9 +58,11 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
 
     if (LLVM_UNLIKELY(AutoJITDebug)) {
       errs() << "autojit-plugin: Processing module " << M.getName() << "\n";
+      saveModule(M, "_incoming");
     }
 
-    // Local definitions get exposed and must not collide
+    // Local definitions get exposed and must not collide. This affects both,
+    // static code and lazy code.
     std::string UniquePostfix = "_autojit_module_" + getModuleGUID(M);
 
     for (GlobalVariable &GV : M.globals()) {
@@ -86,93 +88,92 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       }
     }
 
-    // Save original module to disk
-    std::string FilePath = saveModule(M, "");
-
-    LLVMContext &Context = M.getContext();
-    FunctionType *MaterializeFT = FunctionType::get(
-        Type::getVoidTy(Context),
-        {PointerType::get(Context, 0)}, // Function GUID in, pointer address out
-        false);
-
-    FunctionCallee MaterializeFunc =
-        M.getOrInsertFunction("__llvm_autojit_materialize", MaterializeFT);
-
+    // Find functions that need trampolines
+    SmallVector<Function *, 16> LazifyFns;
     auto ModName = M.getName();
     for (Function &F : M) {
       if (F.isDeclaration())
         continue;
-      if (isStaticInit(F)) {
-        if (LLVM_UNLIKELY(AutoJITDebug)) {
-          errs() << "autojit-plugin: Keep static init " << F.getName() << "\n";
-        }
+      if (isStaticInit(F))
         continue;
-      }
-      // Symbols with hidden visibility seem to fall in the same category, but technically they are still in the ABI.
       if (F.hasLocalLinkage()) {
-        if (LLVM_UNLIKELY(AutoJITDebug)) {
-          errs() << "autojit-plugin: Drop " << F.getName() << "\n";
-        }
         continue;
       }
-      if (F.hasAvailableExternallyLinkage()) {
-        if (LLVM_UNLIKELY(AutoJITDebug)) {
-          errs() << "autojit-plugin: Keep " << F.getName() << " (dupe for cross-module inlining)\n";
-        }
+      if (F.hasAvailableExternallyLinkage())
         continue;
-      }
 
-      appendToUsed(M, &F);
-      auto FuncName = F.getName();
-      auto FuncGUID = uniqueGUID(ModName, FuncName);
+      LazifyFns.push_back(&F);
+    }
+
+    if (LazifyFns.empty()) {
       if (LLVM_UNLIKELY(AutoJITDebug)) {
-        errs() << "autojit-plugin: Lazify function " << FuncName << " as "
-               << guidToFnName(FuncGUID) << "\n";
+        errs() << "autojit-plugin: Skipping module " << M.getName() << "\n";
+      }
+      return PreservedAnalyses::all();
+    }
+
+    // Save module for function importing at runtime
+    std::string FilePath = saveModule(M, "");
+
+    // All further changes only affect static code
+    LLVMContext &Context = M.getContext();
+    Type *VoidTy = Type::getVoidTy(Context);
+    PointerType *FnPtrTy = PointerType::get(Context, 0);
+    FunctionType *MaterializeFnTy = FunctionType::get(VoidTy, {FnPtrTy}, false);
+    FunctionCallee MaterializeFn =
+        M.getOrInsertFunction("__llvm_autojit_materialize", MaterializeFnTy);
+
+    for (Function *F : LazifyFns) {
+      auto FnName = F->getName();
+      auto FnGUID = uniqueGUID(ModName, FnName);
+      if (LLVM_UNLIKELY(AutoJITDebug)) {
+        errs() << "autojit-plugin: Lazify function " << FnName << " as "
+               << guidToFnName(FnGUID) << "\n";
       }
 
-      PointerType *FuncPtrType = PointerType::getUnqual(Context);
-      GlobalVariable *FuncPtrGV = new GlobalVariable(
-          M, FuncPtrType, false, GlobalValue::InternalLinkage,
-          ConstantPointerNull::get(FuncPtrType),
-          "__autojit_ptr_" + F.getName());
-      F.dropAllReferences();
+      GlobalVariable *FnPtr =
+          new GlobalVariable(M, FnPtrTy, false, GlobalValue::InternalLinkage,
+                             ConstantPointerNull::get(FnPtrTy),
+                             "__llvm_autojit_ptr_" + F->getName());
+      F->dropAllReferences();
+      appendToUsed(M, F);
 
       // Replace body with patchable trampoline
-      BasicBlock *EntryBB = BasicBlock::Create(Context, "entry", &F);
+      BasicBlock *EntryBB = BasicBlock::Create(Context, "entry", F);
       IRBuilder<> Builder(EntryBB);
 
-      Value *FuncPtr = Builder.CreateLoad(FuncPtrType, FuncPtrGV, "func_ptr");
-      Value *IsNull =
-          Builder.CreateICmpEQ(FuncPtr, ConstantPointerNull::get(FuncPtrType));
+      Value *ExistingFnPtr = Builder.CreateLoad(FnPtrTy, FnPtr, "existing_ptr");
+      Value *IsNull = Builder.CreateICmpEQ(ExistingFnPtr,
+                                           ConstantPointerNull::get(FnPtrTy));
 
       // Prepare materialize and call paths
-      BasicBlock *MaterializeBB = BasicBlock::Create(Context, "materialize", &F);
-      BasicBlock *CallBB = BasicBlock::Create(Context, "call", &F);
+      BasicBlock *MaterializeBB = BasicBlock::Create(Context, "materialize", F);
+      BasicBlock *CallBB = BasicBlock::Create(Context, "call", F);
       Builder.CreateCondBr(IsNull, MaterializeBB, CallBB);
 
       // Materialize block calls runtime: GUID in, ptr out
       Builder.SetInsertPoint(MaterializeBB);
-      Value *V64  = ConstantInt::get(Type::getInt64Ty(Context), FuncGUID);
-      Value *VPtr = Builder.CreateIntToPtr(V64, PointerType::getUnqual(Context));
-      Builder.CreateStore(VPtr, FuncPtrGV);
-      Value *FuncPtrAddr = Builder.CreateBitCast(
-          FuncPtrGV, PointerType::getUnqual(PointerType::getUnqual(Context)));
-      Builder.CreateCall(MaterializeFunc, {FuncPtrAddr});
+      Value *V64 = ConstantInt::get(Type::getInt64Ty(Context), FnGUID);
+      Value *VPtr = Builder.CreateIntToPtr(V64, FnPtrTy);
+      Builder.CreateStore(VPtr, FnPtr);
+      Value *FnPtrAddr =
+          Builder.CreateBitCast(FnPtr, PointerType::get(FnPtrTy, 0));
+      Builder.CreateCall(MaterializeFn, {FnPtrAddr});
       Value *MaterializedPtr =
-          Builder.CreateLoad(FuncPtrType, FuncPtrGV, "materialized_ptr");
+          Builder.CreateLoad(FnPtrTy, FnPtr, "materialized_ptr");
       Builder.CreateBr(CallBB);
 
       // Call block calls actual function through ptr and returns
       Builder.SetInsertPoint(CallBB);
-      PHINode *ActualPtr = Builder.CreatePHI(FuncPtrType, 2, "actual_ptr");
-      ActualPtr->addIncoming(FuncPtr, EntryBB);
-      ActualPtr->addIncoming(MaterializedPtr, MaterializeBB);
+      PHINode *ImplPtr = Builder.CreatePHI(FnPtrTy, 2, "impl_ptr");
+      ImplPtr->addIncoming(ExistingFnPtr, EntryBB);
+      ImplPtr->addIncoming(MaterializedPtr, MaterializeBB);
       SmallVector<Value *, 8> Args;
-      for (Argument &Arg : F.args())
+      for (Argument &Arg : F->args())
         Args.push_back(&Arg);
-      CallInst *Call = Builder.CreateCall(F.getFunctionType(), ActualPtr, Args);
+      CallInst *Call = Builder.CreateCall(F->getFunctionType(), ImplPtr, Args);
       Call->setTailCall(true);
-      if (F.getReturnType()->isVoidTy()) {
+      if (F->getReturnType()->isVoidTy()) {
         Builder.CreateRetVoid();
       } else {
         Builder.CreateRet(Call);
@@ -180,22 +181,19 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     }
 
     // Add static initializer that registers lazy file path
-    FunctionType *InitFT =
-        FunctionType::get(Type::getVoidTy(Context), {}, false);
-    StringRef SourceFile = llvm::sys::path::filename(M.getSourceFileName());
-    Function *InitFunc = Function::Create(
-        InitFT, GlobalValue::InternalLinkage,
+    FunctionType *InitFnTy = FunctionType::get(VoidTy, {}, false);
+    StringRef SourceFile = sys::path::filename(M.getSourceFileName());
+    Function *InitFn = Function::Create(
+        InitFnTy, GlobalValue::InternalLinkage,
         Twine("_GLOBAL__sub_I_") + SourceFile + "_llvm_autojit_init", M);
-    InitFunc->setSection(".text.startup");
-    InitFunc->addFnAttr(Attribute::NoUnwind);
+    InitFn->setSection(".text.startup");
+    InitFn->addFnAttr(Attribute::NoUnwind);
 
-    BasicBlock *InitBB = BasicBlock::Create(Context, "entry", InitFunc);
+    BasicBlock *InitBB = BasicBlock::Create(Context, "entry", InitFn);
     IRBuilder<> InitBuilder(InitBB);
-    FunctionType *RegisterFT = FunctionType::get(
-        Type::getVoidTy(Context), {PointerType::getUnqual(Context)},
-        false);
-    FunctionCallee RegisterFunc =
-        M.getOrInsertFunction("__llvm_autojit_register", RegisterFT);
+    FunctionType *RegisterFnTy = FunctionType::get(VoidTy, {FnPtrTy}, false);
+    FunctionCallee RegisterFn =
+        M.getOrInsertFunction("__llvm_autojit_register", RegisterFnTy);
 
     Constant *FilePathConstant =
         ConstantDataArray::getString(Context, FilePath);
@@ -206,13 +204,17 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     Value *FilePathPtr = InitBuilder.CreateConstGEP2_32(
         FilePathGV->getValueType(), FilePathGV, 0, 0);
 
-    InitBuilder.CreateCall(RegisterFunc, {FilePathPtr});
+    InitBuilder.CreateCall(RegisterFn, {FilePathPtr});
     InitBuilder.CreateRetVoid();
 
     // Use runtime library priority so that all modules are registered before
     // we run the first user function.
-    appendToGlobalCtors(M, InitFunc, 100);
-    appendToUsed(M, InitFunc);
+    appendToGlobalCtors(M, InitFn, 100);
+    appendToUsed(M, InitFn);
+
+    if (LLVM_UNLIKELY(AutoJITDebug)) {
+      std::string FilePath = saveModule(M, "_static");
+    }
 
     return PreservedAnalyses::none();
   }
