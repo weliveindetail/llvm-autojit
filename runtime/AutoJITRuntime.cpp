@@ -194,26 +194,40 @@ void loadModule(LLJIT &JIT, StringRef FilePath) {
       F.dropAllReferences();
       continue;
     }
-    if (F.hasHiddenVisibility() || F.hasLocalLinkage()) {
+    if (F.hasLocalLinkage()) {
       AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Keep " << F.getName() << " (local definition)\n");
       continue;
     }
 
+    // Rename our JITed definition, so we can find it from the trampoline ID in
+    // the static function frame.
     std::string OriginalName = F.getName().str();
     GlobalValue::GUID G = getFunctionGUID(SourcePath, OriginalName);
     std::string ImplName = guidToFnName(G);
     F.setName(ImplName);
-    AUTOJIT_DEBUG(
-        dbgs() << "autojit-runtime: Import "
-               << OriginalName << " as " << ImplName << ")\n");
 
-    // This declarartion causes the JIT to lookup the symbol in the host process
-    // and resolve it to the static function frame. This keeps funtion pointers
-    // stable.
-    Function *ProxyDecl =
-        Function::Create(F.getFunctionType(), Function::ExternalLinkage,
-                          OriginalName, *M);
-    F.replaceAllUsesWith(ProxyDecl);
+    if (F.hasHiddenVisibility()) {
+      // Hidden definitions generate no (observable) symbols in the static
+      // binary. We could synthesize one here, but it's easier to just add an
+      // alias.
+      AUTOJIT_DEBUG(
+          dbgs() << "autojit-runtime: Add "
+                 << OriginalName << " alias for " << ImplName << "\n");
+      F.setVisibility(GlobalValue::DefaultVisibility);
+      GlobalAlias::create(OriginalName, &F);
+    } else {
+      // Inject a declaration for the original name. The JIT will see it and
+      // lookup the symbol in the host process, which has the static function
+      // frame with a trampoline into our JITed definition. This keeps function
+      // pointers stable.
+      AUTOJIT_DEBUG(
+          dbgs() << "autojit-runtime: Import "
+                << OriginalName << " as " << ImplName << "\n");
+      Function *ProxyDecl =
+          Function::Create(F.getFunctionType(), Function::ExternalLinkage,
+                            OriginalName, *M);
+      F.replaceAllUsesWith(ProxyDecl);
+    }
   }
 
   if (GlobalVariable *Ctors = M->getNamedGlobal("llvm.global_ctors")) {
