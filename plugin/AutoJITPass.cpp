@@ -131,53 +131,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
                << guidToFnName(FnGUID) << "\n";
       }
 
-      GlobalVariable *FnPtr =
-          new GlobalVariable(M, FnPtrTy, false, GlobalValue::InternalLinkage,
-                             ConstantPointerNull::get(FnPtrTy),
-                             "__llvm_autojit_ptr_" + F->getName());
-      F->dropAllReferences();
-      appendToUsed(M, F);
-
-      // Replace body with patchable trampoline
-      BasicBlock *EntryBB = BasicBlock::Create(Context, "entry", F);
-      IRBuilder<> Builder(EntryBB);
-
-      Value *ExistingFnPtr = Builder.CreateLoad(FnPtrTy, FnPtr, "existing_ptr");
-      Value *IsNull = Builder.CreateICmpEQ(ExistingFnPtr,
-                                           ConstantPointerNull::get(FnPtrTy));
-
-      // Prepare materialize and call paths
-      BasicBlock *MaterializeBB = BasicBlock::Create(Context, "materialize", F);
-      BasicBlock *CallBB = BasicBlock::Create(Context, "call", F);
-      Builder.CreateCondBr(IsNull, MaterializeBB, CallBB);
-
-      // Materialize block calls runtime: GUID in, ptr out
-      Builder.SetInsertPoint(MaterializeBB);
-      Value *V64 = ConstantInt::get(Type::getInt64Ty(Context), FnGUID);
-      Value *VPtr = Builder.CreateIntToPtr(V64, FnPtrTy);
-      Builder.CreateStore(VPtr, FnPtr);
-      Value *FnPtrAddr =
-          Builder.CreateBitCast(FnPtr, PointerType::get(FnPtrTy, 0));
-      Builder.CreateCall(MaterializeFn, {FnPtrAddr});
-      Value *MaterializedPtr =
-          Builder.CreateLoad(FnPtrTy, FnPtr, "materialized_ptr");
-      Builder.CreateBr(CallBB);
-
-      // Call block calls actual function through ptr and returns
-      Builder.SetInsertPoint(CallBB);
-      PHINode *ImplPtr = Builder.CreatePHI(FnPtrTy, 2, "impl_ptr");
-      ImplPtr->addIncoming(ExistingFnPtr, EntryBB);
-      ImplPtr->addIncoming(MaterializedPtr, MaterializeBB);
-      SmallVector<Value *, 8> Args;
-      for (Argument &Arg : F->args())
-        Args.push_back(&Arg);
-      CallInst *Call = Builder.CreateCall(F->getFunctionType(), ImplPtr, Args);
-      Call->setTailCall(true);
-      if (F->getReturnType()->isVoidTy()) {
-        Builder.CreateRetVoid();
-      } else {
-        Builder.CreateRet(Call);
-      }
+      lazifyFn(F, FnGUID, MaterializeFn);
     }
 
     // Add static initializer that registers lazy file path
@@ -277,6 +231,60 @@ private:
     }
 
     return FilePath;
+  }
+
+  void lazifyFn(Function *F, GlobalValue::GUID FnGUID, FunctionCallee MaterializeFn) {
+    Module *M = F->getParent();
+    LLVMContext &Context = M->getContext();
+    PointerType *FnPtrTy = PointerType::get(Context, 0);
+
+    GlobalVariable *FnPtr =
+        new GlobalVariable(*M, FnPtrTy, false, GlobalValue::InternalLinkage,
+                           ConstantPointerNull::get(FnPtrTy),
+                           "__llvm_autojit_ptr_" + F->getName());
+    F->dropAllReferences();
+    appendToUsed(*M, F);
+
+    // Replace body with patchable trampoline
+    BasicBlock *EntryBB = BasicBlock::Create(Context, "entry", F);
+    IRBuilder<> Builder(EntryBB);
+
+    Value *ExistingFnPtr = Builder.CreateLoad(FnPtrTy, FnPtr, "existing_ptr");
+    Value *IsNull = Builder.CreateICmpEQ(ExistingFnPtr,
+                                         ConstantPointerNull::get(FnPtrTy));
+
+    // Prepare materialize and call paths
+    BasicBlock *MaterializeBB = BasicBlock::Create(Context, "materialize", F);
+    BasicBlock *CallBB = BasicBlock::Create(Context, "call", F);
+    Builder.CreateCondBr(IsNull, MaterializeBB, CallBB);
+
+    // Materialize block calls runtime: GUID in, ptr out
+    Builder.SetInsertPoint(MaterializeBB);
+    Value *V64 = ConstantInt::get(Type::getInt64Ty(Context), FnGUID);
+    Value *VPtr = Builder.CreateIntToPtr(V64, FnPtrTy);
+    Builder.CreateStore(VPtr, FnPtr);
+    Value *FnPtrAddr =
+        Builder.CreateBitCast(FnPtr, PointerType::get(FnPtrTy, 0));
+    Builder.CreateCall(MaterializeFn, {FnPtrAddr});
+    Value *MaterializedPtr =
+        Builder.CreateLoad(FnPtrTy, FnPtr, "materialized_ptr");
+    Builder.CreateBr(CallBB);
+
+    // Call block calls actual function through ptr and returns
+    Builder.SetInsertPoint(CallBB);
+    PHINode *ImplPtr = Builder.CreatePHI(FnPtrTy, 2, "impl_ptr");
+    ImplPtr->addIncoming(ExistingFnPtr, EntryBB);
+    ImplPtr->addIncoming(MaterializedPtr, MaterializeBB);
+    SmallVector<Value *, 8> Args;
+    for (Argument &Arg : F->args())
+      Args.push_back(&Arg);
+    CallInst *Call = Builder.CreateCall(F->getFunctionType(), ImplPtr, Args);
+    Call->setTailCall(true);
+    if (F->getReturnType()->isVoidTy()) {
+      Builder.CreateRetVoid();
+    } else {
+      Builder.CreateRet(Call);
+    }
   }
 };
 
