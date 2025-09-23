@@ -1,12 +1,14 @@
 #include "AutoJITRuntime.h"
 #include "AutoJITConfig.h"
 
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/Debugging/DebuggerSupport.h"
 #include "llvm/ExecutionEngine/Orc/EPCDynamicLibrarySearchGenerator.h"
 #include "llvm/ExecutionEngine/Orc/IRTransformLayer.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -101,6 +103,46 @@ static bool useTPDE() {
       return true;
   }
   return false;
+}
+
+static std::string toString(GlobalValue::LinkageTypes LT) {
+  switch (LT) {
+  case GlobalValue::ExternalLinkage:
+    return "extern";
+  case GlobalValue::AvailableExternallyLinkage:
+    return "av_ext";
+  case GlobalValue::LinkOnceAnyLinkage:
+    return "linkonce";
+  case GlobalValue::LinkOnceODRLinkage:
+    return "linkonce_odr";
+  case GlobalValue::WeakAnyLinkage:
+    return "weak";
+  case GlobalValue::WeakODRLinkage:
+    return "weak_odr";
+  case GlobalValue::AppendingLinkage:
+    return "appending";
+  case GlobalValue::InternalLinkage:
+    return "internal";
+  case GlobalValue::PrivateLinkage:
+    return "private";
+  case GlobalValue::ExternalWeakLinkage:
+    return "extern_weak";
+  case GlobalValue::CommonLinkage:
+    return "common";
+  }
+  return "<unknown>";
+}
+
+static StringRef toString(GlobalVariable::UnnamedAddr UA) {
+  switch (UA) {
+  case GlobalVariable::UnnamedAddr::None:
+    return "named_addr";
+  case GlobalVariable::UnnamedAddr::Local:
+    return "local_unnamed_addr";
+  case GlobalVariable::UnnamedAddr::Global:
+    return "unnamed_addr";
+  }
+  return "<unknown>";
 }
 
 static std::string getModuleGUID(const std::string &SourcePath) {
@@ -249,6 +291,47 @@ void loadModule(LLJIT &JIT, StringRef FilePath) {
     GV.dropAllReferences();
     GV.setInitializer(nullptr);
     GV.setLinkage(GlobalValue::ExternalLinkage);
+  }
+
+  SmallSet<GlobalAlias *, 16> DropAliases;
+  for (GlobalAlias &GA : M->aliases()) {
+    if (GA.hasExternalLinkage() || GA.hasExternalWeakLinkage() || GA.hasWeakODRLinkage()) {
+      // Static executable has both, the definition and the alias
+      AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Drop global alias " << GA.getName() << "\n");
+      DropAliases.insert(&GA);
+      continue;
+    }
+    bool RuntimeFixup = false;
+    if (auto *AliasFn = dyn_cast<Function>(GA.getAliasee())) {
+      if (GA.hasAtLeastLocalUnnamedAddr() &&
+          AliasFn->getUnnamedAddr() == GlobalVariable::UnnamedAddr::None) {
+        GA.replaceAllUsesWith(AliasFn);
+        RuntimeFixup = true;
+      }
+    }
+    AUTOJIT_DEBUG({
+      std::string Info;
+      if (auto *AliasFn = dyn_cast<Function>(GA.getAliasee())) {
+        raw_string_ostream(Info)
+            << toString(GA.getLinkage()) << " " << toString(GA.getUnnamedAddr())
+            << " -> " << toString(AliasFn->getLinkage()) << " "
+            << toString(AliasFn->getUnnamedAddr());
+      } else {
+        Info = "no function alias";
+      }
+      if (RuntimeFixup) {
+        dbgs() << "autojit-runtime: Resolve global alias " << GA.getName()
+              << " to " << GA.getAliasee()->getName() << " (" << Info << ")\n";
+      } else {
+        dbgs() << "autojit-runtime: Import global alias " << GA.getName()
+              << " for " << GA.getAliasee()->getName() << " (" << Info << ")\n";
+      }
+    });
+  }
+
+  for (GlobalAlias *GA : DropAliases) {
+    GA->replaceAllUsesWith(GA->getAliasee());
+    GA->eraseFromParent();
   }
 
   // Add the module to the JIT
