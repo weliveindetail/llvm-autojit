@@ -4,7 +4,7 @@ rm -rf FileCheck/build_regular
 
 echo "Building regular binary.."
 CC="@CMAKE_INSTALL_PREFIX@/bin/clang" CXX="@CMAKE_INSTALL_PREFIX@/bin/clang++" cmake -GNinja \
-    -S "@LLVM_SOURCE_DIR@" \
+    -S "llvm-project/llvm" \
     -B "FileCheck/build_regular" \
     -DCMAKE_BUILD_TYPE=Debug \
     -DLLVM_ENABLE_LIBCXX=On \

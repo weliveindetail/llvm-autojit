@@ -12,7 +12,7 @@ fi
 
 echo "Building autojit binary.."
 CC="@CMAKE_INSTALL_PREFIX@/bin/clang" CXX="@CMAKE_INSTALL_PREFIX@/bin/clang++" cmake -GNinja \
-    -S "@LLVM_SOURCE_DIR@" \
+    -S "llvm-project/llvm" \
     -B "FileCheck/build_autojit" \
     -DCMAKE_BUILD_TYPE=Debug \
     -DLLVM_ENABLE_LIBCXX=On \
