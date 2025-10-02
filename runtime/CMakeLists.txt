@@ -25,27 +25,27 @@ if(AUTOJIT_ENABLE_ORC_RUNTIME)
   set(orc_rt ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o)
 endif()
 
-add_llvm_library(autojit-runtime SHARED
-  AutoJITRuntime.cpp
+llvm_map_components_to_libnames(llvm_libs
+  bitreader bitstreamreader core irprinter irreader jitlink orcjit passes support targetparser
+)
 
-  LINK_COMPONENTS
-    BitcodeReader
-    Core
-    ExecutionEngine
-    MCJIT
-    Native
-    Support
-    Target
+add_library(autojit-runtime SHARED AutoJITRuntime.cpp ${orc_rt})
 
-  LINK_LIBS
-    ${tpde_libs}
-    ${orc_rt}
-  )
+# Root directory has the generated config header
+target_include_directories(autojit-runtime PRIVATE ${AUTOJIT_CONFIG_FILE_DIR})
+target_link_options(autojit-runtime PRIVATE -Wl,-z,defs -Wl,-Bsymbolic -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.txt)
+target_link_libraries(autojit-runtime PRIVATE ${llvm_libs} ${tpde_libs})
+
+#target_compile_options(autojit-runtime PRIVATE -fvisibility=hidden)
+if(NOT LLVM_ENABLE_RTTI)
+  target_compile_options(autojit-runtime PRIVATE -fno-rtti -fno-exceptions)
+endif()
 
 if(AUTOJIT_ENABLE_ORC_RUNTIME)
   add_dependencies(autojit-runtime embed_orc_rt)
 endif()
 
-# Root directory has the generated config header
-target_include_directories(autojit-runtime PRIVATE ${AUTOJIT_CONFIG_FILE_DIR})
-target_link_options(autojit-runtime PRIVATE -Wl,-Bsymbolic)
+add_custom_target(install-autojit-runtime
+  COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR} --component autojit-runtime
+  COMMENT "Installing AutoJIT Runtime"
+)
