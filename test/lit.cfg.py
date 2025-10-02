@@ -1,24 +1,22 @@
 import os
 import lit.formats
+from pathlib import Path
 
 config.name = 'AutoJIT'
 config.test_format = lit.formats.ShTest(True)
 
-# Describe test files
 config.suffixes = ['.cpp', '.ll']
 config.excludes = ["Inputs"]
-
 config.test_source_root = os.path.dirname(__file__)
-config.test_exec_root = os.path.join(config.llvm_build_dir, "tools", "autojit", "test")
+config.environment['PATH'] = "/usr/bin"
 
 config.substitutions.append(('%autojit_plugin', config.autojit_plugin))
 config.substitutions.append(('%autojit_runtime_dir', config.autojit_runtime_dir))
-config.substitutions.append(('%clang', 'clang++'))
-config.substitutions.append(('%ar', 'llvm-ar'))
-config.substitutions.append(('%ranlib', 'llvm-ranlib'))
 
-import os
-config.environment['PATH'] = os.path.pathsep.join((config.llvm_tools_dir, config.environment.get('PATH', '')))
+bin = Path(config.llvm_tools_dir)
+config.substitutions.append(('%clang', str(bin / 'clang++')))
+config.substitutions.append(('%ar', str(bin / 'llvm-ar')))
+config.substitutions.append(('FileCheck', str(bin / 'FileCheck')))
 
 if 'AUTOJIT_USE_TPDE' in os.environ:
     use_tpde = os.environ.get('AUTOJIT_USE_TPDE')

@@ -1,5 +1,3 @@
-#include "TPDEBackends.h"
-
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Transforms/IPO/GlobalDCE.h"
 #include "llvm/IR/Attributes.h"
@@ -22,6 +20,10 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+
+#if defined(AUTOJIT_ENABLE_TPDE)
+#include "TPDEBackends.h"
+#endif
 
 #include <algorithm>
 #include <regex>
@@ -290,18 +292,24 @@ private:
 
 } // end anonymous namespace
 
+#if defined(AUTOJIT_ENABLE_TPDE)
 namespace llvm {
 
-LLVM_ABI Target &getTheX86_32Target();
-LLVM_ABI Target &getTheX86_64Target();
+LLVM_ABI Target &getTheX86_32Target() __attribute__((weak));
+LLVM_ABI Target &getTheX86_64Target() __attribute__((weak));
 
 } // namespace llvm
+#endif
 
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
 #if defined(AUTOJIT_ENABLE_TPDE)
-  RegisterTargetMachine<X86TargetMachineTPDE> X(getTheX86_32Target());
-  RegisterTargetMachine<X86TargetMachineTPDE> Y(getTheX86_64Target());
+  if (getTheX86_32Target && getTheX86_64Target) {
+    RegisterTargetMachine<X86TargetMachineTPDE> X(getTheX86_32Target());
+    RegisterTargetMachine<X86TargetMachineTPDE> Y(getTheX86_64Target());
+  } else {
+    errs() << "Failed to register TPDE codegen backend\n";
+  }
 #endif
   return {.APIVersion = LLVM_PLUGIN_API_VERSION,
           .PluginName = "AutoJIT Pass",

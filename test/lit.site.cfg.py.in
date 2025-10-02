@@ -1,15 +1,18 @@
 @LIT_SITE_CFG_IN_HEADER@
 
+import os
 import sys
 
 config.llvm_tools_dir = lit_config.substitute("@LLVM_TOOLS_DIR@")
 config.llvm_build_dir = lit_config.substitute("@LLVM_BINARY_DIR@")
+config.build_dir = "@CMAKE_BINARY_DIR@"
 config.build_type = "@CMAKE_BUILD_TYPE@"
 config.target_triple = "@TARGET_TRIPLE@"
 config.enable_shared = @ENABLE_SHARED@
 config.enable_plugins = @LLVM_ENABLE_PLUGINS@
 config.enable_tpde = "@AUTOJIT_ENABLE_TPDE@"
 config.enable_orc_rt = "@AUTOJIT_ENABLE_ORC_RUNTIME@"
+config.test_exec_root = os.path.dirname(__file__)
 
 # Support substitution of the tools_dir with user parameters. This is
 # used when we can't determine the tool dir at configuration time.
@@ -21,8 +24,8 @@ except KeyError:
     lit_config.fatal("unable to find %r parameter, use '--param=%s=VALUE'" % (key,key))
 
 # File paths
-config.autojit_plugin = lit_config.substitute("@LLVM_BINARY_DIR@/lib/autojit@CMAKE_SHARED_LIBRARY_SUFFIX@")
-config.autojit_runtime_dir = lit_config.substitute("@LLVM_BINARY_DIR@/lib")
+config.autojit_plugin = lit_config.substitute("@CMAKE_BINARY_DIR@/lib/autojit@CMAKE_SHARED_LIBRARY_SUFFIX@")
+config.autojit_runtime_dir = lit_config.substitute("@CMAKE_BINARY_DIR@/lib")
 
 # Let the main config do the real work.
 lit_config.load_config(config, "@CMAKE_CURRENT_SOURCE_DIR@/lit.cfg.py")

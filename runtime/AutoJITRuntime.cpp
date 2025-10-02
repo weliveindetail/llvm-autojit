@@ -8,6 +8,7 @@
 #include "llvm/ExecutionEngine/Orc/EPCDynamicLibrarySearchGenerator.h"
 #include "llvm/ExecutionEngine/Orc/IRTransformLayer.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h"
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/LLVMContext.h"
@@ -61,6 +62,11 @@ extern const unsigned char _binary_liborc_rt_end[];
 }
 
 namespace {
+
+LLVM_ATTRIBUTE_USED void linkComponents() {
+  errs() << (void *)&llvm_orc_registerJITLoaderGDBWrapper
+         << (void *)&llvm_orc_registerJITLoaderGDBAllocAction;
+}
 
 static std::unique_ptr<LLJIT> g_jit;
 static std::unordered_set<const char *> g_materialized;
@@ -342,7 +348,7 @@ void loadModule(LLJIT &JIT, StringRef FilePath) {
   }
 }
 
-// TODO: Is tpde_llvm thread-safe? Can we make it concurrent?
+#if defined(AUTOJIT_ENABLE_TPDE)
 class TPDECompiler : public IRCompileLayer::IRCompiler {
 public:
   TPDECompiler(JITTargetMachineBuilder JTMB)
@@ -353,15 +359,12 @@ public:
   }
 
   Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
-    auto Buffer = std::make_unique<std::vector<uint8_t>>();
-    if (!Compiler->compile_to_elf(M, *Buffer)) {
-      errs() << "autojit-runtime: TPDE Failed to compile IR file: "
-             << M.getName() << "\n";
+    auto &B = Buffers.emplace_back();
+    if (!Compiler->compile_to_elf(M, *B)) {
+      errs() << "TPDE Failed to compile IR file: " << M.getName() << "\n";
       exit(1);
     }
-    StringRef BufferRef{reinterpret_cast<char *>(Buffer->data()),
-                        Buffer->size()};
-    Buffers.push_back(std::move(Buffer));
+    StringRef BufferRef{reinterpret_cast<char *>(B->data()), B->size()};
     return MemoryBuffer::getMemBuffer(BufferRef, "", false);
   }
 
@@ -369,6 +372,7 @@ private:
   std::unique_ptr<tpde_llvm::LLVMCompiler> Compiler;
   std::vector<std::unique_ptr<std::vector<uint8_t>>> Buffers;
 };
+#endif
 
 LLJIT &initializeAutoJIT() {
   if (!g_jit) {

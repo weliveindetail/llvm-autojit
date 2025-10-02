@@ -12,7 +12,13 @@ configure_file(
   ${CMAKE_CURRENT_BINARY_DIR}/AutoJITConfig.h
 )
 
-if(NOT DEFINED LLVM_MAIN_SRC_DIR)
+if(DEFINED LLVM_MAIN_SRC_DIR)
+  set(AUTOJIT_BUILD_EXTERNAL Off)
+  set(AUTOJIT_BUILD_UNIFIED On)
+else()
+  set(AUTOJIT_BUILD_EXTERNAL On)
+  set(AUTOJIT_BUILD_UNIFIED Off)
+
   cmake_minimum_required(VERSION 3.20.0)
   project(llvm-autojit)
   set(AUTOJIT_STANDALONE_BUILD True)
@@ -30,6 +36,7 @@ endif()
 
 if(AUTOJIT_ENABLE_TPDE)
   add_compile_options(-Wno-unused-parameter)
+  set(TPDE_LINK_LLVM_STATIC On)
   add_subdirectory(deps/tpde)
 endif()
 
@@ -39,7 +46,6 @@ add_subdirectory(runtime)
 
 # Create a master install target that depends on the LLVM-generated install targets
 # add_llvm_pass_plugin creates an install-autojit target automatically
-# add_llvm_library creates an install-autojit-runtime target automatically
 
 # If install-autojit doesn't exist (meaning the plugin didn't create it), create it
 if(NOT TARGET install-autojit)
@@ -66,19 +72,14 @@ add_dependencies(install-autojit install-autojit-runtime install-autojit-headers
 add_subdirectory(benchmark)
 
 # Add testing support
-if(NOT DEFINED LLVM_MAIN_SRC_DIR)
-  # External build - find lit
+if(AUTOJIT_BUILD_EXTERNAL)
   find_program(LIT_COMMAND lit)
   if(LIT_COMMAND)
-    add_custom_target(check-autojit
-      COMMAND ${LIT_COMMAND} ${CMAKE_CURRENT_SOURCE_DIR}/test
-      DEPENDS autojit
-      COMMENT "Running AutoJIT tests"
-    )
+    set(LLVM_EXTERNAL_LIT ${LIT_COMMAND})
+    message(status "Found: ${LLVM_EXTERNAL_LIT}")
   else()
-    message(WARNING "lit not found - tests will not be available")
+    message(WARNING "lit not found")
   endif()
-else()
-  # Building as part of LLVM unified build
-  add_subdirectory(test)
 endif()
+
+add_subdirectory(test)

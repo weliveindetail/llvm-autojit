@@ -2,5 +2,7 @@
     global:
         __llvm_autojit_materialize;
         __llvm_autojit_register;
+        llvm_orc_registerJITLoaderGDBWrapper;
+        llvm_orc_registerJITLoaderGDBAllocAction;
     local: *;
 };
