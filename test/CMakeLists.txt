@@ -7,19 +7,23 @@ llvm_canonicalize_cmake_booleans(
 set(LLVM_LIT_ARGS "-vv --no-progress-bar")
 
 if(AUTOJIT_BUILD_EXTERNAL)
-  find_program(CLANG NO_CACHE REQUIRED
+  find_program(clang_exec
                NAMES clang-20 clang
                HINTS ${LLVM_TOOLS_BINARY_DIR})
-  if(CLANG)
-    message(STATUS "Found Clang: " ${CLANG})
+  if(clang_exec)
+    message(STATUS "Found: ${clang_exec}")
+    add_executable(clang IMPORTED GLOBAL)
+    set_target_properties(clang PROPERTIES IMPORTED_LOCATION clang_exec)
   else()
-    set(CLANG /usr/lib/llvm-20/bin/clang)
+    message(WARNING "clang not found")
   endif()
 
-  add_executable(clang IMPORTED GLOBAL)
-  set_target_properties(clang PROPERTIES
-    IMPORTED_LOCATION "${CLANG}"
-  )
+  find_program(LLVM_EXTERNAL_LIT lit)
+  if(LLVM_EXTERNAL_LIT)
+    message(STATUS "Found: ${LLVM_EXTERNAL_LIT}")
+  else()
+    message(WARNING "lit not found")
+  endif()
 endif()
 
 configure_lit_site_cfg(

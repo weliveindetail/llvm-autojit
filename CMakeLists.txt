@@ -70,16 +70,4 @@ add_custom_target(install-autojit-headers
 add_dependencies(install-autojit install-autojit-runtime install-autojit-headers)
 
 add_subdirectory(benchmark)
-
-# Add testing support
-if(AUTOJIT_BUILD_EXTERNAL)
-  find_program(LIT_COMMAND lit)
-  if(LIT_COMMAND)
-    set(LLVM_EXTERNAL_LIT ${LIT_COMMAND})
-    message(status "Found: ${LLVM_EXTERNAL_LIT}")
-  else()
-    message(WARNING "lit not found")
-  endif()
-endif()
-
 add_subdirectory(test)

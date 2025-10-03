@@ -8,7 +8,6 @@ config.test_format = lit.formats.ShTest(True)
 config.suffixes = ['.cpp', '.ll']
 config.excludes = ["Inputs"]
 config.test_source_root = os.path.dirname(__file__)
-config.environment['PATH'] = "/usr/bin"
 
 config.substitutions.append(('%autojit_plugin', config.autojit_plugin))
 config.substitutions.append(('%autojit_runtime_dir', config.autojit_runtime_dir))
@@ -16,7 +15,10 @@ config.substitutions.append(('%autojit_runtime_dir', config.autojit_runtime_dir)
 bin = Path(config.llvm_tools_dir)
 config.substitutions.append(('%clang', str(bin / 'clang++')))
 config.substitutions.append(('%ar', str(bin / 'llvm-ar')))
+config.substitutions.append(('opt', str(bin / 'opt')))
 config.substitutions.append(('FileCheck', str(bin / 'FileCheck')))
+
+config.environment['PATH'] = config.llvm_tools_dir + ":/usr/bin"
 
 if 'AUTOJIT_USE_TPDE' in os.environ:
     use_tpde = os.environ.get('AUTOJIT_USE_TPDE')

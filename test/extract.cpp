@@ -6,7 +6,7 @@
 // CHECK: @__llvm_autojit_ptr__Z3addii = internal global ptr null
 
 // Path to lazy module
-// CHECK: @__llvm_autojit_lazy_file = private unnamed_addr constant [49 x i8] c"/tmp/autojit_7cbf95157f77aa3acf3d3653fb89d070.bc\00"
+// CHECK: @__llvm_autojit_lazy_file = private unnamed_addr constant [49 x i8] c"/tmp/autojit_32da0ee7f40f2000f55dd34cf16fbd09.bc\00"
 
 // Static function frames contain calls to runtime function
 // CHECK: define {{.*}} i32 @_Z3addii{{.*}}
@@ -15,7 +15,7 @@
 // CHECK:   icmp eq ptr %{{.*}}, null
 // CHECK:   br
 //
-// CHECK:   store {{.*}} 5596766123435450959 to {{.*}} @__llvm_autojit_ptr__Z3addii
+// CHECK:   store {{.*}} -4802299277345472224 to {{.*}} @__llvm_autojit_ptr__Z3addii
 // CHECK:   call void @__llvm_autojit_materialize
 // CHECK:   load ptr, ptr @__llvm_autojit_ptr_
 // CHECK:   br
