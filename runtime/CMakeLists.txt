@@ -72,3 +72,5 @@ add_custom_target(install-autojit-runtime
   COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR} --component autojit-runtime
   COMMENT "Installing AutoJIT runtime"
 )
+
+add_dependencies(install-autojit-runtime autojit-runtime)

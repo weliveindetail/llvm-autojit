@@ -2,9 +2,7 @@
 set -e
 
 echo "Benchmark 401.bzip2"
-rm /tmp/autojit_*
 rm -rf bzip2
-mkdir bzip2
 
 # Regular bench
 echo "Compile-time regular:"

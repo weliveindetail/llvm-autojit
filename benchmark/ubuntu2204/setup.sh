@@ -3,10 +3,5 @@ set -e
 
 if [ ! -d "llvm-autojit-bench" ]; then
     echo "Fetching benchmark code.."
-    git clone https://github.com/weliveindetail/llvm-autojit-bench
-fi
-
-if [ ! -d "llvm-project" ]; then
-    echo "Fetching benchmark code.."
-    git clone https://github.com/llvm/llvm-project
+    git clone --depth 1 https://github.com/weliveindetail/llvm-autojit-bench
 fi

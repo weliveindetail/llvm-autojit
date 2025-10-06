@@ -11,7 +11,7 @@ foreach(template_file ${shell_script_templates})
   list(APPEND shell_scripts ${configured_file})
 endforeach()
 
-install(PROGRAMS ${shell_scripts} ${python_scripts}
+install(PROGRAMS ${shell_scripts} ${python_scripts} bzip2-test.md5
   DESTINATION benchmark
   COMPONENT autojit-bench-scripts
 )

@@ -7,7 +7,7 @@ fi
 
 cd bzip2/build_autojit
 make \
-  CC="@CMAKE_INSTALL_PREFIX@/bin/clang" \
-  CXX="@CMAKE_INSTALL_PREFIX@/bin/clang++" \
+  CC="clang" \
+  CXX="clang++" \
   CFLAGS="$CFLAGS" \
-  LDFLAGS="-fuse-ld=lld -B@CMAKE_INSTALL_PREFIX@/bin -Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -Wl,--no-gc-sections -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime -rdynamic"
+  LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime -rdynamic"

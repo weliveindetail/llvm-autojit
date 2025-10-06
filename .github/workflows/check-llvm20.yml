@@ -14,10 +14,17 @@ jobs:
       uses: actions/checkout@v4
     - name: Pull docker image
       run: docker pull weliveindetail/ubuntu-llvm20:22.04
-    - name: Build and test in docker container
+    - name: Run regression tests
       run: |
         docker run --rm \
           -v ${{ github.workspace }}:/workspace/llvm-autojit \
           -w /workspace \
           weliveindetail/ubuntu-llvm20:22.04 \
-          ./llvm-autojit/benchmark/ubuntu2204/docker-build.sh
+          ./llvm-autojit/benchmark/ubuntu2204/docker-tests.sh
+    - name: Build sample projects
+      run: |
+        docker run --rm \
+          -v ${{ github.workspace }}:/workspace/llvm-autojit \
+          -w /workspace \
+          weliveindetail/ubuntu-llvm20:22.04 \
+          ./llvm-autojit/benchmark/ubuntu2204/docker-samples.sh
