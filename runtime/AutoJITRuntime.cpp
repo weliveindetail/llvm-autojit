@@ -13,6 +13,7 @@
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Error.h"
@@ -296,6 +297,7 @@ void loadModule(LLJIT &JIT, StringRef FilePath) {
     }
     AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Turn into declaration " << GV.getName() << "\n");
     GV.dropAllReferences();
+    GV.setComdat(nullptr);
     GV.setInitializer(nullptr);
     GV.setLinkage(GlobalValue::ExternalLinkage);
   }
@@ -339,6 +341,13 @@ void loadModule(LLJIT &JIT, StringRef FilePath) {
   for (GlobalAlias *GA : DropAliases) {
     GA->replaceAllUsesWith(GA->getAliasee());
     GA->eraseFromParent();
+  }
+
+  bool DebugInfoBroken;
+  if (verifyModule(*M, &dbgs(), &DebugInfoBroken)) {
+    errs() << "autojit-runtime: Bailing out due to broken module " << M->getName()
+           << (DebugInfoBroken ? " (with broken debug info)" : " ") << "\n";
+    exit(1);
   }
 
   // Add the module to the JIT

@@ -1,4 +1,4 @@
-; RUN: opt --load-pass-plugin=%autojit_plugin -passes=AutoJIT -S %s -o - | FileCheck %s
+; RUN: opt --load-pass-plugin=%autojit_plugin -passes=AutoJIT,verify -S %s -o - | FileCheck %s
 
 ; ModuleID = '/workspace/llvm-autojit/test/trampoline.ll'
 source_filename = "/workspace/llvm-autojit/test/trampoline.cpp"
