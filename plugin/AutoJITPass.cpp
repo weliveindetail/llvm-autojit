@@ -92,7 +92,6 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
 
     // Find functions that need trampolines
     SmallVector<Function *, 16> LazifyFns;
-    auto ModName = M.getName();
     for (Function &F : M) {
       if (F.isDeclaration())
         continue;
@@ -127,7 +126,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
 
     for (Function *F : LazifyFns) {
       auto FnName = F->getName();
-      auto FnGUID = uniqueGUID(ModName, FnName);
+      auto FnGUID = uniqueGUID(M.getSourceFileName(), FnName);
       if (LLVM_UNLIKELY(AutoJITDebug)) {
         errs() << "autojit-plugin: Lazify function " << FnName << " as "
                << guidToFnName(FnGUID) << "\n";
@@ -187,7 +186,7 @@ private:
 
   std::string getModuleGUID(const Module &M) {
     // Get the original source file path from the module
-    std::string SourcePath = M.getName().str();
+    std::string SourcePath = M.getSourceFileName();
     if (SourcePath.empty()) {
       errs() << "autojit-plugin error: Invalid source path in module: "
              << SourcePath << "\n";
