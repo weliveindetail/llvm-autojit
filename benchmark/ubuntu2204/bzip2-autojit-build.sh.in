@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 
+clang="clang"
 CFLAGS="-O0 -g -fpass-plugin=@CMAKE_INSTALL_PREFIX@/lib/autojit.so"
+LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime -rdynamic"
+
 if [ -n "$AUTOJIT_DEBUG" ]; then
-    CFLAGS="$CFLAGS -Xclang -load -Xclang @CMAKE_INSTALL_PREFIX@/lib/autojit.so -mllvm -autojit-debug"
+  # Enable debug output from the plugin
+  CFLAGS="$CFLAGS -Xclang -load -Xclang @CMAKE_INSTALL_PREFIX@/lib/autojit.so -mllvm -autojit-debug"
+fi
+
+if [ "@AUTOJIT_BUILD_UNIFIED@" = "On" ]; then
+  # Use the just-built compiler and linker
+  LDFLAGS="$LDFLAGS -fuse-ld=lld -B@CMAKE_INSTALL_PREFIX@/bin"
+  clang="@CMAKE_INSTALL_PREFIX@/bin/clang"
 fi
 
 cd bzip2/build_autojit
-make \
-  CC="clang" \
-  CXX="clang++" \
-  CFLAGS="$CFLAGS" \
-  LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime -rdynamic"
+make CC="$clang" CXX="$clang++" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
