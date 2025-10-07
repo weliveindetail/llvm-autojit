@@ -1,5 +1,6 @@
 import os
 import lit.formats
+import subprocess
 from pathlib import Path
 
 config.name = 'AutoJIT'
@@ -37,3 +38,19 @@ if config.build_type == "Debug":
 
 if config.enable_orc_rt == "On":
     config.available_features.add('orc-rt')
+
+def check_output(cmd, libname: str) -> bool:
+    o = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+    for l in o.splitlines():
+        if libname in l:
+            return True
+    return False
+
+try:
+    runtime = Path(config.autojit_runtime_dir) / "libautojit-runtime.so"
+    if check_output(["ldd", str(runtime)], "libc++.so"):
+        config.available_features.add('libcxx')
+    else:
+        config.available_features.add('libstdcxx')
+except subprocess.CalledProcessError as ex:
+    print(f"Failed to run ldd on {str(runtime)}: {ex}")
