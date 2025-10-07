@@ -18,6 +18,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
@@ -68,7 +69,7 @@ LLVM_ATTRIBUTE_USED void linkComponents() {
          << (void *)&llvm_orc_registerJITLoaderGDBAllocAction;
 }
 
-static std::unique_ptr<LLJIT> g_jit;
+static ManagedStatic<std::unique_ptr<LLJIT>> g_jit;
 static std::unordered_set<const char *> g_materialized;
 static std::vector<const char *> g_registered_modules;
 static std::mutex g_materialize_mutex;
@@ -375,7 +376,7 @@ private:
 #endif
 
 LLJIT &initializeAutoJIT() {
-  if (!g_jit) {
+  if (*g_jit == nullptr) {
     ExitOnError ExitOnErr("autojit-runtime: ");
     initializeAutoJITDebug();
     //auto Exe = dlopenHostProcess();
@@ -471,10 +472,11 @@ LLJIT &initializeAutoJIT() {
       loadModule(**J, Path);
 
     g_registered_modules.clear();
-    g_jit = std::move(*J);
+    std::atexit(llvm_shutdown);
+    *g_jit = std::move(*J);
   }
 
-  return *g_jit;
+  return **g_jit;
 }
 } // namespace
 

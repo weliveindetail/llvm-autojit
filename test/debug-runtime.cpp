@@ -19,9 +19,9 @@
 // CHECK: autojit-runtime: Materialized function __autojit_fn_{{[0-9]*}} at address 0x{{[0-9a-f]*}}
 //
 // CHECK: Ending ExecutionSession
-// CHECK: Destroying JITDylib <Process Symbols>
-// CHECK: Destroying JITDylib <Platform>
-// CHECK: Destroying JITDylib main
+// CHECK-DAG: Destroying JITDylib <Process Symbols>
+// CHECK-DAG: Destroying JITDylib <Platform>
+// CHECK-DAG: Destroying JITDylib main
 //
 int main(int argc, char *argv[]) {
   return argc - 1;
