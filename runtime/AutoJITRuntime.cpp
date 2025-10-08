@@ -443,12 +443,11 @@ LLJIT &initializeAutoJIT() {
 //      return &JD;
 //    });
 
-    auto J = B.create();
-    if (!J) {
-      errs() << "autojit-runtime: Failed to create JIT: " << J.takeError()
-             << "\n";
-      exit(1);
-    }
+    auto JTMB = ExitOnErr(JITTargetMachineBuilder::detectHost());
+    //JTMB.getOptions().EmulatedTLS = false;
+    B.setJITTargetMachineBuilder(JTMB);
+
+    auto J = ExitOnErr(B.create());
 
     //(*J)->defaultLinkOrder().begin();
 
@@ -458,10 +457,10 @@ LLJIT &initializeAutoJIT() {
     //    std::move(Exe), (*J)->getDataLayout().getGlobalPrefix(), FindAllSyms,
     //    nullptr));
 
-    ExitOnErr(enableDebuggerSupport(**J));
+    ExitOnErr(enableDebuggerSupport(*J));
 
     AUTOJIT_DEBUG({
-      (*J)->getIRTransformLayer().setTransform(
+      J->getIRTransformLayer().setTransform(
           [](ThreadSafeModule TSM,
              MaterializationResponsibility &R) -> Expected<ThreadSafeModule> {
             auto Err = TSM.withModuleDo([&](Module &M) -> Error {
@@ -478,11 +477,11 @@ LLJIT &initializeAutoJIT() {
     });
 
     for (const char *Path : g_registered_modules)
-      loadModule(**J, Path);
+      loadModule(*J, Path);
 
     g_registered_modules.clear();
     std::atexit(llvm_shutdown);
-    *g_jit = std::move(*J);
+    *g_jit = std::move(J);
   }
 
   return **g_jit;
