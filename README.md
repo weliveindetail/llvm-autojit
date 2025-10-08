@@ -5,7 +5,7 @@ plugin that outlines function definitons to disk and a runtime library that
 compiles them on-demand. For now please consider it a case study. It works for
 simple exmaples on Linux, but it's not at all ready for production.
 
-## Build
+## Unified Build
 
 Ubuntu 22.04 (x86_64):
 ```
@@ -20,7 +20,6 @@ Ubuntu 22.04 (x86_64):
         -DLLVM_TARGETS_TO_BUILD="ARM;AArch64;X86" \
         -DLLVM_ENABLE_PROJECTS="clang;lld" \
         -DLLVM_ENABLE_RUNTIMES="compiler-rt" \
-        -DLLVM_ENABLE_LIBCXX=On \
         -DLLVM_BUILD_LLVM_DYLIB=On \
         -DLLVM_LINK_LLVM_DYLIB=On \
         -DLLVM_USE_LINKER=lld \
@@ -29,6 +28,7 @@ Ubuntu 22.04 (x86_64):
         -DAUTOJIT_ENABLE_ORC_RUNTIME=On \
         -DAUTOJIT_ENABLE_TPDE=On
 
+> ninja -C runtimes/runtimes-bins compiler-rt/lib/orc/all
 > ninja -C build check-autojit
 Running regression tests with TPDE: On
 -- Testing: 12 tests, 12 workers --
