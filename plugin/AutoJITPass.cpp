@@ -70,6 +70,29 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       return PreservedAnalyses::all();
     }
 
+    // Find functions that need trampolines
+    SmallVector<Function *, 16> LazifyFns;
+    for (Function &F : M) {
+      if (F.isDeclaration())
+        continue;
+      if (isStaticInit(F))
+        continue;
+      if (F.hasLocalLinkage()) {
+        continue;
+      }
+      if (F.hasAvailableExternallyLinkage())
+        continue;
+
+      LazifyFns.push_back(&F);
+    }
+
+    if (LazifyFns.empty()) {
+      if (LLVM_UNLIKELY(AutoJITDebug)) {
+        errs() << "autojit-plugin: Skipping module " << M.getName() << " (no functions to lazify)\n";
+      }
+      return PreservedAnalyses::all();
+    }
+
     if (LLVM_UNLIKELY(AutoJITDebug)) {
       errs() << "autojit-plugin: Processing module " << M.getName() << "\n";
     }
@@ -103,29 +126,6 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       if (LLVM_UNLIKELY(AutoJITDebug)) {
         errs() << "autojit-plugin: Keep variable " << GV.getName() << "\n";
       }
-    }
-
-    // Find functions that need trampolines
-    SmallVector<Function *, 16> LazifyFns;
-    for (Function &F : M) {
-      if (F.isDeclaration())
-        continue;
-      if (isStaticInit(F))
-        continue;
-      if (F.hasLocalLinkage()) {
-        continue;
-      }
-      if (F.hasAvailableExternallyLinkage())
-        continue;
-
-      LazifyFns.push_back(&F);
-    }
-
-    if (LazifyFns.empty()) {
-      if (LLVM_UNLIKELY(AutoJITDebug)) {
-        errs() << "autojit-plugin: Skipping module " << M.getName() << " (no functions to lazify)\n";
-      }
-      return PreservedAnalyses::all();
     }
 
     // Save module for function importing at runtime
