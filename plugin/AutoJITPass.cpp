@@ -53,8 +53,12 @@ static std::string guidToFnName(GlobalValue::GUID Guid) {
 
 struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
+    std::string GUID = getModuleGUID(M);
+    std::string FileStem = "/tmp/autojit_" + GUID;
+    StringRef FileExt = AutoJITDebug ? ".ll" : ".bc";
+
     if (LLVM_UNLIKELY(AutoJITDebug)) {
-      saveModule(M, "_incoming");
+      saveModule(M, FileStem + "_incoming" + FileExt);
     }
 
     if (M.getNamedValue("__llvm_autojit_register") ||
@@ -93,6 +97,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       return PreservedAnalyses::all();
     }
 
+    // From here on we apply modifications
     if (LLVM_UNLIKELY(AutoJITDebug)) {
       errs() << "autojit-plugin: Processing module " << M.getName() << "\n";
     }
@@ -129,7 +134,8 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     }
 
     // Save module for function importing at runtime
-    std::string FilePath = saveModule(M, "");
+    M.setModuleIdentifier(FileStem);
+    std::string FilePath = saveModule(M, FileStem + FileExt);
 
     // All further changes only affect static code
     Type *VoidTy = Type::getVoidTy(Context);
@@ -182,7 +188,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     appendToUsed(M, InitFn);
 
     if (LLVM_UNLIKELY(AutoJITDebug)) {
-      std::string FilePath = saveModule(M, "_static");
+      saveModule(M, FileStem + "_static" + FileExt);
     }
 
     return PreservedAnalyses::none();
@@ -219,14 +225,10 @@ private:
     return Result.str().str();
   }
 
-  std::string saveModule(const Module &M, StringRef Suffix) {
-    std::string GUID = getModuleGUID(M);
-    std::string FileExtension = AutoJITDebug ? ".ll" : ".bc";
-    std::string FilePath =
-        "/tmp/autojit_" + GUID + Suffix.str() + FileExtension;
+  std::string saveModule(const Module &M, Twine Path) {
+    std::string FilePath = Path.str();
 
     // Save to temporary file
-    // TODO: Include content hash in name
     std::error_code EC;
     raw_fd_ostream OS(FilePath, EC, sys::fs::OF_None);
     if (EC) {

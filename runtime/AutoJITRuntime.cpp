@@ -3,14 +3,17 @@
 
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/ExecutionEngine/ObjectCache.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/Debugging/DebuggerSupport.h"
 #include "llvm/ExecutionEngine/Orc/EPCDynamicLibrarySearchGenerator.h"
 #include "llvm/ExecutionEngine/Orc/IRTransformLayer.h"
+#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h"
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
@@ -21,6 +24,8 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/SmallVectorMemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
@@ -385,6 +390,69 @@ void loadModule(LLJIT &JIT, StringRef FilePath, LookupFn HaveHostSymbol) {
   }
 }
 
+ExitOnError ExitOnErr("autojit-runtime: ");
+
+class CachingCompiler : public IRCompileLayer::IRCompiler {
+public:
+  CachingCompiler(JITTargetMachineBuilder JTMB)
+      : IRCompiler(options(JTMB)), JTMB(std::move(JTMB)) {
+    TM = ExitOnErr(this->JTMB.createTargetMachine());
+  }
+
+  Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
+    constexpr bool IsText = false;
+    constexpr bool RequiresNullTerminator = false;
+
+    // TODO: verify with input hash
+    std::string Name = cacheFileName(M);
+    if (auto CachedObject = MemoryBuffer::getFile(Name, IsText,
+                                                  RequiresNullTerminator)) {
+      AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Loading module from cache "
+                           << Name << " (source: " << M.getSourceFileName()
+                           << ")\n");
+      return std::move(*CachedObject);
+    }
+
+    SmallVector<char, 0> Buffer;
+    compileObject(M, Buffer);
+
+    std::error_code EC;
+    raw_fd_ostream OS(Name, EC, sys::fs::OF_None);
+    OS.write(Buffer.data(), Buffer.size());
+
+    return std::make_unique<SmallVectorMemoryBuffer>(
+        std::move(Buffer), Name, RequiresNullTerminator);
+  }
+
+private:
+  IRSymbolMapper::ManglingOptions options(const JITTargetMachineBuilder &JTMB) {
+    return irManglingOptionsFromTargetOptions(JTMB.getOptions());
+  }
+
+  std::string cacheFileName(const Module &M) {
+    std::string CacheFile = M.getModuleIdentifier();
+    if (CacheFile.ends_with(".ll") || CacheFile.ends_with(".bc"))
+      CacheFile = CacheFile.substr(0, CacheFile.size() - 3);
+    return CacheFile + ".o";
+  }
+
+  void compileObject(Module &M, SmallVectorImpl<char> &Buffer) {
+    if (M.getDataLayout().isDefault())
+      M.setDataLayout(TM->createDataLayout());
+    MCContext *Ctx;
+    legacy::PassManager PM;
+    raw_svector_ostream ObjStream(Buffer);
+    if (TM->addPassesToEmitMC(PM, Ctx, ObjStream)) {
+      errs() << "autojit-runtime: Target does not support JIT MC emission\n";
+      exit(1);
+    }
+    PM.run(M);
+  }
+
+  JITTargetMachineBuilder JTMB;
+  std::unique_ptr<TargetMachine> TM;
+};
+
 #if defined(AUTOJIT_ENABLE_TPDE)
 class TPDECompiler : public IRCompileLayer::IRCompiler {
 public:
@@ -413,7 +481,6 @@ private:
 
 LLJIT &initializeAutoJIT() {
   if (*g_jit == nullptr) {
-    ExitOnError ExitOnErr("autojit-runtime: ");
     initializeAutoJITDebug();
     //auto Exe = dlopenHostProcess();
 
@@ -444,6 +511,11 @@ LLJIT &initializeAutoJIT() {
     B.setPlatformSetUp(orc::ExecutorNativePlatform(
         MemoryBuffer::getMemBuffer(OrcRuntimeData, "orc_rt", false)));
 #endif
+
+    B.CreateCompileFunction = [&](JITTargetMachineBuilder JTMB)
+        -> Expected<std::unique_ptr<IRCompileLayer::IRCompiler>> {
+      return std::make_unique<CachingCompiler>(std::move(JTMB));
+    };
 
     if (useTPDE()) {
 #if defined(AUTOJIT_ENABLE_TPDE)
