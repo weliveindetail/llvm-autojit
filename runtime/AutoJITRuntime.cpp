@@ -545,7 +545,7 @@ extern "C" void __llvm_autojit_materialize(void **GuidInPtrOut) {
   std::string ImplName = guidToFnName(Guid);
   auto FuncSymbol = JIT.lookup(ImplName);
   if (!FuncSymbol) {
-    errs() << "autojit-runtime: Function " << ImplName << " not found: " << FuncSymbol.takeError() << "\n";
+    errs() << "autojit-runtime: " << toString(FuncSymbol.takeError())  << "\n";
     exit(1);
   }
 
