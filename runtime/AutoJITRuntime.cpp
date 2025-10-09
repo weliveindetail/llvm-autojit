@@ -256,9 +256,9 @@ void loadModule(LLJIT &JIT, StringRef FilePath, LookupFn HaveHostSymbol) {
       continue;
     }
     if (F.hasAvailableExternallyLinkage()) {
-      AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Drop " << F.getName() << " (dupe for cross-module inlining)\n");
-      DropFunctions.insert(&F);
+      AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Turn into declaration " << F.getName() << " (available-externally linkage)\n");
       F.dropAllReferences();
+      F.setLinkage(GlobalValue::ExternalLinkage);
       continue;
     }
     if (F.hasLocalLinkage()) {
