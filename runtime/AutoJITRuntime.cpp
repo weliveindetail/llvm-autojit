@@ -187,7 +187,19 @@ static bool isStaticInit(const Function &F) {
   return false;
 }
 
-void loadModule(LLJIT &JIT, StringRef FilePath) {
+static sys::DynamicLibrary dlopenHostProcess() {
+  std::string ErrMsg;
+  auto Exe = sys::DynamicLibrary::getPermanentLibrary(nullptr, &ErrMsg);
+  if (!Exe.isValid()) {
+    errs() << "autojit-runtime: Failed to dlopen main executable: " << ErrMsg
+           << "\n";
+    exit(1);
+  }
+  return Exe;
+}
+
+template <typename LookupFn>
+void loadModule(LLJIT &JIT, StringRef FilePath, LookupFn HaveHostSymbol) {
   auto Buffer = MemoryBuffer::getFile(FilePath);
   if (!Buffer) {
     errs() << "autojit-runtime: Failed to read IR file: " << FilePath << "\n";
@@ -294,6 +306,19 @@ void loadModule(LLJIT &JIT, StringRef FilePath) {
     if (GV.hasAtLeastLocalUnnamedAddr()) {
       AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Keep definiton for " << GV.getName() << " (local copy of unnamed_addr)\n");
       continue;
+    }
+    if (GV.hasWeakLinkage() || GV.hasLinkOnceLinkage()) {
+      if (!HaveHostSymbol(GV.getName())) {
+        AUTOJIT_DEBUG(dbgs()
+                      << "autojit-runtime: Keep definiton for " << GV.getName()
+                      << " (" << toString(GV.getLinkage())
+                      << " linkage an no host process symbol)\n");
+        continue;
+      }
+      AUTOJIT_DEBUG(
+          dbgs() << "autojit-runtime: Matched host process symbol for "
+                 << GV.getName() << " (" << toString(GV.getLinkage())
+                 << " linkage)\n");
     }
     AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Turn into declaration " << GV.getName() << "\n");
     GV.dropAllReferences();
@@ -476,8 +501,21 @@ LLJIT &initializeAutoJIT() {
           });
     });
 
+    sys::DynamicLibrary HostProcess = dlopenHostProcess();
+    std::unordered_set<std::string> HostSymbolsCache;
+    auto HaveHostSymbol = [&](StringRef Name) {
+      std::string Tmp(Name.data(), Name.size());
+      if (HostSymbolsCache.contains(Tmp))
+        return true;
+      if (HostProcess.getAddressOfSymbol(Tmp.c_str())) {
+        HostSymbolsCache.insert(std::move(Tmp));
+        return true;
+      }
+      return false;
+    };
+
     for (const char *Path : g_registered_modules)
-      loadModule(*J, Path);
+      loadModule(*J, Path, HaveHostSymbol);
 
     g_registered_modules.clear();
     std::atexit(llvm_shutdown);
