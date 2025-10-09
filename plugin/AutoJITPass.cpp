@@ -4,6 +4,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
@@ -52,15 +53,25 @@ static std::string guidToFnName(GlobalValue::GUID Guid) {
 
 struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
+    if (LLVM_UNLIKELY(AutoJITDebug)) {
+      saveModule(M, "_incoming");
+    }
+
     if (M.getNamedValue("__llvm_autojit_register") ||
         M.getNamedValue("__llvm_autojit_materialize")) {
-      errs() << "autojit-plugin: Skipping module " << M.getName() << "\n";
+      errs() << "autojit-plugin: Skipping module " << M.getName() << " (uses reserved __llvm_autojit names)\n";
+      return PreservedAnalyses::all();
+    }
+
+    LLVMContext &Context = M.getContext();
+    PointerType *PtrTy = PointerType::get(Context, 0);
+    if (Intrinsic::getDeclarationIfExists(&M, Intrinsic::threadlocal_address, {PtrTy})) {
+      errs() << "autojit-plugin: Skipping module " << M.getName() << " (thread-local storage not yet supported)\n";
       return PreservedAnalyses::all();
     }
 
     if (LLVM_UNLIKELY(AutoJITDebug)) {
       errs() << "autojit-plugin: Processing module " << M.getName() << "\n";
-      saveModule(M, "_incoming");
     }
 
     // Local definitions get exposed and must not collide. This affects both,
@@ -108,7 +119,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
 
     if (LazifyFns.empty()) {
       if (LLVM_UNLIKELY(AutoJITDebug)) {
-        errs() << "autojit-plugin: Skipping module " << M.getName() << "\n";
+        errs() << "autojit-plugin: Skipping module " << M.getName() << " (no functions to lazify)\n";
       }
       return PreservedAnalyses::all();
     }
@@ -117,7 +128,6 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     std::string FilePath = saveModule(M, "");
 
     // All further changes only affect static code
-    LLVMContext &Context = M.getContext();
     Type *VoidTy = Type::getVoidTy(Context);
     PointerType *FnPtrTy = PointerType::get(Context, 0);
     FunctionType *MaterializeFnTy = FunctionType::get(VoidTy, {FnPtrTy}, false);

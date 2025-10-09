@@ -6,7 +6,7 @@ from pathlib import Path
 config.name = 'AutoJIT'
 config.test_format = lit.formats.ShTest(True)
 
-config.suffixes = ['.cpp', '.ll']
+config.suffixes = ['.cpp', '.c', '.ll']
 config.excludes = ["Inputs"]
 config.test_source_root = os.path.dirname(__file__)
 

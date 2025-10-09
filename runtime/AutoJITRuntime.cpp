@@ -471,7 +471,7 @@ LLJIT &initializeAutoJIT() {
 //    });
 
     auto JTMB = ExitOnErr(JITTargetMachineBuilder::detectHost());
-    //JTMB.getOptions().EmulatedTLS = false;
+    JTMB.getOptions().EmulatedTLS = false;
     B.setJITTargetMachineBuilder(JTMB);
 
     auto J = ExitOnErr(B.create());
