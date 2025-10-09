@@ -556,7 +556,7 @@ LLJIT &initializeAutoJIT() {
     //    std::move(Exe), (*J)->getDataLayout().getGlobalPrefix(), FindAllSyms,
     //    nullptr));
 
-    ExitOnErr(enableDebuggerSupport(*J));
+    AUTOJIT_DEBUG(ExitOnErr(enableDebuggerSupport(*J)));
 
     AUTOJIT_DEBUG({
       J->getIRTransformLayer().setTransform(
