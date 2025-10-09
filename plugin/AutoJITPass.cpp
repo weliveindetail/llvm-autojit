@@ -85,7 +85,11 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
         }
         continue;
       }
-      GV.setDSOLocal(false);
+      // TODO: The assembler, emits 32-bit relocations for DSO-locals, which
+      // will be out-of-range for our JITed code. The verifier prevents us from
+      // removing the flag in some cases though.
+      if (GV.hasDefaultVisibility() || GV.hasExternalWeakLinkage())
+        GV.setDSOLocal(false);
       if (GV.hasLocalLinkage()) {
         std::string NewName = (GV.getName() + UniquePostfix).str();
         if (LLVM_UNLIKELY(AutoJITDebug)) {

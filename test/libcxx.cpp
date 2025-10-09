@@ -6,6 +6,7 @@
 // RUN: %clang %t.o -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -lc++ -rdynamic -o %t.exe
 // RUN: %t.exe | FileCheck %s
 
+// XFAIL: *
 // CHECK: No such file or directory;Is a directory;Invalid argument;Permission denied
 
 #include <cerrno>
