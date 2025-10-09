@@ -141,6 +141,11 @@ static std::string toString(GlobalValue::LinkageTypes LT) {
   return "<unknown>";
 }
 
+static raw_ostream &operator<<(raw_ostream &OS, GlobalValue::LinkageTypes LT) {
+  OS << toString(LT);
+  return OS;
+}
+
 static StringRef toString(GlobalVariable::UnnamedAddr UA) {
   switch (UA) {
   case GlobalVariable::UnnamedAddr::None:
@@ -309,16 +314,14 @@ void loadModule(LLJIT &JIT, StringRef FilePath, LookupFn HaveHostSymbol) {
     }
     if (GV.hasWeakLinkage() || GV.hasLinkOnceLinkage()) {
       if (!HaveHostSymbol(GV.getName())) {
-        AUTOJIT_DEBUG(dbgs()
-                      << "autojit-runtime: Keep definiton for " << GV.getName()
-                      << " (" << toString(GV.getLinkage())
-                      << " linkage an no host process symbol)\n");
+        AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Keep definiton for "
+                             << GV.getName() << " (" << GV.getLinkage()
+                             << " linkage and no host process symbol)\n");
         continue;
       }
       AUTOJIT_DEBUG(
           dbgs() << "autojit-runtime: Matched host process symbol for "
-                 << GV.getName() << " (" << toString(GV.getLinkage())
-                 << " linkage)\n");
+                 << GV.getName() << " (" << GV.getLinkage() << " linkage)\n");
     }
     AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Turn into declaration " << GV.getName() << "\n");
     GV.dropAllReferences();
@@ -347,9 +350,8 @@ void loadModule(LLJIT &JIT, StringRef FilePath, LookupFn HaveHostSymbol) {
       std::string Info;
       if (auto *AliasFn = dyn_cast<Function>(GA.getAliasee())) {
         raw_string_ostream(Info)
-            << toString(GA.getLinkage()) << " " << toString(GA.getUnnamedAddr())
-            << " -> " << toString(AliasFn->getLinkage()) << " "
-            << toString(AliasFn->getUnnamedAddr());
+            << GA.getLinkage() << " " << toString(GA.getUnnamedAddr()) << " -> "
+            << AliasFn->getLinkage() << " " << toString(AliasFn->getUnnamedAddr());
       } else {
         Info = "no function alias";
       }
