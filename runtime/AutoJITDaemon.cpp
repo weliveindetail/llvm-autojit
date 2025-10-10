@@ -86,7 +86,8 @@ int main(int argc, char *argv[]) {
                 ExecutorAddr::fromPtr(autojit_rpc_register);
             S.bootstrapSymbols()["autojit_rpc_materialize"] =
                 ExecutorAddr::fromPtr(autojit_rpc_materialize);
-
+            S.setDispatcher(
+                std::make_unique<SimpleRemoteEPCServer::ThreadDispatcher>());
             return Error::success();
           },
           STDIN_FILENO, // Read from stdin

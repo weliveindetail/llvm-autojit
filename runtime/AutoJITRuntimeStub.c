@@ -430,35 +430,21 @@ static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *data,
   DEBUG_LOG("Received result with seqno %lu, arg_size=%zu\n", result_msg.seqno,
             result_msg.arg_size);
 
-  /* Extract WrapperFunctionResult: [size:8][data:size] */
-  /* For void returns, the result may be empty (0 bytes) */
+  /* The Result message arg_bytes contain the raw WrapperFunctionResult data.
+   * The size is already in result_msg.arg_size (no size prefix in the data).
+   * For void returns or out-of-band errors, the result may be empty (0 bytes).
+   */
   if (result_msg.arg_size == 0) {
     *result = NULL;
     *result_size = 0;
   } else {
-    if (result_msg.arg_size < 8) {
-      ERROR_LOG(
-          "Result message too small: expected at least 8 bytes, got %zu\n",
-          result_msg.arg_size);
+    *result = malloc(result_msg.arg_size);
+    if (!*result) {
       free_epc_message(&result_msg);
       return -1;
     }
-
-    uint64_t data_size;
-    memcpy(&data_size, result_msg.arg_bytes, 8);
-
-    if (data_size > 0) {
-      *result = malloc(data_size);
-      if (!*result) {
-        free_epc_message(&result_msg);
-        return -1;
-      }
-      memcpy(*result, result_msg.arg_bytes + 8, data_size);
-      *result_size = data_size;
-    } else {
-      *result = NULL;
-      *result_size = 0;
-    }
+    memcpy(*result, result_msg.arg_bytes, result_msg.arg_size);
+    *result_size = result_msg.arg_size;
   }
 
   free_epc_message(&result_msg);
