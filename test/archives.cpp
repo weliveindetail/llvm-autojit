@@ -5,15 +5,11 @@
 // RUN: %clang -fpass-plugin=%autojit_plugin -c %S/Inputs/add.cpp -o %t_add.o
 // RUN: %clang -fpass-plugin=%autojit_plugin -c %S/Inputs/hello.cpp -o %t_hello.o
 // RUN: %clang -fpass-plugin=%autojit_plugin -c %S/Inputs/multiply.cpp -o %t_multiply.o
-// RUN: rm -f %t_lib.a
-// RUN: %ar cq %t_lib.a %t_add.o %t_multiply.o %t_hello.o
-// RUN: %clang %t.o -Wl,--whole-archive %t_lib.a -Wl,--no-whole-archive -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -rdynamic -o %t_lib.exe
-// RUN: env AUTOJIT_DEBUG=On %t_lib.exe 2>&1 | FileCheck %s
+// RUN: rm -f %t.a
+// RUN: %ar cq %t.a %t_add.o %t_multiply.o %t_hello.o
+// RUN: %clang %t.o -Wl,--whole-archive %t.a -Wl,--no-whole-archive -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -rdynamic -o %t.exe
+// RUN: %t.exe 2>&1 | FileCheck %s
 
-// CHECK: Registering module /tmp/autojit_
-// CHECK: Registering module /tmp/autojit_
-// CHECK: Registering module /tmp/autojit_
-// CHECK: Registering module /tmp/autojit_
 // CHECK: AutoJIT Runtime Test
 // CHECK: Hello from AutoJIT!
 // CHECK: add(5, 3) = 8

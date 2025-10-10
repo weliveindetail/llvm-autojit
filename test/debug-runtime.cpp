@@ -16,7 +16,7 @@
 // CHECK: Query successfully lodged
 // CHECK: Dispatching MaterializationUnits...
 // CHECK: Done dispatching MaterializationUnits.
-// CHECK: autojit-runtime: Materialized function __autojit_fn_{{[0-9]*}} at address 0x{{[0-9a-f]*}}
+// CHECK: [autojit-runtime] Materialized __autojit_fn_{{[0-9]*}} at address 0x{{[0-9a-f]*}}
 //
 // CHECK: Ending ExecutionSession
 // CHECK-DAG: Destroying JITDylib <Process Symbols>

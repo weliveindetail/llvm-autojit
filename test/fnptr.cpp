@@ -2,7 +2,7 @@
 //
 // RUN: %clang %s -o %t.exe -fpass-plugin=%autojit_plugin \
 // RUN:        -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -rdynamic
-// RUN: env AUTOJIT_DEBUG=On %t.exe | FileCheck %s
+// RUN: %t.exe | FileCheck %s
 //
 // CHECK: Address of foo static = [[ADDR:[0-9a-f]+]]
 // CHECK: Address of foo lazy = [[ADDR]]

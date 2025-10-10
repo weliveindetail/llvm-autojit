@@ -68,7 +68,7 @@ add_custom_target(install-autojit-headers
 )
 
 # FIXME: We need a separate install-autojit-plugin target
-add_dependencies(install-autojit install-autojit-stub install-autojitd install-autojit-runtime install-autojit-headers)
+add_dependencies(install-autojit install-autojit-runtime install-autojit-headers)
 
 add_subdirectory(benchmark)
 add_subdirectory(test)

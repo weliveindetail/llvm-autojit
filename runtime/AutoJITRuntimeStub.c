@@ -1,12 +1,3 @@
-/*
- * AutoJIT Runtime Stub - Pure C implementation
- *
- * This is a minimal, self-contained stub that forks the autojitd daemon
- * and communicates via LLVM's SimpleRemoteEPC protocol over a Unix socketpair.
- *
- * No external dependencies except libc and pthread.
- */
-
 #include "AutoJITRuntime.h"
 
 #include <errno.h>
@@ -387,14 +378,14 @@ static int parse_setup_message(const epc_message_t *msg) {
  * RPC Call Wrapper
  * ============================================================================ */
 
-static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *args, size_t args_size,
+static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *data, size_t args_size,
                                  uint8_t **result, size_t *result_size) {
     /* Send CallWrapper message */
     epc_message_t call_msg = {
         .opcode = OPCODE_CALLWRAPPER,
         .seqno = __sync_fetch_and_add(&g_next_seqno, 1),
         .tag_addr = fn_addr,
-        .arg_bytes = (uint8_t *)args,
+        .arg_bytes = (uint8_t *)data,
         .arg_size = args_size
     };
 
@@ -413,7 +404,7 @@ static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *args, 
     }
 
     if (result_msg.opcode != OPCODE_RESULT) {
-        ERROR_LOG("Expected Result message, got opcode 0x%02x\n", result_msg.opcode);
+        ERROR_LOG("Expected Result message, got opcode 0x%02lx\n", result_msg.opcode);
         free_epc_message(&result_msg);
         return -1;
     }
@@ -546,7 +537,7 @@ static void initialize_daemon(void) {
     }
 
     if (setup_msg.opcode != OPCODE_SETUP) {
-        ERROR_LOG("Expected Setup message, got opcode 0x%02x\n", setup_msg.opcode);
+        ERROR_LOG("Expected Setup message, got opcode 0x%02lx\n", setup_msg.opcode);
         free_epc_message(&setup_msg);
         cleanup_daemon();
         exit(1);

@@ -1,0 +1,54 @@
+#pragma once
+
+#include "AutoJITConfig.h"
+
+#include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/IR/GlobalValue.h>
+#include <llvm/Support/Compiler.h>
+#include <llvm/Support/Debug.h>
+#include <llvm/Support/raw_ostream.h>
+
+#include <cstdint>
+#include <memory>
+#include <string>
+
+extern bool g_autojit_debug;
+
+#if defined(NDEBUG)
+#define DBG() for (bool _c = false; _c; _c = false)                            \
+                ::llvm::nulls()
+#else
+#define DBG() for (bool _c = g_autojit_debug; _c; _c = false)                  \
+                ::llvm::dbgs() << "[autojit-runtime] "
+#endif
+
+#define LOG() ::llvm::errs() << "[autojit-runtime] "
+
+extern "C" {
+
+// Linker fills in relocations for the bounds of the linked liborc_rt.a, which
+// resolve to the actual memory load addresses at startup.
+extern const unsigned char _binary_liborc_rt_start[];
+extern const unsigned char _binary_liborc_rt_end[];
+}
+
+namespace autojit {
+
+void initializeDebugLog();
+
+class AutoJIT {
+public:
+  static AutoJIT &get();
+  uint64_t lookup(const char *Symbol);
+
+  AutoJIT(llvm::orc::LLJITBuilder &B);
+  ~AutoJIT();
+
+private:
+  std::unique_ptr<llvm::orc::LLJIT> JIT_;
+};
+
+void submitModule(const char *);
+std::string guidToFnName(llvm::GlobalValue::GUID Guid);
+
+} // namespace autojit
