@@ -50,7 +50,6 @@ using namespace llvm::orc;
 
 bool g_autojit_debug = false;
 bool g_autojit_debug_initialized = false;
-static std::vector<std::string> ModulesRegistered_;
 
 #if !defined(NDEBUG)
 namespace llvm {
@@ -170,8 +169,7 @@ static sys::DynamicLibrary dlopenHostProcess() {
   return Exe;
 }
 
-template <typename LookupFn>
-ThreadSafeModule loadModule(StringRef FilePath, LookupFn HaveHostSymbol) {
+ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
   auto Buffer = MemoryBuffer::getFile(FilePath);
   if (!Buffer) {
     LOG() << "Failed to read IR file: " << FilePath << "\n";
@@ -276,7 +274,7 @@ ThreadSafeModule loadModule(StringRef FilePath, LookupFn HaveHostSymbol) {
       continue;
     }
     if (GV.hasWeakLinkage() || GV.hasLinkOnceLinkage()) {
-      if (!HaveHostSymbol(GV.getName())) {
+      if (!haveHostSymbol(GV.getName())) {
         DBG() << "Keep definiton for " << GV.getName() << " ("
               << GV.getLinkage() << " linkage and no host process symbol)\n";
         continue;
@@ -435,7 +433,7 @@ autojit::AutoJIT::~AutoJIT() {
     LOG() << toString(std::move(Err));
 }
 
-autojit::AutoJIT::AutoJIT(LLJITBuilder &B) {
+autojit::AutoJIT::AutoJIT(LLJITBuilder &B) : HostProcess_(dlopenHostProcess()) {
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
@@ -503,45 +501,56 @@ autojit::AutoJIT::AutoJIT(LLJITBuilder &B) {
         return std::move(TSM);
       });
 #endif
-
-  sys::DynamicLibrary HostProcess = dlopenHostProcess();
-  std::unordered_set<std::string> HostSymbolsCache;
-  auto HaveHostSymbol = [&](StringRef Name) {
-    std::string Tmp(Name.data(), Name.size());
-    if (HostSymbolsCache.contains(Tmp))
-      return true;
-    if (HostProcess.getAddressOfSymbol(Tmp.c_str())) {
-      HostSymbolsCache.insert(std::move(Tmp));
-      return true;
-    }
-    return false;
-  };
-
-  // TODO: Synchronize with submitModule, once we get to dynamic registrations
-  for (const std::string &Path : ModulesRegistered_) {
-    ExitOnErr(JIT_->addIRModule(loadModule(Path, HaveHostSymbol)));
-  }
-
-  ModulesRegistered_.clear();
 }
 
-autojit::AutoJIT &autojit::AutoJIT::get() {
+autojit::AutoJIT &autojit::AutoJIT::get(std::vector<std::string> &NewModules) {
   static std::mutex Setup;
+  static std::mutex Register;
   static ManagedStatic<std::unique_ptr<autojit::AutoJIT>> Instance;
-  std::lock_guard<std::mutex> Lock(Setup);
 
-  if (!Instance.isConstructed()) {
-    LLJITBuilder Builder;
-    Builder.setExecutorProcessControl(
-        ExitOnErr(SelfExecutorProcessControl::Create()));
-    *Instance = std::unique_ptr<AutoJIT>(new AutoJIT(Builder));
-    std::atexit(llvm_shutdown);
+  {
+    std::lock_guard<std::mutex> Lock(Setup);
+    if (!Instance.isConstructed()) {
+      LLJITBuilder Builder;
+      Builder.setExecutorProcessControl(
+          ExitOnErr(SelfExecutorProcessControl::Create()));
+      *Instance = std::unique_ptr<AutoJIT>(new AutoJIT(Builder));
+      std::atexit(llvm_shutdown);
+    }
   }
+
+  if (!NewModules.empty()) {
+    // We can lock inside the condition here, because it's fine to execute the
+    // code below again as long as we don't process modules twice. It might
+    // happen a few times at startup, but it's cheaper than the additional
+    // locking on every get.
+    std::lock_guard<std::mutex> Lock(Register);
+    for (const std::string &Path : NewModules) {
+      ThreadSafeModule TSM = Instance->get()->loadModule(Path);
+      ExitOnErr(Instance->get()->submit(std::move(TSM)));
+    }
+    NewModules.clear();
+  }
+
   return **Instance;
 }
 
+llvm::Error autojit::AutoJIT::submit(llvm::orc::ThreadSafeModule Module) {
+  return JIT_->addIRModule(std::move(Module));
+}
+
+bool autojit::AutoJIT::haveHostSymbol(StringRef Name) const {
+  std::string Tmp(Name.data(), Name.size());
+  if (HostSymbolsCache_.contains(Tmp))
+    return true;
+  if (HostProcess_.getAddressOfSymbol(Tmp.c_str())) {
+    HostSymbolsCache_.insert(std::move(Tmp));
+    return true;
+  }
+  return false;
+}
+
 uint64_t autojit::AutoJIT::lookup(const char *Symbol) {
-  assert(ModulesRegistered_.empty() && "Modules are registered at startup");
   auto Fn = JIT_->lookup(Symbol);
   if (!Fn) {
     LOG() << toString(Fn.takeError()) << "\n";
@@ -549,15 +558,6 @@ uint64_t autojit::AutoJIT::lookup(const char *Symbol) {
   }
 
   return Fn->getValue();
-}
-
-void autojit::submitModule(const char *FilePath) {
-  static std::mutex Registration;
-  std::lock_guard<std::mutex> Lock(Registration);
-
-  autojit::initializeDebugLog();
-  DBG() << "Registering module " << FilePath << "\n";
-  ModulesRegistered_.emplace_back(FilePath);
 }
 
 std::string autojit::guidToFnName(GlobalValue::GUID Guid) {

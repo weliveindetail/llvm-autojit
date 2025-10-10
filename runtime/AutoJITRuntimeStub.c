@@ -541,9 +541,7 @@ static void initialize_daemon(void) {
   if (checkenv("AUTOJIT_WAIT_FOR_DEBUGGER")) {
     int c;
     printf("Waiting for debugger. Press ENTER to continue...");
-    while ((c = getchar()) != '\n' && c != EOF) {
-    }
-    getchar();
+    while ((c = getchar()) != '\n' && c != EOF) ;
   }
 
   /* Wait for Setup message from daemon */
@@ -600,6 +598,13 @@ void __llvm_autojit_register(const char *FilePath) {
   sps_buffer_init(&args, 256);
   sps_write_string(&args, FilePath);
 
+  DEBUG_LOG("Encoded %zu bytes for RPC call\n", args.size);
+  DEBUG_LOG("First 16 bytes (hex): ");
+  for (size_t i = 0; i < (args.size < 16 ? args.size : 16); i++) {
+    fprintf(stderr, "%02x ", args.data[i]);
+  }
+  fprintf(stderr, "\n");
+
   /* Call RPC function */
   uint8_t *result;
   size_t result_size;
@@ -627,8 +632,7 @@ void __llvm_autojit_materialize(void **GuidInPtrOut) {
   pthread_once(&g_init_once, initialize_daemon);
 
   uint64_t guid = (uint64_t)(uintptr_t)(*GuidInPtrOut);
-
-  DEBUG_LOG("Materializing function with GUID 0x%016lx\n", guid);
+  DEBUG_LOG("Requesting function: __llvm_autojit_fn_%lu\n", guid);
 
   /* Encode arguments: SPSArgList<uint64_t> */
   sps_buffer_t args;

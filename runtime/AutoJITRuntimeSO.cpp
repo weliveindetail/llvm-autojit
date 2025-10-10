@@ -10,6 +10,7 @@ LLVM_ATTRIBUTE_USED void linkComponents() {
   LOG() << (void *)&llvm_orc_registerJITLoaderGDBWrapper
         << (void *)&llvm_orc_registerJITLoaderGDBAllocAction;
 }
+static std::vector<std::string> ModulesRegistered_;
 
 static std::string hexstr(uint64_t Val) {
   static constexpr unsigned NumDigits = sizeof(Val) / 4;
@@ -31,7 +32,9 @@ extern "C" void __llvm_autojit_materialize(void **GuidInPtrOut) {
   }
 
   // Look up the function symbol
-  static thread_local auto &JIT = autojit::AutoJIT::get();
+  static thread_local auto &JIT = autojit::AutoJIT::get(ModulesRegistered_);
+  assert(ModulesRegistered_.empty() && "Modules on first access");
+
   uint64_t Guid = reinterpret_cast<uintptr_t>(*GuidInPtrOut);
   std::string Symbol = autojit::guidToFnName(Guid);
 
@@ -49,5 +52,10 @@ extern "C" void __llvm_autojit_register(const char *FilePath) {
     return;
   }
 
-  autojit::submitModule(FilePath);
+  static std::mutex Registration;
+  std::lock_guard<std::mutex> Lock(Registration);
+
+  autojit::initializeDebugLog();
+  DBG() << "Registering module " << FilePath << "\n";
+  ModulesRegistered_.emplace_back(FilePath);
 }
