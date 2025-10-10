@@ -77,7 +77,7 @@ LLVM_ATTRIBUTE_USED void linkComponents() {
 
 static ManagedStatic<std::unique_ptr<LLJIT>> g_jit;
 static std::unordered_set<const char *> g_materialized;
-static std::vector<const char *> g_registered_modules;
+static std::vector<std::string> g_registered_modules;
 static std::mutex g_materialize_mutex;
 static bool g_llvm_initialized = false;
 static bool g_autojit_debug_initialized = false;
@@ -588,7 +588,7 @@ LLJIT &initializeAutoJIT() {
       return false;
     };
 
-    for (const char *Path : g_registered_modules)
+    for (const std::string &Path : g_registered_modules)
       loadModule(*J, Path, HaveHostSymbol);
 
     g_registered_modules.clear();
@@ -642,8 +642,8 @@ extern "C" void __llvm_autojit_register(const char *FilePath) {
   AUTOJIT_DEBUG(dbgs() << "autojit-runtime: Registering module " << FilePath
                        << "\n");
 
-  for (const char *RegisteredPath : g_registered_modules)
-    if (strcmp(RegisteredPath, FilePath) == 0)
+  for (const std::string &RegisteredPath : g_registered_modules)
+    if (RegisteredPath == FilePath)
       return;
-  g_registered_modules.push_back(FilePath);
+  g_registered_modules.emplace_back(FilePath);
 }

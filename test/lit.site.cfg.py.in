@@ -27,6 +27,7 @@ except KeyError:
 # File paths
 config.autojit_plugin = lit_config.substitute("@CMAKE_BINARY_DIR@/lib/autojit@CMAKE_SHARED_LIBRARY_SUFFIX@")
 config.autojit_runtime_dir = lit_config.substitute("@CMAKE_BINARY_DIR@/lib")
+config.autojit_tools_dir = lit_config.substitute("@CMAKE_BINARY_DIR@/bin")
 
 # Let the main config do the real work.
 lit_config.load_config(config, "@CMAKE_CURRENT_SOURCE_DIR@/lit.cfg.py")

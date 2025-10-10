@@ -2,8 +2,8 @@
 // XFAIL: *
 
 // RUN: %clang -fpass-plugin=%autojit_plugin -xc -c %s -o %t.o
-// RUN: %clang %t.o -L%autojit_runtime_dir -lautojit_static-%arch -rdynamic -pthread -o %t.exe
-// RUN: %t.exe 2>&1 | FileCheck %s
+// RUN: %clang %t.o -L%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive -rdynamic -pthread -o %t.exe
+// RUN: env AUTOJIT_DAEMON_PATH=%autojit_tools_dir/autojitd %t.exe 2>&1 | FileCheck %s
 
 // CHECK: AutoJIT Daemon Test
 // CHECK: add(10, 20) = 30

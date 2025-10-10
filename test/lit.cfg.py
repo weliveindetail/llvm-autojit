@@ -12,6 +12,7 @@ config.test_source_root = os.path.dirname(__file__)
 
 config.substitutions.append(('%autojit_plugin', config.autojit_plugin))
 config.substitutions.append(('%autojit_runtime_dir', config.autojit_runtime_dir))
+config.substitutions.append(('%autojit_tools_dir', config.autojit_tools_dir))
 config.substitutions.append(('%arch', config.host_arch))
 
 bin = Path(config.llvm_tools_dir)
