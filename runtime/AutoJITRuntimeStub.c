@@ -1,5 +1,6 @@
 #include "AutoJITRuntime.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -477,14 +478,24 @@ static void cleanup_daemon(void) {
     }
 }
 
-static void initialize_daemon(void) {
-    /* Check debug flag */
-    const char *debug_env = getenv("AUTOJIT_DEBUG");
-    if (debug_env && (strcmp(debug_env, "1") == 0 || strcmp(debug_env, "true") == 0 ||
-                      strcmp(debug_env, "on") == 0 || strcmp(debug_env, "yes") == 0)) {
-        g_debug = 1;
-    }
+static void to_lowercase(char *str) {
+    for (; *str; ++str) *str = tolower(*str);
+}
 
+static int checkenv(const char *var) {
+    char *envvar = getenv(var);
+    if (!envvar)
+        return 0;
+    to_lowercase(envvar);
+    const char *true_values[] = { "1", "on", "true", "yes" };
+    for (int i = 0; i < 4; i++)
+        if (strcmp(envvar, true_values[i]) == 0)
+            return 1;
+    return 0;
+}
+
+static void initialize_daemon(void) {
+    g_debug = checkenv("AUTOJIT_DEBUG");
     DEBUG_LOG("Initializing daemon\n");
 
     /* Create socketpair for bidirectional communication */
@@ -527,6 +538,12 @@ static void initialize_daemon(void) {
     g_daemon_pid = pid;
 
     DEBUG_LOG("Daemon started with pid %d\n", g_daemon_pid);
+    if (checkenv("AUTOJIT_WAIT_FOR_DEBUGGER")) {
+        int c;
+        printf("Waiting for debugger. Press ENTER to continue...");
+        while ((c = getchar()) != '\n' && c != EOF) { }
+        getchar();
+    }
 
     /* Wait for Setup message from daemon */
     epc_message_t setup_msg;
