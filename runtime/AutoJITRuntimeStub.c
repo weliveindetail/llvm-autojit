@@ -384,6 +384,349 @@ static int parse_setup_message(const epc_message_t *msg) {
 }
 
 /* ============================================================================
+ * Bootstrap Service Implementations (Simplified Stubs)
+ * ============================================================================
+ */
+
+/* Memory write wrappers - decode SPS and perform writes directly to memory */
+static void stub_mem_write_uint8s_wrapper(const char *ArgData, size_t ArgSize) {
+  /* Decode SPSSequence<SPSMemoryAccessUInt8Write>
+   * Each write is: (ExecutorAddr Addr, uint8_t Value)
+   */
+  const uint8_t *ptr = (const uint8_t *)ArgData;
+  const uint8_t *end = ptr + ArgSize;
+
+  uint64_t count;
+  if (sps_read_uint64(&ptr, end, &count) < 0)
+    return;
+
+  for (uint64_t i = 0; i < count; i++) {
+    uint64_t addr;
+    uint8_t value;
+    if (sps_read_uint64(&ptr, end, &addr) < 0)
+      return;
+    if (ptr + 1 > end)
+      return;
+    value = *ptr++;
+
+    *(uint8_t *)addr = value;
+  }
+}
+
+static void stub_mem_write_uint16s_wrapper(const char *ArgData,
+                                           size_t ArgSize) {
+  const uint8_t *ptr = (const uint8_t *)ArgData;
+  const uint8_t *end = ptr + ArgSize;
+
+  uint64_t count;
+  if (sps_read_uint64(&ptr, end, &count) < 0)
+    return;
+
+  for (uint64_t i = 0; i < count; i++) {
+    uint64_t addr;
+    uint16_t value;
+    if (sps_read_uint64(&ptr, end, &addr) < 0)
+      return;
+    if (ptr + 2 > end)
+      return;
+    memcpy(&value, ptr, 2);
+    ptr += 2;
+
+    *(uint16_t *)addr = value;
+  }
+}
+
+static void stub_mem_write_uint32s_wrapper(const char *ArgData,
+                                           size_t ArgSize) {
+  const uint8_t *ptr = (const uint8_t *)ArgData;
+  const uint8_t *end = ptr + ArgSize;
+
+  uint64_t count;
+  if (sps_read_uint64(&ptr, end, &count) < 0)
+    return;
+
+  for (uint64_t i = 0; i < count; i++) {
+    uint64_t addr;
+    uint32_t value;
+    if (sps_read_uint64(&ptr, end, &addr) < 0)
+      return;
+    if (ptr + 4 > end)
+      return;
+    memcpy(&value, ptr, 4);
+    ptr += 4;
+
+    *(uint32_t *)addr = value;
+  }
+}
+
+static void stub_mem_write_uint64s_wrapper(const char *ArgData,
+                                           size_t ArgSize) {
+  const uint8_t *ptr = (const uint8_t *)ArgData;
+  const uint8_t *end = ptr + ArgSize;
+
+  uint64_t count;
+  if (sps_read_uint64(&ptr, end, &count) < 0)
+    return;
+
+  for (uint64_t i = 0; i < count; i++) {
+    uint64_t addr, value;
+    if (sps_read_uint64(&ptr, end, &addr) < 0)
+      return;
+    if (sps_read_uint64(&ptr, end, &value) < 0)
+      return;
+
+    *(uint64_t *)addr = value;
+  }
+}
+
+static void stub_mem_write_buffers_wrapper(const char *ArgData,
+                                           size_t ArgSize) {
+  /* Decode SPSSequence<SPSMemoryAccessBufferWrite>
+   * Each write is: (ExecutorAddr Addr, SPSSequence<uint8_t> Buffer)
+   */
+  const uint8_t *ptr = (const uint8_t *)ArgData;
+  const uint8_t *end = ptr + ArgSize;
+
+  uint64_t count;
+  if (sps_read_uint64(&ptr, end, &count) < 0)
+    return;
+
+  for (uint64_t i = 0; i < count; i++) {
+    uint64_t addr, buf_size;
+    if (sps_read_uint64(&ptr, end, &addr) < 0)
+      return;
+    if (sps_read_uint64(&ptr, end, &buf_size) < 0)
+      return;
+    if (ptr + buf_size > end)
+      return;
+
+    memcpy((void *)addr, ptr, buf_size);
+    ptr += buf_size;
+  }
+}
+
+static void stub_mem_write_pointers_wrapper(const char *ArgData,
+                                            size_t ArgSize) {
+  /* Decode SPSSequence<SPSMemoryAccessPointerWrite>
+   * Each write is: (ExecutorAddr Addr, ExecutorAddr Value)
+   */
+  const uint8_t *ptr = (const uint8_t *)ArgData;
+  const uint8_t *end = ptr + ArgSize;
+
+  uint64_t count;
+  if (sps_read_uint64(&ptr, end, &count) < 0)
+    return;
+
+  for (uint64_t i = 0; i < count; i++) {
+    uint64_t addr, value;
+    if (sps_read_uint64(&ptr, end, &addr) < 0)
+      return;
+    if (sps_read_uint64(&ptr, end, &value) < 0)
+      return;
+
+    *(uint64_t *)addr = value;
+  }
+}
+
+/* Memory manager and dylib manager - minimal stub implementations
+ * Real implementations would need proper mmap/mprotect for memory manager
+ * and dlopen/dlsym for dylib manager. For now, just provide minimal stubs
+ * to satisfy the daemon's bootstrap requirements.
+ */
+
+/* Instance pointers for managers */
+static int g_mem_mgr_instance = 0;
+static int g_dylib_mgr_instance = 0;
+
+/* Minimal dylib manager stubs */
+static void stub_dylib_open_wrapper(const char *ArgData, size_t ArgSize) {
+  DEBUG_LOG("stub_dylib_open_wrapper called (not implemented)\n");
+  /* TODO: Implement dlopen-based dylib loading if needed */
+}
+
+static void stub_dylib_lookup_wrapper(const char *ArgData, size_t ArgSize) {
+  DEBUG_LOG("stub_dylib_lookup_wrapper called (not implemented)\n");
+  /* TODO: Implement dlsym-based symbol lookup if needed */
+}
+
+/* Minimal memory manager stubs */
+static void stub_mem_reserve_wrapper(const char *ArgData, size_t ArgSize) {
+  DEBUG_LOG("stub_mem_reserve_wrapper called (not implemented)\n");
+  /* TODO: Implement mmap-based memory reservation if needed */
+}
+
+static void stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize) {
+  DEBUG_LOG("stub_mem_finalize_wrapper called (not implemented)\n");
+  /* TODO: Implement mprotect-based memory protection if needed */
+}
+
+static void stub_mem_deallocate_wrapper(const char *ArgData, size_t ArgSize) {
+  DEBUG_LOG("stub_mem_deallocate_wrapper called (not implemented)\n");
+  /* TODO: Implement munmap-based memory deallocation if needed */
+}
+
+/* ============================================================================
+ * JIT Dispatch - handles calls from daemon back to stub
+ * ============================================================================
+ */
+
+/* Opaque type for dispatch context */
+typedef struct {
+  int unused;
+} __orc_rt_Opaque;
+
+/* Dispatch context - just a dummy for now since we don't expect callbacks yet
+ */
+static __orc_rt_Opaque __orc_rt_jit_dispatch_ctx_impl = {0};
+
+/* Dispatch function - handles RPC calls from daemon to stub */
+static void __orc_rt_jit_dispatch_impl(__orc_rt_Opaque *Ctx, const void *FnTag,
+                                       const char *ArgData, size_t ArgSize,
+                                       void *ResultPtr) {
+
+  DEBUG_LOG("JIT dispatch called with FnTag=%p, ArgSize=%zu\n", FnTag, ArgSize);
+
+  /* For now, we don't handle any callbacks from daemon to stub.
+   * If we need to support platform runtime functions like dlopen/dlsym,
+   * we would dispatch based on FnTag here.
+   *
+   * Return empty result (void return).
+   */
+  uint8_t *result_bytes = (uint8_t *)ResultPtr;
+  *((uint64_t *)result_bytes) = 0; /* Size = 0 means empty/void result */
+}
+
+/* ============================================================================
+ * Setup Message Sending
+ * ============================================================================
+ */
+
+static int send_setup_message(int fd) {
+  /* Setup message format (SPS encoded):
+   * - target_triple: string
+   * - page_size: uint64_t
+   * - bootstrap_map: map<string, bytes>
+   * - bootstrap_symbols: map<string, uint64_t>
+   */
+
+  sps_buffer_t setup_data;
+  sps_buffer_init(&setup_data, 2048);
+
+  /* Get target triple - for now use a simple default */
+  const char *triple = "x86_64-unknown-linux-gnu";
+  sps_write_string(&setup_data, triple);
+
+  /* Get page size */
+  uint64_t page_size = sysconf(_SC_PAGESIZE);
+  sps_write_uint64(&setup_data, page_size);
+
+  /* Bootstrap map - empty for now */
+  sps_write_uint64(&setup_data, 0);
+
+  /* Bootstrap symbols - populate with all required symbols */
+  /* Symbol names from llvm/lib/ExecutionEngine/Orc/Shared/OrcRTBridge.cpp */
+
+  /* Count: 2 dispatch + 6 memory write + 3 dylib mgr + 4 memory mgr = 15 */
+  sps_write_uint64(&setup_data, 15);
+
+  /* __llvm_orc_SimpleRemoteEPC_dispatch_ctx - context for RPC calls back to
+   * stub */
+  sps_write_string(&setup_data, "__llvm_orc_SimpleRemoteEPC_dispatch_ctx");
+  sps_write_uint64(&setup_data,
+                   (uint64_t)(uintptr_t)&__orc_rt_jit_dispatch_ctx_impl);
+
+  /* __llvm_orc_SimpleRemoteEPC_dispatch_fn - function for RPC calls back to
+   * stub */
+  sps_write_string(&setup_data, "__llvm_orc_SimpleRemoteEPC_dispatch_fn");
+  sps_write_uint64(&setup_data,
+                   (uint64_t)(uintptr_t)&__orc_rt_jit_dispatch_impl);
+
+  /* Memory write wrappers */
+  sps_write_string(&setup_data,
+                   "__llvm_orc_bootstrap_mem_write_uint8s_wrapper");
+  sps_write_uint64(&setup_data,
+                   (uint64_t)(uintptr_t)stub_mem_write_uint8s_wrapper);
+
+  sps_write_string(&setup_data,
+                   "__llvm_orc_bootstrap_mem_write_uint16s_wrapper");
+  sps_write_uint64(&setup_data,
+                   (uint64_t)(uintptr_t)stub_mem_write_uint16s_wrapper);
+
+  sps_write_string(&setup_data,
+                   "__llvm_orc_bootstrap_mem_write_uint32s_wrapper");
+  sps_write_uint64(&setup_data,
+                   (uint64_t)(uintptr_t)stub_mem_write_uint32s_wrapper);
+
+  sps_write_string(&setup_data,
+                   "__llvm_orc_bootstrap_mem_write_uint64s_wrapper");
+  sps_write_uint64(&setup_data,
+                   (uint64_t)(uintptr_t)stub_mem_write_uint64s_wrapper);
+
+  sps_write_string(&setup_data,
+                   "__llvm_orc_bootstrap_mem_write_buffers_wrapper");
+  sps_write_uint64(&setup_data,
+                   (uint64_t)(uintptr_t)stub_mem_write_buffers_wrapper);
+
+  sps_write_string(&setup_data,
+                   "__llvm_orc_bootstrap_mem_write_pointers_wrapper");
+  sps_write_uint64(&setup_data,
+                   (uint64_t)(uintptr_t)stub_mem_write_pointers_wrapper);
+
+  /* Dylib manager */
+  sps_write_string(&setup_data,
+                   "__llvm_orc_SimpleExecutorDylibManager_Instance");
+  sps_write_uint64(&setup_data, (uint64_t)(uintptr_t)&g_dylib_mgr_instance);
+
+  sps_write_string(&setup_data,
+                   "__llvm_orc_SimpleExecutorDylibManager_open_wrapper");
+  sps_write_uint64(&setup_data, (uint64_t)(uintptr_t)stub_dylib_open_wrapper);
+
+  sps_write_string(&setup_data,
+                   "__llvm_orc_SimpleExecutorDylibManager_lookup_wrapper");
+  sps_write_uint64(&setup_data, (uint64_t)(uintptr_t)stub_dylib_lookup_wrapper);
+
+  /* Memory manager */
+  sps_write_string(&setup_data,
+                   "__llvm_orc_SimpleExecutorMemoryManager_Instance");
+  sps_write_uint64(&setup_data, (uint64_t)(uintptr_t)&g_mem_mgr_instance);
+
+  sps_write_string(&setup_data,
+                   "__llvm_orc_SimpleExecutorMemoryManager_reserve_wrapper");
+  sps_write_uint64(&setup_data, (uint64_t)(uintptr_t)stub_mem_reserve_wrapper);
+
+  sps_write_string(&setup_data,
+                   "__llvm_orc_SimpleExecutorMemoryManager_finalize_wrapper");
+  sps_write_uint64(&setup_data, (uint64_t)(uintptr_t)stub_mem_finalize_wrapper);
+
+  sps_write_string(&setup_data,
+                   "__llvm_orc_SimpleExecutorMemoryManager_deallocate_wrapper");
+  sps_write_uint64(&setup_data,
+                   (uint64_t)(uintptr_t)stub_mem_deallocate_wrapper);
+
+  DEBUG_LOG(
+      "Sending Setup message: triple=%s, page_size=%lu, bootstrap_symbols=15\n",
+      triple, page_size);
+
+  /* Send Setup message */
+  epc_message_t setup_msg = {.opcode = OPCODE_SETUP,
+                             .seqno = 0,
+                             .tag_addr = 0,
+                             .arg_bytes = setup_data.data,
+                             .arg_size = setup_data.size};
+
+  int ret = send_epc_message(fd, &setup_msg);
+  sps_buffer_free(&setup_data);
+
+  if (ret < 0) {
+    ERROR_LOG("Failed to send Setup message\n");
+    return -1;
+  }
+
+  DEBUG_LOG("Setup message sent successfully\n");
+  return 0;
+}
+
+/* ============================================================================
  * RPC Call Wrapper
  * ============================================================================
  */
@@ -586,6 +929,13 @@ static void initialize_daemon(void) {
   }
 
   free_epc_message(&setup_msg);
+
+  /* Send Setup message back to daemon */
+  if (send_setup_message(g_daemon_fd) < 0) {
+    ERROR_LOG("Failed to send Setup message to daemon\n");
+    cleanup_daemon();
+    exit(1);
+  }
 
   DEBUG_LOG("Daemon initialization complete\n");
 

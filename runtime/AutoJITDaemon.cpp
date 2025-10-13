@@ -547,13 +547,15 @@ Error SimpleRemoteEPC::setup(Setup S) {
   BootstrapMap = std::move(EI->BootstrapMap);
   BootstrapSymbols = std::move(EI->BootstrapSymbols);
 
+  // Get dispatch symbols for RPC calls back to the stub
   if (auto Err = getBootstrapSymbols(
           {{JDI.JITDispatchContext, ExecutorSessionObjectName},
-           {JDI.JITDispatchFunction, DispatchFnName},
-           {RunAsMainAddr, rt::RunAsMainWrapperName},
-           {RunAsVoidFunctionAddr, rt::RunAsVoidFunctionWrapperName},
-           {RunAsIntFunctionAddr, rt::RunAsIntFunctionWrapperName}}))
+           {JDI.JITDispatchFunction, DispatchFnName}}))
     return Err;
+
+  // Note: We don't need RunAsMain/VoidFunction/IntFunction wrappers for AutoJIT
+  // since we're not running programs in the executor, just compiling and
+  // returning function addresses.
 
   if (auto DM =
           EPCGenericDylibManager::CreateWithDefaultBootstrapSymbols(*this))
