@@ -903,6 +903,13 @@ static void initialize_daemon(void) {
     while ((c = getchar()) != '\n' && c != EOF) ;
   }
 
+  /* Send Setup message to daemon */
+  if (send_setup_message(g_daemon_fd) < 0) {
+    ERROR_LOG("Failed to send Setup message to daemon\n");
+    cleanup_daemon();
+    exit(1);
+  }
+
   /* Wait for Setup message from daemon */
   epc_message_t setup_msg;
   if (recv_epc_message(g_daemon_fd, &setup_msg) < 0) {
@@ -929,13 +936,6 @@ static void initialize_daemon(void) {
   }
 
   free_epc_message(&setup_msg);
-
-  /* Send Setup message back to daemon */
-  if (send_setup_message(g_daemon_fd) < 0) {
-    ERROR_LOG("Failed to send Setup message to daemon\n");
-    cleanup_daemon();
-    exit(1);
-  }
 
   DEBUG_LOG("Daemon initialization complete\n");
 

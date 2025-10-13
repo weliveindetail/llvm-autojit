@@ -674,6 +674,16 @@ int main(int argc, char *argv[]) {
   // Read from stdin, write to stdout
   EPC.setTransport(*T);
 
+  // Receive the setup message from the target process
+  SimpleRemoteEPC::Setup S;
+  S.CreateMemoryAccess = SimpleRemoteEPC::createDefaultMemoryAccess;
+  S.CreateMemoryManager = SimpleRemoteEPC::createDefaultMemoryManager;
+  ExitOnErr(EPC.setup(std::move(S)));
+
+  LLJITBuilder Builder;
+  Builder.setExecutionSession(std::move(ES));
+  *Instance = std::make_unique<autojit::AutoJIT>(Builder);
+
   // Send setup message to the target process
   std::vector<char> SetupPacket;
   SimpleRemoteEPCExecutorInfo EI;
@@ -696,16 +706,6 @@ int main(int argc, char *argv[]) {
 
   ExitOnErr(T->sendMessage(SimpleRemoteEPCOpcode::Setup, 0, ExecutorAddr(),
                            {SetupPacketBytes.data(), SetupPacketBytes.size()}));
-
-  // Receive the setup message from the target process
-  SimpleRemoteEPC::Setup S;
-  S.CreateMemoryAccess = SimpleRemoteEPC::createDefaultMemoryAccess;
-  S.CreateMemoryManager = SimpleRemoteEPC::createDefaultMemoryManager;
-  ExitOnErr(EPC.setup(std::move(S)));
-
-  LLJITBuilder Builder;
-  Builder.setExecutionSession(std::move(ES));
-  *Instance = std::make_unique<autojit::AutoJIT>(Builder);
 
   // TODO: We need something like waitForDisconnect()
   DBG() << "Daemon entering event loop\n";
