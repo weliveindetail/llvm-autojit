@@ -428,18 +428,22 @@ private:
 #endif
 
 autojit::AutoJIT::~AutoJIT() {
+  if (Transport)
+    Transport->disconnect();
   // Terminate the JIT before static destructors run to avoid races
   if (auto Err = JIT_->getExecutionSession().endSession())
     LOG() << toString(std::move(Err));
 }
 
-autojit::AutoJIT::AutoJIT(LLJITBuilder &B) : HostProcess_(dlopenHostProcess()) {
+autojit::AutoJIT::AutoJIT() : HostProcess_(dlopenHostProcess()) {
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
-
   autojit::initializeDebugLog();
+}
 
+Error autojit::AutoJIT::initialize(LLJITBuilder &B, SimpleRemoteEPCTransport *Transport) {
+  this->Transport = Transport;
 #if defined(AUTOJIT_ENABLE_ORC_RUNTIME)
   const char *OrcRtStart =
       reinterpret_cast<const char *>(_binary_liborc_rt_start);
@@ -482,9 +486,9 @@ autojit::AutoJIT::AutoJIT(LLJITBuilder &B) : HostProcess_(dlopenHostProcess()) {
 
   JIT_ = ExitOnErr(B.create());
 
-#if !defined(NDEBUG)
-  ExitOnErr(enableDebuggerSupport(*JIT_));
-#endif
+  if (g_autojit_debug)
+    if (Error E = enableDebuggerSupport(*JIT_))
+      LOG() << "Failed to enable debugger support: " << toString(std::move(E));
 
 #if !defined(NDEBUG)
   JIT_->getIRTransformLayer().setTransform(
@@ -501,6 +505,8 @@ autojit::AutoJIT::AutoJIT(LLJITBuilder &B) : HostProcess_(dlopenHostProcess()) {
         return std::move(TSM);
       });
 #endif
+
+  return Error::success();
 }
 
 autojit::AutoJIT &autojit::AutoJIT::get(std::vector<std::string> &NewModules) {
@@ -514,7 +520,8 @@ autojit::AutoJIT &autojit::AutoJIT::get(std::vector<std::string> &NewModules) {
       LLJITBuilder Builder;
       Builder.setExecutorProcessControl(
           ExitOnErr(SelfExecutorProcessControl::Create()));
-      *Instance = std::unique_ptr<AutoJIT>(new AutoJIT(Builder));
+      *Instance = std::make_unique<AutoJIT>();
+      ExitOnErr(Instance->get()->initialize(Builder));
       std::atexit(llvm_shutdown);
     }
   }

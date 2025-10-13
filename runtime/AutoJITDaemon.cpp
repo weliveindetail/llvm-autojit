@@ -7,6 +7,7 @@
 #include "llvm/ExecutionEngine/Orc/Shared/SimplePackedSerialization.h"
 #include "llvm/ExecutionEngine/Orc/Shared/SimpleRemoteEPCUtils.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Host.h"
@@ -139,18 +140,27 @@ public:
   SimpleRemoteEPC &operator=(SimpleRemoteEPC &&) = delete;
   ~SimpleRemoteEPC();
 
-  Expected<int32_t> runAsMain(ExecutorAddr MainFnAddr,
-                              ArrayRef<std::string> Args) override;
+  Error waitForDisconnect();
 
-  Expected<int32_t> runAsVoidFunction(ExecutorAddr VoidFnAddr) override;
+  Expected<int32_t> runAsMain(ExecutorAddr, ArrayRef<std::string>) override {
+    llvm_unreachable("Daemon is passive");
+  }
 
-  Expected<int32_t> runAsIntFunction(ExecutorAddr IntFnAddr, int Arg) override;
+  Expected<int32_t> runAsVoidFunction(ExecutorAddr) override {
+    llvm_unreachable("Daemon is passive");
+  }
+
+  Expected<int32_t> runAsIntFunction(ExecutorAddr, int) override {
+    llvm_unreachable("Daemon is passive");
+  }
+
+  Error disconnect() override {
+    llvm_unreachable("Daemon is passive");
+  }
 
   void callWrapperAsync(ExecutorAddr WrapperFnAddr,
                         IncomingWFRHandler OnComplete,
                         ArrayRef<char> ArgBuffer) override;
-
-  Error disconnect() override;
 
   Expected<HandleMessageAction>
   handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo, ExecutorAddr TagAddr,
@@ -190,19 +200,15 @@ private:
 
   using PendingCallWrapperResultsMap = DenseMap<uint64_t, IncomingWFRHandler>;
 
-  std::mutex SimpleRemoteEPCMutex;
+  std::mutex ServerStateMutex;
   std::condition_variable DisconnectCV;
-  bool Disconnected = false;
   Error DisconnectErr = Error::success();
+  bool Disconnected = false;
 
   SimpleRemoteEPCTransport *T;
+  std::unique_ptr<EPCGenericDylibManager> EPCDylibMgr;
   std::unique_ptr<jitlink::JITLinkMemoryManager> OwnedMemMgr;
   std::unique_ptr<MemoryAccess> OwnedMemAccess;
-
-  std::unique_ptr<EPCGenericDylibManager> EPCDylibMgr;
-  ExecutorAddr RunAsMainAddr;
-  ExecutorAddr RunAsVoidFunctionAddr;
-  ExecutorAddr RunAsIntFunctionAddr;
 
   uint64_t NextSeqNo = 0;
   PendingCallWrapperResultsMap PendingCallWrapperResults;
@@ -210,7 +216,7 @@ private:
 
 SimpleRemoteEPC::~SimpleRemoteEPC() {
 #ifndef NDEBUG
-  std::lock_guard<std::mutex> Lock(SimpleRemoteEPCMutex);
+  std::lock_guard<std::mutex> Lock(ServerStateMutex);
   assert(Disconnected && "Destroyed without disconnection");
 #endif // NDEBUG
 }
@@ -253,38 +259,12 @@ void SimpleRemoteEPC::lookupSymbolsAsync(ArrayRef<LookupRequest> Request,
   lookupSymbolsAsyncHelper(*EPCDylibMgr, Request, {}, std::move(Complete));
 }
 
-Expected<int32_t> SimpleRemoteEPC::runAsMain(ExecutorAddr MainFnAddr,
-                                             ArrayRef<std::string> Args) {
-  int64_t Result = 0;
-  if (auto Err = callSPSWrapper<rt::SPSRunAsMainSignature>(
-          RunAsMainAddr, Result, MainFnAddr, Args))
-    return std::move(Err);
-  return Result;
-}
-
-Expected<int32_t> SimpleRemoteEPC::runAsVoidFunction(ExecutorAddr VoidFnAddr) {
-  int32_t Result = 0;
-  if (auto Err = callSPSWrapper<rt::SPSRunAsVoidFunctionSignature>(
-          RunAsVoidFunctionAddr, Result, VoidFnAddr))
-    return std::move(Err);
-  return Result;
-}
-
-Expected<int32_t> SimpleRemoteEPC::runAsIntFunction(ExecutorAddr IntFnAddr,
-                                                    int Arg) {
-  int32_t Result = 0;
-  if (auto Err = callSPSWrapper<rt::SPSRunAsIntFunctionSignature>(
-          RunAsIntFunctionAddr, Result, IntFnAddr, Arg))
-    return std::move(Err);
-  return Result;
-}
-
 void SimpleRemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
                                        IncomingWFRHandler OnComplete,
                                        ArrayRef<char> ArgBuffer) {
   uint64_t SeqNo;
   {
-    std::lock_guard<std::mutex> Lock(SimpleRemoteEPCMutex);
+    std::lock_guard<std::mutex> Lock(ServerStateMutex);
     SeqNo = getNextSeqNo();
     assert(!PendingCallWrapperResults.count(SeqNo) && "SeqNo already in use");
     PendingCallWrapperResults[SeqNo] = std::move(OnComplete);
@@ -300,7 +280,7 @@ void SimpleRemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
     // then it will have failed 'H' for us. If we get there first (or if
     // handleDisconnect already ran) then we need to take care of it.
     {
-      std::lock_guard<std::mutex> Lock(SimpleRemoteEPCMutex);
+      std::lock_guard<std::mutex> Lock(ServerStateMutex);
       auto I = PendingCallWrapperResults.find(SeqNo);
       if (I != PendingCallWrapperResults.end()) {
         H = std::move(I->second);
@@ -313,14 +293,6 @@ void SimpleRemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
 
     getExecutionSession().reportError(std::move(Err));
   }
-}
-
-Error SimpleRemoteEPC::disconnect() {
-  T->disconnect();
-  D->shutdown();
-  std::unique_lock<std::mutex> Lock(SimpleRemoteEPCMutex);
-  DisconnectCV.wait(Lock, [this] { return Disconnected; });
-  return std::move(DisconnectErr);
 }
 
 Expected<SimpleRemoteEPCTransportClient::HandleMessageAction>
@@ -364,11 +336,13 @@ SimpleRemoteEPC::handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
     if (auto Err = handleSetup(SeqNo, TagAddr, std::move(ArgBytes)))
       return std::move(Err);
     break;
-  case SimpleRemoteEPCOpcode::Hangup:
+  case SimpleRemoteEPCOpcode::Hangup: {
+    DisconnectErr = handleHangup(std::move(ArgBytes));
     T->disconnect();
-    if (auto Err = handleHangup(std::move(ArgBytes)))
-      return std::move(Err);
+    std::unique_lock<std::mutex> Lock(ServerStateMutex);
+    Disconnected = true;
     return EndSession;
+  }
   case SimpleRemoteEPCOpcode::Result:
     if (auto Err = handleResult(SeqNo, TagAddr, std::move(ArgBytes)))
       return std::move(Err);
@@ -380,27 +354,31 @@ SimpleRemoteEPC::handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
   return ContinueSession;
 }
 
+// The disconnect process is confusing:
+// 1. Message loop thread receives a Hangup message and parse it here
+// 2. 
+Error SimpleRemoteEPC::handleHangup(SimpleRemoteEPCArgBytesVector ArgBytes) {
+  using namespace llvm::orc::shared;
+  auto WFR = WrapperFunctionResult::copyFrom(ArgBytes.data(), ArgBytes.size());
+  if (const char *ErrMsg = WFR.getOutOfBandError())
+    return make_error<StringError>(ErrMsg, inconvertibleErrorCode());
+
+  shared::detail::SPSSerializableError Info;
+  SPSInputBuffer IB(WFR.data(), WFR.size());
+  if (!SPSArgList<SPSError>::deserialize(IB, Info))
+    return make_error<StringError>("Could not deserialize hangup info",
+                                   inconvertibleErrorCode());
+  return fromSPSSerializable(std::move(Info));
+}
+
 void SimpleRemoteEPC::handleDisconnect(Error Err) {
-  {
-    dbgs() << "SimpleRemoteEPC::handleDisconnect: "
-           << (Err ? "failure" : "success") << "\n";
-  }
-
-  PendingCallWrapperResultsMap TmpPending;
-
-  {
-    std::lock_guard<std::mutex> Lock(SimpleRemoteEPCMutex);
-    std::swap(TmpPending, PendingCallWrapperResults);
-  }
-
-  for (auto &KV : TmpPending)
-    KV.second(
-        shared::WrapperFunctionResult::createOutOfBandError("disconnecting"));
-
-  std::lock_guard<std::mutex> Lock(SimpleRemoteEPCMutex);
-  DisconnectErr = joinErrors(std::move(DisconnectErr), std::move(Err));
-  Disconnected = true;
   DisconnectCV.notify_all();
+}
+
+Error SimpleRemoteEPC::waitForDisconnect() {
+  std::unique_lock<std::mutex> Lock(ServerStateMutex);
+  DisconnectCV.wait(Lock, [this]() { return Disconnected; });
+  return std::move(DisconnectErr);
 }
 
 Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
@@ -478,7 +456,7 @@ Error SimpleRemoteEPC::handleSetup(uint64_t SeqNo, ExecutorAddr TagAddr,
     return make_error<StringError>("Setup packet TagAddr not zero",
                                    inconvertibleErrorCode());
 
-  std::lock_guard<std::mutex> Lock(SimpleRemoteEPCMutex);
+  std::lock_guard<std::mutex> Lock(ServerStateMutex);
   auto I = PendingCallWrapperResults.find(0);
   assert(PendingCallWrapperResults.size() == 1 &&
          I != PendingCallWrapperResults.end() &&
@@ -595,7 +573,7 @@ Error SimpleRemoteEPC::handleResult(uint64_t SeqNo, ExecutorAddr TagAddr,
                                    inconvertibleErrorCode());
 
   {
-    std::lock_guard<std::mutex> Lock(SimpleRemoteEPCMutex);
+    std::lock_guard<std::mutex> Lock(ServerStateMutex);
     auto I = PendingCallWrapperResults.find(SeqNo);
     if (I == PendingCallWrapperResults.end())
       return make_error<StringError>("No call for sequence number " +
@@ -644,23 +622,9 @@ void SimpleRemoteEPC::handleCallWrapper(
       "callWrapper task"));
 }
 
-Error SimpleRemoteEPC::handleHangup(SimpleRemoteEPCArgBytesVector ArgBytes) {
-  using namespace llvm::orc::shared;
-  auto WFR = WrapperFunctionResult::copyFrom(ArgBytes.data(), ArgBytes.size());
-  if (const char *ErrMsg = WFR.getOutOfBandError())
-    return make_error<StringError>(ErrMsg, inconvertibleErrorCode());
-
-  shared::detail::SPSSerializableError Info;
-  SPSInputBuffer IB(WFR.data(), WFR.size());
-  if (!SPSArgList<SPSError>::deserialize(IB, Info))
-    return make_error<StringError>("Could not deserialize hangup info",
-                                   inconvertibleErrorCode());
-  return fromSPSSerializable(std::move(Info));
-}
-
 // Right now the daemon is always forked as a child process
 int main(int argc, char *argv[]) {
-  autojit::initializeDebugLog();
+  *Instance = std::make_unique<autojit::AutoJIT>();
   DBG() << "Starting daemon\n";
 
   auto SSP = std::make_shared<SymbolStringPool>();
@@ -682,7 +646,7 @@ int main(int argc, char *argv[]) {
 
   LLJITBuilder Builder;
   Builder.setExecutionSession(std::move(ES));
-  *Instance = std::make_unique<autojit::AutoJIT>(Builder);
+  ExitOnErr(Instance->get()->initialize(Builder, T.get()));
 
   // Send setup message to the target process
   std::vector<char> SetupPacket;
@@ -707,9 +671,14 @@ int main(int argc, char *argv[]) {
   ExitOnErr(T->sendMessage(SimpleRemoteEPCOpcode::Setup, 0, ExecutorAddr(),
                            {SetupPacketBytes.data(), SetupPacketBytes.size()}));
 
-  // TODO: We need something like waitForDisconnect()
   DBG() << "Daemon entering event loop\n";
-  while (true) ;
+
+  // Wait for disconnect. The transport will handle incoming messages and call
+  // handleDisconnect when the stub disconnects or an error occurs.
+  if (auto Err = EPC.waitForDisconnect()) {
+    DBG() << "Disconnect error: " << toString(std::move(Err)) << "\n";
+    return 1;
+  }
 
   DBG() << "Host disconnected, daemon shutting down\n";
   return 0;

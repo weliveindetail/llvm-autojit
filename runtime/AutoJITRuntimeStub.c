@@ -384,6 +384,19 @@ static int parse_setup_message(const epc_message_t *msg) {
 }
 
 /* ============================================================================
+ * Forward Declarations
+ * ============================================================================
+ */
+
+/* EH-frame registration wrappers - defined later in the file */
+static void llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
+                                                    size_t ArgSize,
+                                                    uint8_t *ResultPtr);
+static void llvm_orc_deregisterEHFrameSectionWrapper(const char *ArgData,
+                                                      size_t ArgSize,
+                                                      uint8_t *ResultPtr);
+
+/* ============================================================================
  * Bootstrap Service Implementations (Simplified Stubs)
  * ============================================================================
  */
@@ -697,15 +710,29 @@ static void stub_dylib_lookup_wrapper(const char *ArgData, size_t ArgSize,
 
     if (!sym_addr) {
       DEBUG_LOG("    dlsym failed: %s\n", dlerror());
-      /* Write null address and flags */
+      /* Write null address and flags
+       * ExecutorSymbolDef: (ExecutorAddr=0, JITSymbolFlags=(0, 0))
+       */
       sps_write_uint64(&result_buf, 0);
-      sps_write_uint64(&result_buf, 0);
+      uint8_t flag_byte = 0;
+      memcpy(result_buf.data + result_buf.size, &flag_byte, 1);
+      result_buf.size += 1;
+      memcpy(result_buf.data + result_buf.size, &flag_byte, 1);
+      result_buf.size += 1;
     } else {
       DEBUG_LOG("    Found at: 0x%lx\n", (uint64_t)(uintptr_t)sym_addr);
-      /* Write ExecutorSymbolDef: (ExecutorAddr address, JITSymbolFlags flags) */
+      /* Write ExecutorSymbolDef: (ExecutorAddr address, JITSymbolFlags flags)
+       * JITSymbolFlags is a tuple of (UnderlyingType, TargetFlagsType)
+       * Both are typically uint8_t, so we write them as 1-byte values
+       */
       sps_write_uint64(&result_buf, (uint64_t)(uintptr_t)sym_addr);
-      /* Flags: 0 = no special flags (exported, callable) */
-      sps_write_uint64(&result_buf, 0);
+      /* Flags: UnderlyingType = 0 (no special flags), written as uint8_t */
+      uint8_t flag_byte = 0;
+      memcpy(result_buf.data + result_buf.size, &flag_byte, 1);
+      result_buf.size += 1;
+      /* TargetFlags: TargetFlagsType = 0, written as uint8_t */
+      memcpy(result_buf.data + result_buf.size, &flag_byte, 1);
+      result_buf.size += 1;
     }
   }
 
@@ -1042,8 +1069,8 @@ static int send_setup_message(int fd) {
   /* Bootstrap symbols - populate with all required symbols */
   /* Symbol names from llvm/lib/ExecutionEngine/Orc/Shared/OrcRTBridge.cpp */
 
-  /* Count: 2 dispatch + 6 memory write + 3 dylib mgr + 4 memory mgr = 15 */
-  sps_write_uint64(&setup_data, 15);
+  /* Count: 2 dispatch + 6 memory write + 3 dylib mgr + 4 memory mgr + 2 eh-frame = 17 */
+  sps_write_uint64(&setup_data, 17);
 
   /* __llvm_orc_SimpleRemoteEPC_dispatch_ctx - context for RPC calls back to
    * stub */
@@ -1119,8 +1146,17 @@ static int send_setup_message(int fd) {
   sps_write_uint64(&setup_data,
                    (uint64_t)(uintptr_t)stub_mem_deallocate_wrapper);
 
+  /* EH-frame registration wrappers */
+  sps_write_string(&setup_data, "llvm_orc_registerEHFrameSectionWrapper");
+  sps_write_uint64(&setup_data,
+                   (uint64_t)(uintptr_t)llvm_orc_registerEHFrameSectionWrapper);
+
+  sps_write_string(&setup_data, "llvm_orc_deregisterEHFrameSectionWrapper");
+  sps_write_uint64(&setup_data,
+                   (uint64_t)(uintptr_t)llvm_orc_deregisterEHFrameSectionWrapper);
+
   DEBUG_LOG(
-      "Sending Setup message: triple=%s, page_size=%lu, bootstrap_symbols=15\n",
+      "Sending Setup message: triple=%s, page_size=%lu, bootstrap_symbols=17\n",
       triple, page_size);
 
   /* Send Setup message */
@@ -1450,6 +1486,91 @@ static void initialize_daemon(void) {
 
   /* Register cleanup handler */
   atexit(cleanup_daemon);
+}
+
+/* ============================================================================
+ * EH-Frame Registration Wrappers
+ * ============================================================================
+ */
+
+/* External declarations for libunwind/libgcc eh-frame functions */
+extern void __register_frame(const void *);
+extern void __deregister_frame(const void *);
+
+/* Wrapper for registering EH frames - called by daemon via RPC
+ * Args: SPSExecutorAddrRange (Start:uint64_t, Size:uint64_t)
+ * Returns: SPSError (bool HasError, optional error string)
+ */
+static void llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
+                                                    size_t ArgSize,
+                                                    uint8_t *ResultPtr) {
+  const uint8_t *ptr = (const uint8_t *)ArgData;
+  const uint8_t *end = ptr + ArgSize;
+
+  /* Read ExecutorAddrRange: (Start, Size) */
+  uint64_t start_addr, size;
+  if (sps_read_uint64(&ptr, end, &start_addr) < 0 ||
+      sps_read_uint64(&ptr, end, &size) < 0) {
+    DEBUG_LOG("llvm_orc_registerEHFrameSectionWrapper: failed to read args\n");
+    /* Return error */
+    uint8_t *result = ResultPtr;
+    uint64_t result_size = 1;
+    memcpy(result, &result_size, 8);
+    result[8] = 1; /* HasError = true */
+    return;
+  }
+
+  DEBUG_LOG("Registering EH frame section: addr=0x%lx, size=%lu\n", start_addr,
+            size);
+
+  /* Call __register_frame with the start address
+   * Note: libgcc expects a pointer to the start of the .eh_frame section.
+   * libunwind might require walking the section and registering each FDE,
+   * but for now we assume libgcc behavior (simpler and more common).
+   */
+  __register_frame((const void *)(uintptr_t)start_addr);
+
+  /* Return success (empty error) */
+  uint8_t *result = ResultPtr;
+  uint64_t result_size = 1;
+  memcpy(result, &result_size, 8);
+  result[8] = 0; /* HasError = false */
+}
+
+/* Wrapper for deregistering EH frames - called by daemon via RPC
+ * Args: SPSExecutorAddrRange (Start:uint64_t, Size:uint64_t)
+ * Returns: SPSError (bool HasError, optional error string)
+ */
+static void llvm_orc_deregisterEHFrameSectionWrapper(const char *ArgData,
+                                                      size_t ArgSize,
+                                                      uint8_t *ResultPtr) {
+  const uint8_t *ptr = (const uint8_t *)ArgData;
+  const uint8_t *end = ptr + ArgSize;
+
+  /* Read ExecutorAddrRange: (Start, Size) */
+  uint64_t start_addr, size;
+  if (sps_read_uint64(&ptr, end, &start_addr) < 0 ||
+      sps_read_uint64(&ptr, end, &size) < 0) {
+    DEBUG_LOG("llvm_orc_deregisterEHFrameSectionWrapper: failed to read args\n");
+    /* Return error */
+    uint8_t *result = ResultPtr;
+    uint64_t result_size = 1;
+    memcpy(result, &result_size, 8);
+    result[8] = 1; /* HasError = true */
+    return;
+  }
+
+  DEBUG_LOG("Deregistering EH frame section: addr=0x%lx, size=%lu\n", start_addr,
+            size);
+
+  /* Call __deregister_frame with the start address */
+  __deregister_frame((const void *)(uintptr_t)start_addr);
+
+  /* Return success (empty error) */
+  uint8_t *result = ResultPtr;
+  uint64_t result_size = 1;
+  memcpy(result, &result_size, 8);
+  result[8] = 0; /* HasError = false */
 }
 
 /* ============================================================================

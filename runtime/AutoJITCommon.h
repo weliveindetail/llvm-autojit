@@ -4,6 +4,7 @@
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include "llvm/ExecutionEngine/Orc/Shared/SimpleRemoteEPCUtils.h"
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/Support/Compiler.h>
 #include <llvm/Support/Debug.h>
@@ -40,18 +41,19 @@ void initializeDebugLog();
 
 class AutoJIT {
 public:
-  static AutoJIT &get(std::vector<std::string> &NewModules);
+  AutoJIT();
+  ~AutoJIT();
 
+  static AutoJIT &get(std::vector<std::string> &NewModules);
+  llvm::Error initialize(llvm::orc::LLJITBuilder &B, llvm::orc::SimpleRemoteEPCTransport *Transport = nullptr);
   uint64_t lookup(const char *Symbol);
   bool haveHostSymbol(llvm::StringRef Name) const;
   llvm::orc::ThreadSafeModule loadModule(llvm::StringRef FilePath) const;
   llvm::Error submit(llvm::orc::ThreadSafeModule Module);
 
-  AutoJIT(llvm::orc::LLJITBuilder &B);
-  ~AutoJIT();
-
 private:
   std::unique_ptr<llvm::orc::LLJIT> JIT_;
+  llvm::orc::SimpleRemoteEPCTransport *Transport;
   mutable llvm::sys::DynamicLibrary HostProcess_;
   mutable std::unordered_set<std::string> HostSymbolsCache_;
 };
