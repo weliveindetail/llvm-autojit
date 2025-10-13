@@ -433,11 +433,27 @@ static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *data,
   /* The Result message arg_bytes contain the raw WrapperFunctionResult data.
    * The size is already in result_msg.arg_size (no size prefix in the data).
    * For void returns or out-of-band errors, the result may be empty (0 bytes).
+   * Out-of-band errors from the daemon are sent as a null-terminated error
+   * string.
    */
   if (result_msg.arg_size == 0) {
+    /* Empty result - could be void return or out-of-band error */
     *result = NULL;
     *result_size = 0;
   } else {
+    /* Check if this is an out-of-band error (null-terminated string)
+     * Out-of-band errors are sent as raw error message strings, not SPS-encoded
+     * data. We detect this by checking if the last byte is null
+     * (null-terminated string).
+     */
+    if (result_msg.arg_bytes[result_msg.arg_size - 1] == '\0') {
+      /* This appears to be an out-of-band error string */
+      ERROR_LOG("RPC function returned out-of-band error: %s\n",
+                (const char *)result_msg.arg_bytes);
+      free_epc_message(&result_msg);
+      return -1;
+    }
+
     *result = malloc(result_msg.arg_size);
     if (!*result) {
       free_epc_message(&result_msg);
