@@ -18,7 +18,10 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <string>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 using namespace llvm;
@@ -622,64 +625,212 @@ void SimpleRemoteEPC::handleCallWrapper(
       "callWrapper task"));
 }
 
-// Right now the daemon is always forked as a child process
+/* Get the socket path for autojitd - must match the stub's logic */
+static std::string getDaemonSocketPath() {
+  if (const char *EnvPath = std::getenv("AUTOJIT_SOCKET_PATH"))
+    return EnvPath;
+
+  if (const char *RuntimeDir = std::getenv("XDG_RUNTIME_DIR"))
+    return std::string(RuntimeDir) + "/autojitd.sock";
+
+  return std::string("/tmp/autojitd-") + std::to_string(getuid()) + ".sock";
+}
+
+/* Create and bind a Unix domain socket for listening */
+static Expected<int> createListenSocket() {
+  std::string SocketPath = getDaemonSocketPath();
+
+  // Remove stale socket file if it exists
+  unlink(SocketPath.c_str());
+
+  int ListenFd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (ListenFd < 0)
+    return make_error<StringError>("Failed to create socket: " +
+                                   std::string(strerror(errno)),
+                                   inconvertibleErrorCode());
+
+  struct sockaddr_un Addr;
+  memset(&Addr, 0, sizeof(Addr));
+  Addr.sun_family = AF_UNIX;
+  strncpy(Addr.sun_path, SocketPath.c_str(), sizeof(Addr.sun_path) - 1);
+
+  if (bind(ListenFd, (struct sockaddr *)&Addr, sizeof(Addr)) < 0) {
+    close(ListenFd);
+    return make_error<StringError>("Failed to bind socket to " + SocketPath +
+                                   ": " + std::string(strerror(errno)),
+                                   inconvertibleErrorCode());
+  }
+
+  if (listen(ListenFd, 5) < 0) {
+    close(ListenFd);
+    unlink(SocketPath.c_str());
+    return make_error<StringError>("Failed to listen on socket: " +
+                                   std::string(strerror(errno)),
+                                   inconvertibleErrorCode());
+  }
+
+  DBG() << "Listening on " << SocketPath << "\n";
+  return ListenFd;
+}
+
+/* Accept a connection from the listen socket */
+static Expected<int> acceptConnection(int ListenFd) {
+  struct sockaddr_un ClientAddr;
+  socklen_t ClientLen = sizeof(ClientAddr);
+
+  int ClientFd = accept(ListenFd, (struct sockaddr *)&ClientAddr, &ClientLen);
+  if (ClientFd < 0)
+    return make_error<StringError>("Failed to accept connection: " +
+                                   std::string(strerror(errno)),
+                                   inconvertibleErrorCode());
+
+  DBG() << "Accepted connection on fd " << ClientFd << "\n";
+  return ClientFd;
+}
+
 int main(int argc, char *argv[]) {
   *Instance = std::make_unique<autojit::AutoJIT>();
-  DBG() << "Starting daemon\n";
 
-  auto SSP = std::make_shared<SymbolStringPool>();
-  auto D = std::make_unique<DynamicThreadPoolTaskDispatcher>(std::nullopt);
-  auto ES = std::make_unique<ExecutionSession>(
-      std::make_unique<SimpleRemoteEPC>(std::move(SSP), std::move(D)));
-  auto &EPC = static_cast<SimpleRemoteEPC &>(ES->getExecutorProcessControl());
-  auto T = ExitOnErr(
-      FDSimpleRemoteEPCTransport::Create(EPC, STDIN_FILENO, STDOUT_FILENO));
+  // Check for --stdio flag
+  bool StdioMode = false;
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], "--stdio") == 0) {
+      StdioMode = true;
+      break;
+    }
+  }
 
-  // Read from stdin, write to stdout
-  EPC.setTransport(*T);
+  DBG() << "Starting daemon in " << (StdioMode ? "stdio" : "standalone")
+        << " mode\n";
 
-  // Receive the setup message from the target process
-  SimpleRemoteEPC::Setup S;
-  S.CreateMemoryAccess = SimpleRemoteEPC::createDefaultMemoryAccess;
-  S.CreateMemoryManager = SimpleRemoteEPC::createDefaultMemoryManager;
-  ExitOnErr(EPC.setup(std::move(S)));
+  if (StdioMode) {
+    // Stdio mode: single connection via stdin/stdout (for child processes)
+    auto SSP = std::make_shared<SymbolStringPool>();
+    auto D = std::make_unique<DynamicThreadPoolTaskDispatcher>(std::nullopt);
+    auto ES = std::make_unique<ExecutionSession>(
+        std::make_unique<SimpleRemoteEPC>(std::move(SSP), std::move(D)));
+    auto &EPC = static_cast<SimpleRemoteEPC &>(ES->getExecutorProcessControl());
+    auto T = ExitOnErr(
+        FDSimpleRemoteEPCTransport::Create(EPC, STDIN_FILENO, STDOUT_FILENO));
 
+    EPC.setTransport(*T);
+
+    // Receive the setup message from the target process
+    SimpleRemoteEPC::Setup S;
+    S.CreateMemoryAccess = SimpleRemoteEPC::createDefaultMemoryAccess;
+    S.CreateMemoryManager = SimpleRemoteEPC::createDefaultMemoryManager;
+    ExitOnErr(EPC.setup(std::move(S)));
+
+    LLJITBuilder Builder;
+    Builder.setExecutionSession(std::move(ES));
+    ExitOnErr(Instance->get()->initialize(Builder, T.get()));
+
+    // Send setup message to the target process
+    SimpleRemoteEPCExecutorInfo EI;
+    EI.TargetTriple = sys::getProcessTriple();
+    EI.PageSize = ExitOnErr(sys::Process::getPageSize());
+    EI.BootstrapSymbols["autojit_rpc_register"] =
+        ExecutorAddr::fromPtr(autojit_rpc_register);
+    EI.BootstrapSymbols["autojit_rpc_materialize"] =
+        ExecutorAddr::fromPtr(autojit_rpc_materialize);
+
+    using SPSSerialize =
+        shared::SPSArgList<shared::SPSSimpleRemoteEPCExecutorInfo>;
+    auto SetupPacketBytes =
+        shared::WrapperFunctionResult::allocate(SPSSerialize::size(EI));
+    shared::SPSOutputBuffer OB(SetupPacketBytes.data(), SetupPacketBytes.size());
+    if (!SPSSerialize::serialize(OB, EI)) {
+      LOG() << "Could not encode setup packet\n";
+      exit(1);
+    }
+
+    ExitOnErr(T->sendMessage(SimpleRemoteEPCOpcode::Setup, 0, ExecutorAddr(),
+                             {SetupPacketBytes.data(), SetupPacketBytes.size()}));
+
+    DBG() << "Daemon entering event loop\n";
+
+    // Wait for disconnect
+    if (auto Err = EPC.waitForDisconnect()) {
+      DBG() << "Disconnect error: " << toString(std::move(Err)) << "\n";
+      return 1;
+    }
+
+    DBG() << "Host disconnected, daemon shutting down\n";
+    return 0;
+  }
+
+  // Standalone mode: listen on Unix domain socket for multiple connections
+  int ListenFd = ExitOnErr(createListenSocket());
+
+  // Initialize AutoJIT once for all connections
   LLJITBuilder Builder;
-  Builder.setExecutionSession(std::move(ES));
-  ExitOnErr(Instance->get()->initialize(Builder, T.get()));
+  // Note: We can't initialize the JIT yet because we need the ExecutionSession
+  // which requires a connection. We'll initialize on first connection.
 
-  // Send setup message to the target process
-  std::vector<char> SetupPacket;
-  SimpleRemoteEPCExecutorInfo EI;
-  EI.TargetTriple = sys::getProcessTriple();
-  EI.PageSize = ExitOnErr(sys::Process::getPageSize());
-  EI.BootstrapSymbols["autojit_rpc_register"] =
-      ExecutorAddr::fromPtr(autojit_rpc_register);
-  EI.BootstrapSymbols["autojit_rpc_materialize"] =
-      ExecutorAddr::fromPtr(autojit_rpc_materialize);
+  while (true) {
+    DBG() << "Waiting for connection...\n";
+    int ClientFd = ExitOnErr(acceptConnection(ListenFd));
 
-  using SPSSerialize =
-      shared::SPSArgList<shared::SPSSimpleRemoteEPCExecutorInfo>;
-  auto SetupPacketBytes =
-      shared::WrapperFunctionResult::allocate(SPSSerialize::size(EI));
-  shared::SPSOutputBuffer OB(SetupPacketBytes.data(), SetupPacketBytes.size());
-  if (!SPSSerialize::serialize(OB, EI)) {
-    LOG() << "Could not encode setup packet\n";
-    exit(1);
+    // Create EPC and transport for this connection
+    auto SSP = std::make_shared<SymbolStringPool>();
+    auto D = std::make_unique<DynamicThreadPoolTaskDispatcher>(std::nullopt);
+    auto ES = std::make_unique<ExecutionSession>(
+        std::make_unique<SimpleRemoteEPC>(std::move(SSP), std::move(D)));
+    auto &EPC = static_cast<SimpleRemoteEPC &>(ES->getExecutorProcessControl());
+    auto T = ExitOnErr(FDSimpleRemoteEPCTransport::Create(EPC, ClientFd, ClientFd));
+
+    EPC.setTransport(*T);
+
+    // Receive the setup message from the client
+    SimpleRemoteEPC::Setup S;
+    S.CreateMemoryAccess = SimpleRemoteEPC::createDefaultMemoryAccess;
+    S.CreateMemoryManager = SimpleRemoteEPC::createDefaultMemoryManager;
+    ExitOnErr(EPC.setup(std::move(S)));
+
+    // Initialize JIT (reuse the same instance for all connections)
+    // TODO: This currently creates a new ES per connection but reuses the JIT.
+    // We may need to refactor to properly share the JIT across connections.
+    LLJITBuilder Builder;
+    Builder.setExecutionSession(std::move(ES));
+    ExitOnErr(Instance->get()->initialize(Builder, T.get()));
+
+    // Send setup message to the client
+    SimpleRemoteEPCExecutorInfo EI;
+    EI.TargetTriple = sys::getProcessTriple();
+    EI.PageSize = ExitOnErr(sys::Process::getPageSize());
+    EI.BootstrapSymbols["autojit_rpc_register"] =
+        ExecutorAddr::fromPtr(autojit_rpc_register);
+    EI.BootstrapSymbols["autojit_rpc_materialize"] =
+        ExecutorAddr::fromPtr(autojit_rpc_materialize);
+
+    using SPSSerialize =
+        shared::SPSArgList<shared::SPSSimpleRemoteEPCExecutorInfo>;
+    auto SetupPacketBytes =
+        shared::WrapperFunctionResult::allocate(SPSSerialize::size(EI));
+    shared::SPSOutputBuffer OB(SetupPacketBytes.data(), SetupPacketBytes.size());
+    if (!SPSSerialize::serialize(OB, EI)) {
+      LOG() << "Could not encode setup packet\n";
+      close(ClientFd);
+      continue;
+    }
+
+    ExitOnErr(T->sendMessage(SimpleRemoteEPCOpcode::Setup, 0, ExecutorAddr(),
+                             {SetupPacketBytes.data(), SetupPacketBytes.size()}));
+
+    DBG() << "Client connected, entering event loop\n";
+
+    // Wait for disconnect
+    if (auto Err = EPC.waitForDisconnect()) {
+      DBG() << "Client disconnect error: " << toString(std::move(Err)) << "\n";
+    }
+
+    DBG() << "Client disconnected\n";
+    close(ClientFd);
+    // Continue accepting new connections
   }
 
-  ExitOnErr(T->sendMessage(SimpleRemoteEPCOpcode::Setup, 0, ExecutorAddr(),
-                           {SetupPacketBytes.data(), SetupPacketBytes.size()}));
-
-  DBG() << "Daemon entering event loop\n";
-
-  // Wait for disconnect. The transport will handle incoming messages and call
-  // handleDisconnect when the stub disconnects or an error occurs.
-  if (auto Err = EPC.waitForDisconnect()) {
-    DBG() << "Disconnect error: " << toString(std::move(Err)) << "\n";
-    return 1;
-  }
-
-  DBG() << "Host disconnected, daemon shutting down\n";
+  close(ListenFd);
+  std::string SocketPath = getDaemonSocketPath();
+  unlink(SocketPath.c_str());
   return 0;
 }

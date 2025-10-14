@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -1352,13 +1353,15 @@ static int message_loop_until(int fd, uint64_t stop_opcode,
 
 static void cleanup_daemon(void) {
   if (g_daemon_fd >= 0) {
-    /* Send hangup message */
-    epc_message_t hangup = {.opcode = OPCODE_HANGUP,
-                            .seqno = 0,
-                            .tag_addr = 0,
-                            .arg_bytes = NULL,
-                            .arg_size = 0};
-    send_epc_message(g_daemon_fd, &hangup);
+    /* Send hangup message only if we spawned the daemon */
+    if (g_daemon_pid > 0) {
+      epc_message_t hangup = {.opcode = OPCODE_HANGUP,
+                              .seqno = 0,
+                              .tag_addr = 0,
+                              .arg_bytes = NULL,
+                              .arg_size = 0};
+      send_epc_message(g_daemon_fd, &hangup);
+    }
 
     close(g_daemon_fd);
     g_daemon_fd = -1;
@@ -1387,51 +1390,118 @@ static int checkenv(const char *var) {
   return 0;
 }
 
+/* Get the socket path for autojitd
+ * Returns a pointer to a static buffer containing the socket path.
+ * Priority: AUTOJIT_SOCKET_PATH env var, then $XDG_RUNTIME_DIR/autojitd.sock,
+ * then /tmp/autojitd-$UID.sock
+ */
+static const char *get_daemon_socket_path(void) {
+  static char socket_path[256];
+  const char *env_path = getenv("AUTOJIT_SOCKET_PATH");
+
+  if (env_path) {
+    snprintf(socket_path, sizeof(socket_path), "%s", env_path);
+    return socket_path;
+  }
+
+  const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+  if (runtime_dir) {
+    snprintf(socket_path, sizeof(socket_path), "%s/autojitd.sock", runtime_dir);
+    return socket_path;
+  }
+
+  snprintf(socket_path, sizeof(socket_path), "/tmp/autojitd-%d.sock", getuid());
+  return socket_path;
+}
+
+/* Try to connect to an existing autojitd process
+ * Returns: file descriptor on success, -1 on failure
+ */
+static int connect_to_existing_daemon(void) {
+  const char *socket_path = get_daemon_socket_path();
+
+  DEBUG_LOG("Attempting to connect to existing daemon at %s\n", socket_path);
+
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) {
+    DEBUG_LOG("Failed to create socket: %s\n", strerror(errno));
+    return -1;
+  }
+
+  struct sockaddr_un addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
+
+  if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    DEBUG_LOG("Failed to connect to daemon socket: %s\n", strerror(errno));
+    close(fd);
+    return -1;
+  }
+
+  DEBUG_LOG("Successfully connected to existing daemon\n");
+  return fd;
+}
+
 static void initialize_daemon(void) {
   g_debug = checkenv("AUTOJIT_DEBUG");
   DEBUG_LOG("Initializing daemon\n");
 
-  /* Create socketpair for bidirectional communication */
-  int fds[2];
-  if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) < 0) {
-    ERROR_LOG("socketpair failed: %s\n", strerror(errno));
-    exit(1);
+  /* First, try to connect to an existing daemon */
+  int daemon_fd = connect_to_existing_daemon();
+
+  if (daemon_fd >= 0) {
+    /* Successfully connected to existing daemon */
+    g_daemon_fd = daemon_fd;
+    g_daemon_pid = -1; /* No child process to track */
+    DEBUG_LOG("Connected to existing daemon\n");
+  } else {
+    /* No existing daemon found - spawn a new one */
+    DEBUG_LOG("No existing daemon found, spawning new daemon\n");
+
+    /* Create socketpair for bidirectional communication */
+    int fds[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) < 0) {
+      ERROR_LOG("socketpair failed: %s\n", strerror(errno));
+      exit(1);
+    }
+
+    /* Fork daemon process */
+    pid_t pid = fork();
+    if (pid < 0) {
+      ERROR_LOG("fork failed: %s\n", strerror(errno));
+      exit(1);
+    }
+
+    if (pid == 0) {
+      /* Child process - exec daemon */
+      close(fds[1]);
+
+      /* Redirect stdin/stdout to socket */
+      dup2(fds[0], STDIN_FILENO);
+      dup2(fds[0], STDOUT_FILENO);
+      if (fds[0] > STDERR_FILENO)
+        close(fds[0]);
+
+      /* Find daemon executable */
+      const char *daemon_path = getenv("AUTOJIT_DAEMON_PATH");
+      if (!daemon_path)
+        daemon_path = "autojitd";
+
+      execl(daemon_path, "autojitd", "--stdio", NULL);
+      fprintf(stderr, "autojit-stub: failed to exec daemon: %s\n",
+              strerror(errno));
+      _exit(1);
+    }
+
+    /* Parent process */
+    close(fds[0]);
+    g_daemon_fd = fds[1];
+    g_daemon_pid = pid;
+
+    DEBUG_LOG("Daemon started with pid %d\n", g_daemon_pid);
   }
 
-  /* Fork daemon process */
-  pid_t pid = fork();
-  if (pid < 0) {
-    ERROR_LOG("fork failed: %s\n", strerror(errno));
-    exit(1);
-  }
-
-  if (pid == 0) {
-    /* Child process - exec daemon */
-    close(fds[1]);
-
-    /* Redirect stdin/stdout to socket */
-    dup2(fds[0], STDIN_FILENO);
-    dup2(fds[0], STDOUT_FILENO);
-    if (fds[0] > STDERR_FILENO)
-      close(fds[0]);
-
-    /* Find daemon executable */
-    const char *daemon_path = getenv("AUTOJIT_DAEMON_PATH");
-    if (!daemon_path)
-      daemon_path = "autojitd";
-
-    execl(daemon_path, "autojitd", NULL);
-    fprintf(stderr, "autojit-stub: failed to exec daemon: %s\n",
-            strerror(errno));
-    _exit(1);
-  }
-
-  /* Parent process */
-  close(fds[0]);
-  g_daemon_fd = fds[1];
-  g_daemon_pid = pid;
-
-  DEBUG_LOG("Daemon started with pid %d\n", g_daemon_pid);
   if (checkenv("AUTOJIT_WAIT_FOR_DEBUGGER")) {
     int c;
     printf("Waiting for debugger. Press ENTER to continue...");
