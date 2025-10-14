@@ -6,8 +6,6 @@ RUN apt-get update && apt-get install -y \
     git ninja-build cmake zlib1g-dev libzstd-dev python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install lit
-
 RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | \
     gpg --dearmor | tee /usr/share/keyrings/llvm-archive-keyring.gpg > /dev/null
 
@@ -22,6 +20,8 @@ RUN update-alternatives --install /usr/bin/cc  cc  /usr/bin/clang-20   100 && \
     update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++-20 100 && \
     update-alternatives --install /usr/bin/ld  ld  /usr/bin/ld.lld-20  100 && \
     ln -s /usr/bin/clang-20 /usr/bin/clang
+
+RUN pip install lit psutil
 
 WORKDIR /workspace
 CMD ["/bin/bash"]

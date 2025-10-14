@@ -1,5 +1,6 @@
 import os
 import lit.formats
+import psutil
 import subprocess
 from pathlib import Path
 
@@ -31,6 +32,44 @@ else:
 config.environment['AUTOJIT_USE_TPDE'] = use_tpde
 print("Running regression tests with TPDE:", use_tpde)
 
+def is_set(var_name: str) -> bool:
+    val = os.getenv(var_name)
+    return val is not None and val.strip().lower() in {"1", "on", "yes", "true"}
+
+# Check for existing autojitd daemon process
+daemon_running = False
+daemon_bin = Path(config.autojit_tools_dir) / 'autojitd'
+for proc in psutil.process_iter(['name', 'exe']):
+    try:
+        if 'autojitd' in proc.info['name'] and not proc.info['exe'] is None:
+            daemon_bin = Path(proc.info['exe'])
+            daemon_running = True
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        continue
+
+# Honor mode as set by user and otherwise choose whether running or not
+daemon_mode = None
+if is_set('AUTOJITD_FORCE_SPAWN'):
+    daemon_mode = False
+elif is_set('AUTOJITD_FORCE_DAEMON'):
+    if not daemon_running:
+        raise RuntimeError("AUTOJITD_FORCE_DAEMON set, but no autojitd process found")
+    daemon_mode = True
+else:
+    daemon_mode = daemon_running
+
+# Force one mode for all tests
+if daemon_mode:
+    daemon_state_str = "is up and running"
+    config.environment['AUTOJITD_FORCE_DAEMON'] = 'On'
+    config.environment['XDG_RUNTIME_DIR'] = os.environ['XDG_RUNTIME_DIR']
+else:
+    daemon_state_str = "is spawned for each test"
+    config.environment['AUTOJITD_FORCE_SPAWN'] = 'On'
+
+config.environment['AUTOJIT_DAEMON_PATH'] = str(daemon_bin)
+print(f"Daemon {daemon_state_str}: {str(daemon_bin)}")
+
 config.available_features.add('shell')
 if hasattr(config, 'enable_plugins') and config.enable_plugins:
     config.available_features.add('plugins')
@@ -56,3 +95,9 @@ try:
         config.available_features.add('libstdcxx')
 except subprocess.CalledProcessError as ex:
     print(f"Failed to run ldd on {str(runtime)}: {ex}")
+
+print('Environment:')
+for name in { 'PATH', 'AUTOJIT_DAEMON_PATH', 'AUTOJITD_FORCE_SPAWN', 'AUTOJITD_FORCE_DAEMON', 'AUTOJIT_USE_TPDE', 'XDG_RUNTIME_DIR' }:
+    if name in config.environment:
+        print(f"  export {name}=\"{config.environment[name]}\"")
+print('')

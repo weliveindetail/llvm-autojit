@@ -1448,7 +1448,14 @@ static void initialize_daemon(void) {
   DEBUG_LOG("Initializing daemon\n");
 
   /* First, try to connect to an existing daemon */
-  int daemon_fd = connect_to_existing_daemon();
+  int daemon_fd = -1;
+  if (!checkenv("AUTOJITD_FORCE_SPAWN"))
+    daemon_fd = connect_to_existing_daemon();
+
+  if (checkenv("AUTOJITD_FORCE_DAEMON") && daemon_fd < 0) {
+    ERROR_LOG("connecting to daemon failed: %s\n", strerror(errno));
+    exit(1);
+  }
 
   if (daemon_fd >= 0) {
     /* Successfully connected to existing daemon */
@@ -1489,8 +1496,8 @@ static void initialize_daemon(void) {
         daemon_path = "autojitd";
 
       execl(daemon_path, "autojitd", "--stdio", NULL);
-      fprintf(stderr, "autojit-stub: failed to exec daemon: %s\n",
-              strerror(errno));
+      fprintf(stderr, "autojit-stub: failed to exec daemon '%s': %s\n",
+              daemon_path, strerror(errno));
       _exit(1);
     }
 

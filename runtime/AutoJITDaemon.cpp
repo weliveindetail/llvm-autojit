@@ -28,7 +28,7 @@ using namespace llvm;
 using namespace llvm::orc;
 
 static llvm::ExitOnError ExitOnErr("[autojitd] ");
-static ManagedStatic<std::unique_ptr<autojit::AutoJIT>> Instance;
+static autojit::AutoJIT *Instance = nullptr;
 
 extern "C" shared::CWrapperFunctionResult
 autojit_rpc_register(const char *ArgData, size_t ArgSize) {
@@ -56,14 +56,14 @@ autojit_rpc_register(const char *ArgData, size_t ArgSize) {
   // In daemon mode, load the module directly into the JIT instead of using
   // ModulesRegistered_ The JIT should already be initialized by the time we get
   // here
-  if (!Instance.isConstructed())
+  if (!Instance)
     return shared::WrapperFunctionResult::createOutOfBandError(
                "JIT not initialized")
         .release();
 
   // Load the module (we'll need to implement this in AutoJIT)
-  ThreadSafeModule TSM = Instance->get()->loadModule(FilePath);
-  if (Error Err = Instance->get()->submit(std::move(TSM))) {
+  ThreadSafeModule TSM = Instance->loadModule(FilePath);
+  if (Error Err = Instance->submit(std::move(TSM))) {
     std::string Message = toString(std::move(Err));
     DBG() << "Loading FAILED: " << Message << "\n";
     return shared::WrapperFunctionResult::createOutOfBandError(
@@ -88,7 +88,7 @@ autojit_rpc_materialize(const char *ArgData, size_t ArgSize) {
         .release();
   }
 
-  if (!Instance.isConstructed())
+  if (!Instance)
     return shared::WrapperFunctionResult::createOutOfBandError(
                "JIT not initialized")
         .release();
@@ -96,7 +96,7 @@ autojit_rpc_materialize(const char *ArgData, size_t ArgSize) {
   std::string Name = autojit::guidToFnName(Guid);
   DBG() << "Lookup function: " << Name << "\n";
 
-  uint64_t Addr = Instance->get()->lookup(Name.c_str());
+  uint64_t Addr = Instance->lookup(Name.c_str());
   DBG() << "Materialized at address 0x" << format("%016" PRIx64, Addr) << "\n";
 
   // Serialize the result
@@ -143,7 +143,7 @@ public:
   SimpleRemoteEPC &operator=(SimpleRemoteEPC &&) = delete;
   ~SimpleRemoteEPC();
 
-  Error waitForDisconnect();
+  int waitForDisconnect();
 
   Expected<int32_t> runAsMain(ExecutorAddr, ArrayRef<std::string>) override {
     llvm_unreachable("Daemon is passive");
@@ -191,7 +191,6 @@ private:
                      SimpleRemoteEPCArgBytesVector ArgBytes);
   void handleCallWrapper(uint64_t RemoteSeqNo, ExecutorAddr TagAddr,
                          SimpleRemoteEPCArgBytesVector ArgBytes);
-  Error handleHangup(SimpleRemoteEPCArgBytesVector ArgBytes);
 
   uint64_t getNextSeqNo() { return NextSeqNo++; }
   void releaseSeqNo(uint64_t SeqNo) {}
@@ -339,49 +338,40 @@ SimpleRemoteEPC::handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
     if (auto Err = handleSetup(SeqNo, TagAddr, std::move(ArgBytes)))
       return std::move(Err);
     break;
-  case SimpleRemoteEPCOpcode::Hangup: {
-    DisconnectErr = handleHangup(std::move(ArgBytes));
-    T->disconnect();
-    std::unique_lock<std::mutex> Lock(ServerStateMutex);
-    Disconnected = true;
-    return EndSession;
-  }
   case SimpleRemoteEPCOpcode::Result:
     if (auto Err = handleResult(SeqNo, TagAddr, std::move(ArgBytes)))
       return std::move(Err);
     break;
   case SimpleRemoteEPCOpcode::CallWrapper:
+    if (TagAddr.getValue() == 0) {
+      LOG() << "Warning: supressing invocation of nullptr in daemon process!\n";
+      break;
+    }
     handleCallWrapper(SeqNo, TagAddr, std::move(ArgBytes));
     break;
+  case SimpleRemoteEPCOpcode::Hangup:
+    return EndSession;
   }
   return ContinueSession;
 }
 
-// The disconnect process is confusing:
-// 1. Message loop thread receives a Hangup message and parse it here
-// 2. 
-Error SimpleRemoteEPC::handleHangup(SimpleRemoteEPCArgBytesVector ArgBytes) {
-  using namespace llvm::orc::shared;
-  auto WFR = WrapperFunctionResult::copyFrom(ArgBytes.data(), ArgBytes.size());
-  if (const char *ErrMsg = WFR.getOutOfBandError())
-    return make_error<StringError>(ErrMsg, inconvertibleErrorCode());
-
-  shared::detail::SPSSerializableError Info;
-  SPSInputBuffer IB(WFR.data(), WFR.size());
-  if (!SPSArgList<SPSError>::deserialize(IB, Info))
-    return make_error<StringError>("Could not deserialize hangup info",
-                                   inconvertibleErrorCode());
-  return fromSPSSerializable(std::move(Info));
-}
-
 void SimpleRemoteEPC::handleDisconnect(Error Err) {
+  if (Err) {
+    DBG() << "Disconnect error: " << toString(std::move(Err)) << "\n";
+  }
+  std::unique_lock<std::mutex> Lock(ServerStateMutex);
+  Disconnected = true;
   DisconnectCV.notify_all();
 }
 
-Error SimpleRemoteEPC::waitForDisconnect() {
+int SimpleRemoteEPC::waitForDisconnect() {
   std::unique_lock<std::mutex> Lock(ServerStateMutex);
   DisconnectCV.wait(Lock, [this]() { return Disconnected; });
-  return std::move(DisconnectErr);
+  if (DisconnectErr) {
+    DBG() << "Disconnect-decode error: " << toString(std::move(DisconnectErr)) << "\n";
+    return 1; // TODO: convert to error-code?
+  }
+  return 0;
 }
 
 Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
@@ -440,6 +430,11 @@ Error SimpleRemoteEPC::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
     dbgs() << ", seqno = " << SeqNo << ", tag-addr = " << TagAddr
            << ", arg-buffer = " << formatv("{0:x}", ArgBytes.size())
            << " bytes\n";
+  }
+
+  if (OpC == SimpleRemoteEPCOpcode::CallWrapper && TagAddr.getValue() == 0) {
+    LOG() << "Warning: supressing invocation of nullptr in target process!\n";
+    return Error::success(); // TODO: If we returned an error, is it rcoverable?
   }
   auto Err = T->sendMessage(OpC, SeqNo, TagAddr, ArgBytes);
   {
@@ -689,8 +684,6 @@ static Expected<int> acceptConnection(int ListenFd) {
 }
 
 int main(int argc, char *argv[]) {
-  *Instance = std::make_unique<autojit::AutoJIT>();
-
   // Check for --stdio flag
   bool StdioMode = false;
   for (int i = 1; i < argc; ++i) {
@@ -705,6 +698,9 @@ int main(int argc, char *argv[]) {
 
   if (StdioMode) {
     // Stdio mode: single connection via stdin/stdout (for child processes)
+    autojit::AutoJIT JIT;
+    Instance = &JIT;
+
     auto SSP = std::make_shared<SymbolStringPool>();
     auto D = std::make_unique<DynamicThreadPoolTaskDispatcher>(std::nullopt);
     auto ES = std::make_unique<ExecutionSession>(
@@ -723,7 +719,7 @@ int main(int argc, char *argv[]) {
 
     LLJITBuilder Builder;
     Builder.setExecutionSession(std::move(ES));
-    ExitOnErr(Instance->get()->initialize(Builder, T.get()));
+    ExitOnErr(Instance->initialize(Builder, T.get()));
 
     // Send setup message to the target process
     SimpleRemoteEPCExecutorInfo EI;
@@ -747,86 +743,87 @@ int main(int argc, char *argv[]) {
     ExitOnErr(T->sendMessage(SimpleRemoteEPCOpcode::Setup, 0, ExecutorAddr(),
                              {SetupPacketBytes.data(), SetupPacketBytes.size()}));
 
-    DBG() << "Daemon entering event loop\n";
-
-    // Wait for disconnect
-    if (auto Err = EPC.waitForDisconnect()) {
-      DBG() << "Disconnect error: " << toString(std::move(Err)) << "\n";
-      return 1;
-    }
-
+    DBG() << "Client connected, entering event loop\n";
+    int ExitCode = EPC.waitForDisconnect();
     DBG() << "Host disconnected, daemon shutting down\n";
-    return 0;
+    return ExitCode;
   }
 
   // Standalone mode: listen on Unix domain socket for multiple connections
   int ListenFd = ExitOnErr(createListenSocket());
 
-  // Initialize AutoJIT once for all connections
-  LLJITBuilder Builder;
-  // Note: We can't initialize the JIT yet because we need the ExecutionSession
-  // which requires a connection. We'll initialize on first connection.
-
   while (true) {
     DBG() << "Waiting for connection...\n";
     int ClientFd = ExitOnErr(acceptConnection(ListenFd));
 
-    // Create EPC and transport for this connection
-    auto SSP = std::make_shared<SymbolStringPool>();
-    auto D = std::make_unique<DynamicThreadPoolTaskDispatcher>(std::nullopt);
-    auto ES = std::make_unique<ExecutionSession>(
-        std::make_unique<SimpleRemoteEPC>(std::move(SSP), std::move(D)));
-    auto &EPC = static_cast<SimpleRemoteEPC &>(ES->getExecutorProcessControl());
-    auto T = ExitOnErr(FDSimpleRemoteEPCTransport::Create(EPC, ClientFd, ClientFd));
-
-    EPC.setTransport(*T);
-
-    // Receive the setup message from the client
-    SimpleRemoteEPC::Setup S;
-    S.CreateMemoryAccess = SimpleRemoteEPC::createDefaultMemoryAccess;
-    S.CreateMemoryManager = SimpleRemoteEPC::createDefaultMemoryManager;
-    ExitOnErr(EPC.setup(std::move(S)));
-
-    // Initialize JIT (reuse the same instance for all connections)
-    // TODO: This currently creates a new ES per connection but reuses the JIT.
-    // We may need to refactor to properly share the JIT across connections.
-    LLJITBuilder Builder;
-    Builder.setExecutionSession(std::move(ES));
-    ExitOnErr(Instance->get()->initialize(Builder, T.get()));
-
-    // Send setup message to the client
-    SimpleRemoteEPCExecutorInfo EI;
-    EI.TargetTriple = sys::getProcessTriple();
-    EI.PageSize = ExitOnErr(sys::Process::getPageSize());
-    EI.BootstrapSymbols["autojit_rpc_register"] =
-        ExecutorAddr::fromPtr(autojit_rpc_register);
-    EI.BootstrapSymbols["autojit_rpc_materialize"] =
-        ExecutorAddr::fromPtr(autojit_rpc_materialize);
-
-    using SPSSerialize =
-        shared::SPSArgList<shared::SPSSimpleRemoteEPCExecutorInfo>;
-    auto SetupPacketBytes =
-        shared::WrapperFunctionResult::allocate(SPSSerialize::size(EI));
-    shared::SPSOutputBuffer OB(SetupPacketBytes.data(), SetupPacketBytes.size());
-    if (!SPSSerialize::serialize(OB, EI)) {
-      LOG() << "Could not encode setup packet\n";
+    // Fork a child process to handle this connection
+    // This allows each connection to have its own isolated JIT instance
+    pid_t pid = fork();
+    if (pid < 0) {
+      LOG() << "Failed to fork for client connection: " << strerror(errno) << "\n";
       close(ClientFd);
       continue;
     }
 
-    ExitOnErr(T->sendMessage(SimpleRemoteEPCOpcode::Setup, 0, ExecutorAddr(),
-                             {SetupPacketBytes.data(), SetupPacketBytes.size()}));
+    if (pid == 0) {
+      // Child process: handle this connection
+      close(ListenFd);  // Don't need the listen socket in child
 
-    DBG() << "Client connected, entering event loop\n";
+      // Create a new AutoJIT instance for this connection (stack variable)
+      autojit::AutoJIT JIT;
+      Instance = &JIT;
 
-    // Wait for disconnect
-    if (auto Err = EPC.waitForDisconnect()) {
-      DBG() << "Client disconnect error: " << toString(std::move(Err)) << "\n";
+      // Create EPC and transport for this connection
+      auto SSP = std::make_shared<SymbolStringPool>();
+      auto D = std::make_unique<DynamicThreadPoolTaskDispatcher>(std::nullopt);
+      auto ES = std::make_unique<ExecutionSession>(
+          std::make_unique<SimpleRemoteEPC>(std::move(SSP), std::move(D)));
+      auto &EPC = static_cast<SimpleRemoteEPC &>(ES->getExecutorProcessControl());
+      auto T = ExitOnErr(FDSimpleRemoteEPCTransport::Create(EPC, ClientFd, ClientFd));
+
+      EPC.setTransport(*T);
+
+      // Receive the setup message from the client
+      SimpleRemoteEPC::Setup S;
+      S.CreateMemoryAccess = SimpleRemoteEPC::createDefaultMemoryAccess;
+      S.CreateMemoryManager = SimpleRemoteEPC::createDefaultMemoryManager;
+      ExitOnErr(EPC.setup(std::move(S)));
+
+      // Initialize JIT for this connection
+      LLJITBuilder Builder;
+      Builder.setExecutionSession(std::move(ES));
+      ExitOnErr(Instance->initialize(Builder, T.get()));
+
+      // Send setup message to the client
+      SimpleRemoteEPCExecutorInfo EI;
+      EI.TargetTriple = sys::getProcessTriple();
+      EI.PageSize = ExitOnErr(sys::Process::getPageSize());
+      EI.BootstrapSymbols["autojit_rpc_register"] =
+          ExecutorAddr::fromPtr(autojit_rpc_register);
+      EI.BootstrapSymbols["autojit_rpc_materialize"] =
+          ExecutorAddr::fromPtr(autojit_rpc_materialize);
+
+      using SPSSerialize =
+          shared::SPSArgList<shared::SPSSimpleRemoteEPCExecutorInfo>;
+      auto SetupPacketBytes =
+          shared::WrapperFunctionResult::allocate(SPSSerialize::size(EI));
+      shared::SPSOutputBuffer OB(SetupPacketBytes.data(), SetupPacketBytes.size());
+      if (!SPSSerialize::serialize(OB, EI)) {
+        LOG() << "Could not encode setup packet\n";
+        exit(1);
+      }
+
+      ExitOnErr(T->sendMessage(SimpleRemoteEPCOpcode::Setup, 0, ExecutorAddr(),
+                               {SetupPacketBytes.data(), SetupPacketBytes.size()}));
+
+      DBG() << "Client connected, entering event loop\n";
+      int ExitCode = EPC.waitForDisconnect();
+      DBG() << "Client disconnected\n";
+      exit(ExitCode);
     }
 
-    DBG() << "Client disconnected\n";
+    // Parent process: close client fd and continue accepting connections
     close(ClientFd);
-    // Continue accepting new connections
   }
 
   close(ListenFd);
