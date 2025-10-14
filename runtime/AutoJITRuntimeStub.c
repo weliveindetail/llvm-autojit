@@ -388,6 +388,10 @@ static int parse_setup_message(const epc_message_t *msg) {
  * ============================================================================
  */
 
+/* Message handling functions - defined later in the file */
+static int message_loop_until(int fd, uint64_t stop_opcode,
+                              epc_message_t *stop_msg);
+
 /* EH-frame registration wrappers - defined later in the file */
 static void llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
                                                     size_t ArgSize,
@@ -1201,17 +1205,12 @@ static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *data,
     return -1;
   }
 
-  /* Wait for Result message */
+  /* Wait for Result message - use message_loop_until to handle any nested
+   * CallWrapper messages from the daemon (e.g., memory reserve requests)
+   */
   epc_message_t result_msg;
-  if (recv_epc_message(fd, &result_msg) < 0) {
+  if (message_loop_until(fd, OPCODE_RESULT, &result_msg) < 0) {
     ERROR_LOG("Failed to receive Result message\n");
-    return -1;
-  }
-
-  if (result_msg.opcode != OPCODE_RESULT) {
-    ERROR_LOG("Expected Result message, got opcode 0x%02lx\n",
-              result_msg.opcode);
-    free_epc_message(&result_msg);
     return -1;
   }
 
@@ -1227,28 +1226,15 @@ static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *data,
 
   /* The Result message arg_bytes contain the raw WrapperFunctionResult data.
    * The size is already in result_msg.arg_size (no size prefix in the data).
-   * For void returns or out-of-band errors, the result may be empty (0 bytes).
-   * Out-of-band errors from the daemon are sent as a null-terminated error
-   * string.
+   * For void returns, the result may be empty (0 bytes).
+   * Out-of-band errors are sent separately via a different mechanism (not as Result messages).
    */
   if (result_msg.arg_size == 0) {
-    /* Empty result - could be void return or out-of-band error */
+    /* Empty result - void return */
     *result = NULL;
     *result_size = 0;
   } else {
-    /* Check if this is an out-of-band error (null-terminated string)
-     * Out-of-band errors are sent as raw error message strings, not SPS-encoded
-     * data. We detect this by checking if the last byte is null
-     * (null-terminated string).
-     */
-    if (result_msg.arg_bytes[result_msg.arg_size - 1] == '\0') {
-      /* This appears to be an out-of-band error string */
-      ERROR_LOG("RPC function returned out-of-band error: %s\n",
-                (const char *)result_msg.arg_bytes);
-      free_epc_message(&result_msg);
-      return -1;
-    }
-
+    /* Non-empty result - copy it */
     *result = malloc(result_msg.arg_size);
     if (!*result) {
       free_epc_message(&result_msg);
