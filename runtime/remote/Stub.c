@@ -1,4 +1,4 @@
-#include "AutoJITRuntime.h"
+#include "runtime/AutoJITRuntime.h"
 
 #include <ctype.h>
 #include <errno.h>

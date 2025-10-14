@@ -30,6 +30,3 @@ set_target_properties(autojit PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
   PREFIX ""
 )
-
-# Root directory has the generated config header
-target_include_directories(autojit PRIVATE ${AUTOJIT_CONFIG_FILE_DIR})

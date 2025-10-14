@@ -41,14 +41,13 @@ llvm_map_components_to_libnames(llvm_libs
 )
 
 # Static stub library: pure C, no LLVM deps
-add_library(autojit-stub STATIC AutoJITRuntimeStub.c AutoJITDebug.c)
+add_library(autojit-stub STATIC remote/Stub.c remote/StubDebug.c)
 set_target_properties(autojit-stub PROPERTIES
   OUTPUT_NAME "autojit_static-${CMAKE_SYSTEM_PROCESSOR}"
   ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
   C_STANDARD 11
 )
 
-target_include_directories(autojit-stub PRIVATE ${AUTOJIT_CONFIG_FILE_DIR})
 target_link_libraries(autojit-stub PRIVATE pthread)
 target_compile_options(autojit-stub PRIVATE -Wno-cast-qual)
 
@@ -59,12 +58,11 @@ install(
 )
 
 # Daemon executable
-add_executable(autojitd AutoJITDaemon.cpp AutoJITCommon.cpp ${orc_rt})
+add_executable(autojitd remote/Daemon.cpp core/AutoJIT.cpp ${orc_rt})
 set_target_properties(autojitd PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
-target_include_directories(autojitd PRIVATE ${AUTOJIT_CONFIG_FILE_DIR})
 target_link_libraries(autojitd PRIVATE ${llvm_libs} ${tpde_libs})
 
 if(NOT LLVM_ENABLE_RTTI)
@@ -82,14 +80,13 @@ install(
 )
 
 # Shared library
-add_library(autojit-so SHARED AutoJITRuntimeSO.cpp AutoJITCommon.cpp ${orc_rt})
+add_library(autojit-so SHARED inprocess/Shared.cpp core/AutoJIT.cpp ${orc_rt})
 set_target_properties(autojit-so PROPERTIES
   LIBRARY_OUTPUT_NAME "autojit-runtime"
   VERSION "${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}"
   LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
 )
 
-target_include_directories(autojit-so PRIVATE ${AUTOJIT_CONFIG_FILE_DIR})
 target_link_libraries(autojit-so PRIVATE ${llvm_libs} ${tpde_libs})
 target_link_options(autojit-so PRIVATE
   -Wl,-z,defs

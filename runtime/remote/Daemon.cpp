@@ -1,5 +1,5 @@
-#include "AutoJITCommon.h"
 #include "AutoJITConfig.h"
+#include "runtime/core/AutoJIT.h"
 
 #include "llvm/ExecutionEngine/Orc/Core.h"
 #include "llvm/ExecutionEngine/Orc/EPCGenericDylibManager.h"

@@ -1,5 +1,5 @@
-#include "AutoJITCommon.h"
-#include "AutoJITRuntime.h"
+#include "runtime/AutoJITRuntime.h"
+#include "runtime/core/AutoJIT.h"
 
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Bitcode/BitcodeReader.h"
