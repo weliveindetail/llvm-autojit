@@ -13,11 +13,11 @@ LLVM_ATTRIBUTE_USED void linkComponents() {
 static std::vector<std::string> ModulesRegistered_;
 
 static std::string hexstr(uint64_t Val) {
-  static constexpr unsigned NumDigits = sizeof(Val) / 4;
-  static const char HexDigits[] = "0123456789ABCDEF";
+  static constexpr int NumDigits = sizeof(Val) * 2;
+  static const char HexDigits[] = "0123456789abcdef";
   std::string Result(NumDigits, '0');
 
-  for (unsigned i = NumDigits - 1; i >= 0; i -= 1) {
+  for (int i = NumDigits - 1; i >= 0; i -= 1) {
     Result[i] = HexDigits[Val % 16];
     Val /= 16;
   }

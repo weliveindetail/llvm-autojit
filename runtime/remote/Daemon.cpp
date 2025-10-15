@@ -1,5 +1,6 @@
 #include "AutoJITConfig.h"
 #include "runtime/core/AutoJIT.h"
+#include "runtime/remote/Session.h"
 
 #include "llvm/ExecutionEngine/Orc/Core.h"
 #include "llvm/ExecutionEngine/Orc/EPCGenericDylibManager.h"
@@ -16,6 +17,7 @@
 #include "llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h"
 #include "llvm/Support/FormatVariadic.h"
 
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -30,45 +32,63 @@ using namespace llvm::orc;
 static llvm::ExitOnError ExitOnErr("[autojitd] ");
 static autojit::AutoJIT *Instance = nullptr;
 
+template <int NumDigits> static void hexstr(char *Buffer, uint64_t Val) {
+  static const char HexDigits[] = "0123456789ABCDEF";
+  for (int i = NumDigits - 1; i >= 0; i -= 1) {
+    Buffer[i] = HexDigits[Val % 16];
+    Val /= 16;
+  }
+}
+
+static std::string blobToHex(const char *ArgData, size_t ArgSize) {
+  constexpr size_t MaxBytes = 32;
+  std::string Buffer((2 * MaxBytes) +     // Digits
+                         (MaxBytes - 1) + // Spaces
+                         (MaxBytes / 8) + // extra Spaces
+                         3,
+                     ' '); // Dots
+  char *Pos = Buffer.data();
+  size_t End = std::min(MaxBytes, ArgSize);
+  for (size_t i = 0; i < End; i += 1) {
+    hexstr<2>(Pos, (unsigned char)ArgData[i]);
+    Pos += ((i % 8 == 7) ? 4 : 3);
+  }
+  Pos -= 1;
+  if (ArgSize > MaxBytes) {
+    Pos[0] = '.';
+    Pos[1] = '.';
+    Pos[2] = '.';
+    Pos += 3;
+  }
+  *Pos = '\0';
+  return Buffer;
+}
+
+shared::CWrapperFunctionResult outOfBandError(Twine Msg) {
+  std::string Tmp = Msg.str();
+  DBG() << "Raise out-of-band error: " << Tmp << "\n";
+  return shared::WrapperFunctionResult::createOutOfBandError(Tmp.c_str())
+      .release();
+}
+
 extern "C" shared::CWrapperFunctionResult
 autojit_rpc_register(const char *ArgData, size_t ArgSize) {
-  using SPSArgList = shared::SPSArgList<shared::SPSString>;
-
-  DBG() << "RPC register called with " << ArgSize << " bytes\n";
-  DBG() << "First 16 bytes (hex): ";
-  for (size_t i = 0; i < std::min(size_t(16), ArgSize); i++) {
-    fprintf(stderr, "%02x ", (unsigned char)ArgData[i]);
-  }
-  fprintf(stderr, "\n");
+  DBG() << "autojit_rpc_register: " << blobToHex(ArgData, ArgSize) << "\n";
 
   std::string FilePath;
   shared::SPSInputBuffer IB(ArgData, ArgSize);
+  if (!shared::SPSArgList<shared::SPSString>::deserialize(IB, FilePath))
+    return outOfBandError("Failed to deserialize module path");
+  DBG() << "autojit_rpc_register module: " << FilePath << "\n";
 
-  if (!SPSArgList::deserialize(IB, FilePath)) {
-    DBG() << "Deserialization FAILED\n";
-    return shared::WrapperFunctionResult::createOutOfBandError(
-               "Failed to deserialize arguments")
-        .release();
-  }
-
-  DBG() << "RPC register module: " << FilePath << "\n";
-
-  // In daemon mode, load the module directly into the JIT instead of using
-  // ModulesRegistered_ The JIT should already be initialized by the time we get
-  // here
   if (!Instance)
-    return shared::WrapperFunctionResult::createOutOfBandError(
-               "JIT not initialized")
-        .release();
+    return outOfBandError("JIT not initialized");
 
-  // Load the module (we'll need to implement this in AutoJIT)
   ThreadSafeModule TSM = Instance->loadModule(FilePath);
   if (Error Err = Instance->submit(std::move(TSM))) {
     std::string Message = toString(std::move(Err));
-    DBG() << "Loading FAILED: " << Message << "\n";
-    return shared::WrapperFunctionResult::createOutOfBandError(
-               "Failed to load module")
-        .release();
+    return outOfBandError("Failed to load module from " + FilePath + ": " +
+                          Message);
   }
 
   return shared::WrapperFunctionResult().release();
@@ -76,22 +96,15 @@ autojit_rpc_register(const char *ArgData, size_t ArgSize) {
 
 extern "C" shared::CWrapperFunctionResult
 autojit_rpc_materialize(const char *ArgData, size_t ArgSize) {
-  using SPSArgList = shared::SPSArgList<uint64_t>;
-  using SPSRetList = shared::SPSArgList<uint64_t>;
+  DBG() << "autojit_rpc_materialize: " << blobToHex(ArgData, ArgSize) << "\n";
 
   uint64_t Guid;
   shared::SPSInputBuffer IB(ArgData, ArgSize);
-
-  if (!SPSArgList::deserialize(IB, Guid)) {
-    return shared::WrapperFunctionResult::createOutOfBandError(
-               "Failed to deserialize arguments")
-        .release();
-  }
+  if (!shared::SPSArgList<uint64_t>::deserialize(IB, Guid))
+    return outOfBandError("Failed to deserialize GUID");
 
   if (!Instance)
-    return shared::WrapperFunctionResult::createOutOfBandError(
-               "JIT not initialized")
-        .release();
+    return outOfBandError("JIT not initialized");
 
   std::string Name = autojit::guidToFnName(Guid);
   DBG() << "Lookup function: " << Name << "\n";
@@ -99,528 +112,105 @@ autojit_rpc_materialize(const char *ArgData, size_t ArgSize) {
   uint64_t Addr = Instance->lookup(Name.c_str());
   DBG() << "Materialized at address 0x" << format("%016" PRIx64, Addr) << "\n";
 
-  // Serialize the result
-  size_t ResultSize = SPSRetList::size(Addr);
+  size_t ResultSize = shared::SPSArgList<uint64_t>::size(Addr);
   auto Result = shared::WrapperFunctionResult::allocate(ResultSize);
   shared::SPSOutputBuffer OB(Result.data(), Result.size());
-
-  if (!SPSRetList::serialize(OB, Addr)) {
-    return shared::WrapperFunctionResult::createOutOfBandError(
-               "Failed to serialize result")
-        .release();
-  }
+  if (!shared::SPSArgList<uint64_t>::serialize(OB, Addr))
+    return outOfBandError("Failed to serialize address");
 
   return Result.release();
 }
 
-class SimpleRemoteEPC : public ExecutorProcessControl,
-                        public SimpleRemoteEPCTransportClient,
-                        private DylibManager {
-public:
-  /// A setup object containing callbacks to construct a memory manager and
-  /// memory access object. Both are optional. If not specified,
-  /// EPCGenericJITLinkMemoryManager and EPCGenericMemoryAccess will be used.
-  struct Setup {
-    using CreateMemoryManagerFn =
-        Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>(
-            SimpleRemoteEPC &);
-    using CreateMemoryAccessFn =
-        Expected<std::unique_ptr<MemoryAccess>>(SimpleRemoteEPC &);
-
-    unique_function<CreateMemoryManagerFn> CreateMemoryManager;
-    unique_function<CreateMemoryAccessFn> CreateMemoryAccess;
-  };
-
-  SimpleRemoteEPC(std::shared_ptr<SymbolStringPool> SSP,
-                  std::unique_ptr<TaskDispatcher> D)
-      : ExecutorProcessControl(std::move(SSP), std::move(D)) {
-    this->DylibMgr = this;
-  }
-
-  SimpleRemoteEPC(const SimpleRemoteEPC &) = delete;
-  SimpleRemoteEPC &operator=(const SimpleRemoteEPC &) = delete;
-  SimpleRemoteEPC(SimpleRemoteEPC &&) = delete;
-  SimpleRemoteEPC &operator=(SimpleRemoteEPC &&) = delete;
-  ~SimpleRemoteEPC();
-
-  int waitForDisconnect();
-
-  Expected<int32_t> runAsMain(ExecutorAddr, ArrayRef<std::string>) override {
-    llvm_unreachable("Daemon is passive");
-  }
-
-  Expected<int32_t> runAsVoidFunction(ExecutorAddr) override {
-    llvm_unreachable("Daemon is passive");
-  }
-
-  Expected<int32_t> runAsIntFunction(ExecutorAddr, int) override {
-    llvm_unreachable("Daemon is passive");
-  }
-
-  Error disconnect() override {
-    llvm_unreachable("Daemon is passive");
-  }
-
-  void callWrapperAsync(ExecutorAddr WrapperFnAddr,
-                        IncomingWFRHandler OnComplete,
-                        ArrayRef<char> ArgBuffer) override;
-
-  Expected<HandleMessageAction>
-  handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo, ExecutorAddr TagAddr,
-                SimpleRemoteEPCArgBytesVector ArgBytes) override;
-
-  void handleDisconnect(Error Err) override;
-
-  void setTransport(SimpleRemoteEPCTransport &T) { this->T = &T; }
-
-  Error setup(Setup S);
-
-  static Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
-  createDefaultMemoryManager(SimpleRemoteEPC &SREPC);
-  static Expected<std::unique_ptr<MemoryAccess>>
-  createDefaultMemoryAccess(SimpleRemoteEPC &SREPC);
-
-  Error sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
-                    ExecutorAddr TagAddr, ArrayRef<char> ArgBytes);
-
+class AutoCleanupSocket {
 private:
-  Error handleSetup(uint64_t SeqNo, ExecutorAddr TagAddr,
-                    SimpleRemoteEPCArgBytesVector ArgBytes);
+  static int ListenFd_;
+  static pid_t DaemonPID_;
+  static std::string SocketPath_;
 
-  Error handleResult(uint64_t SeqNo, ExecutorAddr TagAddr,
-                     SimpleRemoteEPCArgBytesVector ArgBytes);
-  void handleCallWrapper(uint64_t RemoteSeqNo, ExecutorAddr TagAddr,
-                         SimpleRemoteEPCArgBytesVector ArgBytes);
+  static int createListenSocket(pid_t DaemonPID, const char *SocketPath) {
+    unlink(SocketPath);
 
-  uint64_t getNextSeqNo() { return NextSeqNo++; }
-  void releaseSeqNo(uint64_t SeqNo) {}
+    int FD = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (FD < 0) {
+      LOG() << "Failed to create socket: " << strerror(errno);
+      exit(1);
+    }
 
-  Expected<tpctypes::DylibHandle> loadDylib(const char *DylibPath) override;
+    struct sockaddr_un Addr;
+    memset(&Addr, 0, sizeof(Addr));
+    Addr.sun_family = AF_UNIX;
+    strncpy(Addr.sun_path, SocketPath, sizeof(Addr.sun_path) - 1);
 
-  void lookupSymbolsAsync(ArrayRef<LookupRequest> Request,
-                          SymbolLookupCompleteFn F) override;
+    if (bind(FD, (struct sockaddr *)&Addr, sizeof(Addr)) < 0) {
+      close(FD);
+      LOG() << "Failed to bind socket: " << strerror(errno);
+      exit(1);
+    }
 
-  using PendingCallWrapperResultsMap = DenseMap<uint64_t, IncomingWFRHandler>;
+    if (::listen(FD, 5) < 0) {
+      close(FD);
+      unlink(SocketPath);
+      LOG() << "Failed to listen on socket: " << strerror(errno);
+      exit(1);
+    }
 
-  std::mutex ServerStateMutex;
-  std::condition_variable DisconnectCV;
-  Error DisconnectErr = Error::success();
-  bool Disconnected = false;
+    return FD;
+  }
 
-  SimpleRemoteEPCTransport *T;
-  std::unique_ptr<EPCGenericDylibManager> EPCDylibMgr;
-  std::unique_ptr<jitlink::JITLinkMemoryManager> OwnedMemMgr;
-  std::unique_ptr<MemoryAccess> OwnedMemAccess;
+  // Abnormal exit should cleanup the socket
+  static void signalCleanup(int) {
+    atexitCleanup();
+    _exit(1);
+  }
 
-  uint64_t NextSeqNo = 0;
-  PendingCallWrapperResultsMap PendingCallWrapperResults;
+  // Regular exit should cleanup the socket
+  static void atexitCleanup() {
+    if (getpid() == DaemonPID_) {
+      close(ListenFd_);
+      unlink(SocketPath_.c_str());
+    }
+  }
+
+public:
+  static int listen(std::string SocketPath, pid_t DaemonPID) {
+    // Install Unix domain socket once
+    if (!ListenFd_) {
+      ListenFd_ = createListenSocket(DaemonPID, SocketPath.c_str());
+      DBG() << "Listening on " << SocketPath << "\n";
+
+      // Save info for unbind during shutdown
+      DaemonPID_ = DaemonPID;
+      SocketPath_ = std::move(SocketPath);
+
+      std::signal(SIGSEGV, signalCleanup);
+      std::signal(SIGABRT, signalCleanup);
+      std::signal(SIGFPE, signalCleanup);
+      std::signal(SIGILL, signalCleanup);
+      std::signal(SIGBUS, signalCleanup);
+      std::atexit(atexitCleanup);
+    }
+    return ListenFd_;
+  }
+
+  static int accept(int ListenFd) {
+    struct sockaddr_un ClientAddr;
+    socklen_t ClientLen = sizeof(ClientAddr);
+
+    int ClientFd =
+        ::accept(ListenFd, (struct sockaddr *)&ClientAddr, &ClientLen);
+    if (ClientFd < 0) {
+      LOG() << "Failed to accept connection: " << strerror(errno);
+      exit(1);
+    }
+
+    return ClientFd;
+  }
 };
 
-SimpleRemoteEPC::~SimpleRemoteEPC() {
-#ifndef NDEBUG
-  std::lock_guard<std::mutex> Lock(ServerStateMutex);
-  assert(Disconnected && "Destroyed without disconnection");
-#endif // NDEBUG
-}
+int AutoCleanupSocket::ListenFd_;
+pid_t AutoCleanupSocket::DaemonPID_;
+std::string AutoCleanupSocket::SocketPath_;
 
-Expected<tpctypes::DylibHandle>
-SimpleRemoteEPC::loadDylib(const char *DylibPath) {
-  return EPCDylibMgr->open(DylibPath, 0);
-}
-
-/// Async helper to chain together calls to DylibMgr::lookupAsync to fulfill all
-/// all the requests.
-/// FIXME: The dylib manager should support multiple LookupRequests natively.
-static void
-lookupSymbolsAsyncHelper(EPCGenericDylibManager &DylibMgr,
-                         ArrayRef<DylibManager::LookupRequest> Request,
-                         std::vector<tpctypes::LookupResult> Result,
-                         DylibManager::SymbolLookupCompleteFn Complete) {
-  if (Request.empty())
-    return Complete(std::move(Result));
-
-  auto &Element = Request.front();
-  DylibMgr.lookupAsync(Element.Handle, Element.Symbols,
-                       [&DylibMgr, Request, Complete = std::move(Complete),
-                        Result = std::move(Result)](auto R) mutable {
-                         if (!R)
-                           return Complete(R.takeError());
-                         Result.push_back({});
-                         Result.back().reserve(R->size());
-                         for (auto Addr : *R)
-                           Result.back().push_back(Addr);
-
-                         lookupSymbolsAsyncHelper(
-                             DylibMgr, Request.drop_front(), std::move(Result),
-                             std::move(Complete));
-                       });
-}
-
-void SimpleRemoteEPC::lookupSymbolsAsync(ArrayRef<LookupRequest> Request,
-                                         SymbolLookupCompleteFn Complete) {
-  lookupSymbolsAsyncHelper(*EPCDylibMgr, Request, {}, std::move(Complete));
-}
-
-void SimpleRemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
-                                       IncomingWFRHandler OnComplete,
-                                       ArrayRef<char> ArgBuffer) {
-  uint64_t SeqNo;
-  {
-    std::lock_guard<std::mutex> Lock(ServerStateMutex);
-    SeqNo = getNextSeqNo();
-    assert(!PendingCallWrapperResults.count(SeqNo) && "SeqNo already in use");
-    PendingCallWrapperResults[SeqNo] = std::move(OnComplete);
-  }
-
-  if (auto Err = sendMessage(SimpleRemoteEPCOpcode::CallWrapper, SeqNo,
-                             WrapperFnAddr, ArgBuffer)) {
-    IncomingWFRHandler H;
-
-    // We just registered OnComplete, but there may be a race between this
-    // thread returning from sendMessage and handleDisconnect being called from
-    // the transport's listener thread. If handleDisconnect gets there first
-    // then it will have failed 'H' for us. If we get there first (or if
-    // handleDisconnect already ran) then we need to take care of it.
-    {
-      std::lock_guard<std::mutex> Lock(ServerStateMutex);
-      auto I = PendingCallWrapperResults.find(SeqNo);
-      if (I != PendingCallWrapperResults.end()) {
-        H = std::move(I->second);
-        PendingCallWrapperResults.erase(I);
-      }
-    }
-
-    if (H)
-      H(shared::WrapperFunctionResult::createOutOfBandError("disconnecting"));
-
-    getExecutionSession().reportError(std::move(Err));
-  }
-}
-
-Expected<SimpleRemoteEPCTransportClient::HandleMessageAction>
-SimpleRemoteEPC::handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
-                               ExecutorAddr TagAddr,
-                               SimpleRemoteEPCArgBytesVector ArgBytes) {
-
-  {
-    dbgs() << "SimpleRemoteEPC::handleMessage: opc = ";
-    switch (OpC) {
-    case SimpleRemoteEPCOpcode::Setup:
-      dbgs() << "Setup";
-      assert(SeqNo == 0 && "Non-zero SeqNo for Setup?");
-      assert(!TagAddr && "Non-zero TagAddr for Setup?");
-      break;
-    case SimpleRemoteEPCOpcode::Hangup:
-      dbgs() << "Hangup";
-      assert(SeqNo == 0 && "Non-zero SeqNo for Hangup?");
-      assert(!TagAddr && "Non-zero TagAddr for Hangup?");
-      break;
-    case SimpleRemoteEPCOpcode::Result:
-      dbgs() << "Result";
-      assert(!TagAddr && "Non-zero TagAddr for Result?");
-      break;
-    case SimpleRemoteEPCOpcode::CallWrapper:
-      dbgs() << "CallWrapper";
-      break;
-    }
-    dbgs() << ", seqno = " << SeqNo << ", tag-addr = " << TagAddr
-           << ", arg-buffer = " << formatv("{0:x}", ArgBytes.size())
-           << " bytes\n";
-  }
-
-  using UT = std::underlying_type_t<SimpleRemoteEPCOpcode>;
-  if (static_cast<UT>(OpC) > static_cast<UT>(SimpleRemoteEPCOpcode::LastOpC))
-    return make_error<StringError>("Unexpected opcode",
-                                   inconvertibleErrorCode());
-
-  switch (OpC) {
-  case SimpleRemoteEPCOpcode::Setup:
-    if (auto Err = handleSetup(SeqNo, TagAddr, std::move(ArgBytes)))
-      return std::move(Err);
-    break;
-  case SimpleRemoteEPCOpcode::Result:
-    if (auto Err = handleResult(SeqNo, TagAddr, std::move(ArgBytes)))
-      return std::move(Err);
-    break;
-  case SimpleRemoteEPCOpcode::CallWrapper:
-    if (TagAddr.getValue() == 0) {
-      LOG() << "Warning: supressing invocation of nullptr in daemon process!\n";
-      break;
-    }
-    handleCallWrapper(SeqNo, TagAddr, std::move(ArgBytes));
-    break;
-  case SimpleRemoteEPCOpcode::Hangup:
-    return EndSession;
-  }
-  return ContinueSession;
-}
-
-void SimpleRemoteEPC::handleDisconnect(Error Err) {
-  if (Err) {
-    DBG() << "Disconnect error: " << toString(std::move(Err)) << "\n";
-  }
-  std::unique_lock<std::mutex> Lock(ServerStateMutex);
-  Disconnected = true;
-  DisconnectCV.notify_all();
-}
-
-int SimpleRemoteEPC::waitForDisconnect() {
-  std::unique_lock<std::mutex> Lock(ServerStateMutex);
-  DisconnectCV.wait(Lock, [this]() { return Disconnected; });
-  if (DisconnectErr) {
-    DBG() << "Disconnect-decode error: " << toString(std::move(DisconnectErr)) << "\n";
-    return 1; // TODO: convert to error-code?
-  }
-  return 0;
-}
-
-Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
-SimpleRemoteEPC::createDefaultMemoryManager(SimpleRemoteEPC &SREPC) {
-  EPCGenericJITLinkMemoryManager::SymbolAddrs SAs;
-  if (auto Err = SREPC.getBootstrapSymbols(
-          {{SAs.Allocator, rt::SimpleExecutorMemoryManagerInstanceName},
-           {SAs.Reserve, rt::SimpleExecutorMemoryManagerReserveWrapperName},
-           {SAs.Finalize, rt::SimpleExecutorMemoryManagerFinalizeWrapperName},
-           {SAs.Deallocate,
-            rt::SimpleExecutorMemoryManagerDeallocateWrapperName}}))
-    return std::move(Err);
-
-  return std::make_unique<EPCGenericJITLinkMemoryManager>(SREPC, SAs);
-}
-
-Expected<std::unique_ptr<ExecutorProcessControl::MemoryAccess>>
-SimpleRemoteEPC::createDefaultMemoryAccess(SimpleRemoteEPC &SREPC) {
-  EPCGenericMemoryAccess::FuncAddrs FAs;
-  if (auto Err = SREPC.getBootstrapSymbols(
-          {{FAs.WriteUInt8s, rt::MemoryWriteUInt8sWrapperName},
-           {FAs.WriteUInt16s, rt::MemoryWriteUInt16sWrapperName},
-           {FAs.WriteUInt32s, rt::MemoryWriteUInt32sWrapperName},
-           {FAs.WriteUInt64s, rt::MemoryWriteUInt64sWrapperName},
-           {FAs.WriteBuffers, rt::MemoryWriteBuffersWrapperName},
-           {FAs.WritePointers, rt::MemoryWritePointersWrapperName}}))
-    return std::move(Err);
-
-  return std::make_unique<EPCGenericMemoryAccess>(SREPC, FAs);
-}
-
-Error SimpleRemoteEPC::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
-                                   ExecutorAddr TagAddr,
-                                   ArrayRef<char> ArgBytes) {
-  assert(OpC != SimpleRemoteEPCOpcode::Setup &&
-         "SimpleRemoteEPC sending Setup message? That's the wrong direction.");
-
-  {
-    dbgs() << "SimpleRemoteEPC::sendMessage: opc = ";
-    switch (OpC) {
-    case SimpleRemoteEPCOpcode::Hangup:
-      dbgs() << "Hangup";
-      assert(SeqNo == 0 && "Non-zero SeqNo for Hangup?");
-      assert(!TagAddr && "Non-zero TagAddr for Hangup?");
-      break;
-    case SimpleRemoteEPCOpcode::Result:
-      dbgs() << "Result";
-      assert(!TagAddr && "Non-zero TagAddr for Result?");
-      break;
-    case SimpleRemoteEPCOpcode::CallWrapper:
-      dbgs() << "CallWrapper";
-      break;
-    default:
-      llvm_unreachable("Invalid opcode");
-    }
-    dbgs() << ", seqno = " << SeqNo << ", tag-addr = " << TagAddr
-           << ", arg-buffer = " << formatv("{0:x}", ArgBytes.size())
-           << " bytes\n";
-  }
-
-  if (OpC == SimpleRemoteEPCOpcode::CallWrapper && TagAddr.getValue() == 0) {
-    LOG() << "Warning: supressing invocation of nullptr in target process!\n";
-    return Error::success(); // TODO: If we returned an error, is it rcoverable?
-  }
-  auto Err = T->sendMessage(OpC, SeqNo, TagAddr, ArgBytes);
-  {
-    if (Err)
-      dbgs() << "  \\--> SimpleRemoteEPC::sendMessage failed\n";
-  }
-  return Err;
-}
-
-Error SimpleRemoteEPC::handleSetup(uint64_t SeqNo, ExecutorAddr TagAddr,
-                                   SimpleRemoteEPCArgBytesVector ArgBytes) {
-  if (SeqNo != 0)
-    return make_error<StringError>("Setup packet SeqNo not zero",
-                                   inconvertibleErrorCode());
-
-  if (TagAddr)
-    return make_error<StringError>("Setup packet TagAddr not zero",
-                                   inconvertibleErrorCode());
-
-  std::lock_guard<std::mutex> Lock(ServerStateMutex);
-  auto I = PendingCallWrapperResults.find(0);
-  assert(PendingCallWrapperResults.size() == 1 &&
-         I != PendingCallWrapperResults.end() &&
-         "Setup message handler not connectly set up");
-  auto SetupMsgHandler = std::move(I->second);
-  PendingCallWrapperResults.erase(I);
-
-  auto WFR =
-      shared::WrapperFunctionResult::copyFrom(ArgBytes.data(), ArgBytes.size());
-  SetupMsgHandler(std::move(WFR));
-  return Error::success();
-}
-
-Error SimpleRemoteEPC::setup(Setup S) {
-  using namespace SimpleRemoteEPCDefaultBootstrapSymbolNames;
-
-  std::promise<MSVCPExpected<SimpleRemoteEPCExecutorInfo>> EIP;
-  auto EIF = EIP.get_future();
-
-  // Prepare a handler for the setup packet.
-  PendingCallWrapperResults[0] =
-      RunInPlace()([&](shared::WrapperFunctionResult SetupMsgBytes) {
-        if (const char *ErrMsg = SetupMsgBytes.getOutOfBandError()) {
-          EIP.set_value(
-              make_error<StringError>(ErrMsg, inconvertibleErrorCode()));
-          return;
-        }
-        using SPSSerialize =
-            shared::SPSArgList<shared::SPSSimpleRemoteEPCExecutorInfo>;
-        shared::SPSInputBuffer IB(SetupMsgBytes.data(), SetupMsgBytes.size());
-        SimpleRemoteEPCExecutorInfo EI;
-        if (SPSSerialize::deserialize(IB, EI))
-          EIP.set_value(EI);
-        else
-          EIP.set_value(make_error<StringError>(
-              "Could not deserialize setup message", inconvertibleErrorCode()));
-      });
-
-  // Start the transport.
-  if (auto Err = T->start())
-    return Err;
-
-  // Wait for setup packet to arrive.
-  auto EI = EIF.get();
-  if (!EI) {
-    T->disconnect();
-    return EI.takeError();
-  }
-
-  {
-    dbgs() << "SimpleRemoteEPC received setup message:\n"
-           << "  Triple: " << EI->TargetTriple << "\n"
-           << "  Page size: " << EI->PageSize << "\n"
-           << "  Bootstrap map" << (EI->BootstrapMap.empty() ? " empty" : ":")
-           << "\n";
-    for (const auto &KV : EI->BootstrapMap)
-      dbgs() << "    " << KV.first() << ": " << KV.second.size()
-             << "-byte SPS encoded buffer\n";
-    dbgs() << "  Bootstrap symbols"
-           << (EI->BootstrapSymbols.empty() ? " empty" : ":") << "\n";
-    for (const auto &KV : EI->BootstrapSymbols)
-      dbgs() << "    " << KV.first() << ": " << KV.second << "\n";
-  }
-  TargetTriple = Triple(EI->TargetTriple);
-  PageSize = EI->PageSize;
-  BootstrapMap = std::move(EI->BootstrapMap);
-  BootstrapSymbols = std::move(EI->BootstrapSymbols);
-
-  // Get dispatch symbols for RPC calls back to the stub
-  if (auto Err = getBootstrapSymbols(
-          {{JDI.JITDispatchContext, ExecutorSessionObjectName},
-           {JDI.JITDispatchFunction, DispatchFnName}}))
-    return Err;
-
-  // Note: We don't need RunAsMain/VoidFunction/IntFunction wrappers for AutoJIT
-  // since we're not running programs in the executor, just compiling and
-  // returning function addresses.
-
-  if (auto DM =
-          EPCGenericDylibManager::CreateWithDefaultBootstrapSymbols(*this))
-    EPCDylibMgr = std::make_unique<EPCGenericDylibManager>(std::move(*DM));
-  else
-    return DM.takeError();
-
-  // Set a default CreateMemoryManager if none is specified.
-  if (!S.CreateMemoryManager)
-    S.CreateMemoryManager = createDefaultMemoryManager;
-
-  if (auto MemMgr = S.CreateMemoryManager(*this)) {
-    OwnedMemMgr = std::move(*MemMgr);
-    this->MemMgr = OwnedMemMgr.get();
-  } else
-    return MemMgr.takeError();
-
-  // Set a default CreateMemoryAccess if none is specified.
-  if (!S.CreateMemoryAccess)
-    S.CreateMemoryAccess = createDefaultMemoryAccess;
-
-  if (auto MemAccess = S.CreateMemoryAccess(*this)) {
-    OwnedMemAccess = std::move(*MemAccess);
-    this->MemAccess = OwnedMemAccess.get();
-  } else
-    return MemAccess.takeError();
-
-  return Error::success();
-}
-
-Error SimpleRemoteEPC::handleResult(uint64_t SeqNo, ExecutorAddr TagAddr,
-                                    SimpleRemoteEPCArgBytesVector ArgBytes) {
-  IncomingWFRHandler SendResult;
-
-  if (TagAddr)
-    return make_error<StringError>("Unexpected TagAddr in result message",
-                                   inconvertibleErrorCode());
-
-  {
-    std::lock_guard<std::mutex> Lock(ServerStateMutex);
-    auto I = PendingCallWrapperResults.find(SeqNo);
-    if (I == PendingCallWrapperResults.end())
-      return make_error<StringError>("No call for sequence number " +
-                                         Twine(SeqNo),
-                                     inconvertibleErrorCode());
-    SendResult = std::move(I->second);
-    PendingCallWrapperResults.erase(I);
-    releaseSeqNo(SeqNo);
-  }
-
-  auto WFR =
-      shared::WrapperFunctionResult::copyFrom(ArgBytes.data(), ArgBytes.size());
-  SendResult(std::move(WFR));
-  return Error::success();
-}
-
-void SimpleRemoteEPC::handleCallWrapper(
-    uint64_t RemoteSeqNo, ExecutorAddr TagAddr,
-    SimpleRemoteEPCArgBytesVector ArgBytes) {
-  assert(ES && "No ExecutionSession attached");
-  D->dispatch(makeGenericNamedTask(
-      [this, RemoteSeqNo, TagAddr, ArgBytes = std::move(ArgBytes)]() {
-        // Call the wrapper function directly
-        using WrapperFnTy =
-            shared::CWrapperFunctionResult (*)(const char *, size_t);
-        auto *Fn = TagAddr.toPtr<WrapperFnTy>();
-        shared::WrapperFunctionResult WFR(Fn(ArgBytes.data(), ArgBytes.size()));
-
-        // Check for out-of-band error before calling .data()
-        const char *ErrMsg = WFR.getOutOfBandError();
-        if (ErrMsg) {
-          DBG() << "RPC function returned out-of-band error: " << ErrMsg
-                << "\n";
-          // For out-of-band errors, send the error as-is
-          // The size is 0 and ValuePtr points to the error string
-          if (auto Err =
-                  sendMessage(SimpleRemoteEPCOpcode::Result, RemoteSeqNo,
-                              ExecutorAddr(), {ErrMsg, strlen(ErrMsg) + 1}))
-            getExecutionSession().reportError(std::move(Err));
-        } else {
-          if (auto Err = sendMessage(SimpleRemoteEPCOpcode::Result, RemoteSeqNo,
-                                     ExecutorAddr(), {WFR.data(), WFR.size()}))
-            getExecutionSession().reportError(std::move(Err));
-        }
-      },
-      "callWrapper task"));
-}
-
-/* Get the socket path for autojitd - must match the stub's logic */
 static std::string getDaemonSocketPath() {
   if (const char *EnvPath = std::getenv("AUTOJIT_SOCKET_PATH"))
     return EnvPath;
@@ -631,56 +221,17 @@ static std::string getDaemonSocketPath() {
   return std::string("/tmp/autojitd-") + std::to_string(getuid()) + ".sock";
 }
 
-/* Create and bind a Unix domain socket for listening */
-static Expected<int> createListenSocket() {
-  std::string SocketPath = getDaemonSocketPath();
+static int runSession(int InFD, int OutFD,
+                      const StringMap<ExecutorAddr> &BootstrapSymbols) {
+  std::unique_ptr<llvm::orc::ExecutionSession> ES;
+  autojit::Session Session(InFD, OutFD, ES);
+  Instance = Session.launch(std::move(ES), BootstrapSymbols);
 
-  // Remove stale socket file if it exists
-  unlink(SocketPath.c_str());
+  DBG() << "Connected: enter event loop\n";
+  int ExitCode = Session.waitForDisconnect();
 
-  int ListenFd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (ListenFd < 0)
-    return make_error<StringError>("Failed to create socket: " +
-                                   std::string(strerror(errno)),
-                                   inconvertibleErrorCode());
-
-  struct sockaddr_un Addr;
-  memset(&Addr, 0, sizeof(Addr));
-  Addr.sun_family = AF_UNIX;
-  strncpy(Addr.sun_path, SocketPath.c_str(), sizeof(Addr.sun_path) - 1);
-
-  if (bind(ListenFd, (struct sockaddr *)&Addr, sizeof(Addr)) < 0) {
-    close(ListenFd);
-    return make_error<StringError>("Failed to bind socket to " + SocketPath +
-                                   ": " + std::string(strerror(errno)),
-                                   inconvertibleErrorCode());
-  }
-
-  if (listen(ListenFd, 5) < 0) {
-    close(ListenFd);
-    unlink(SocketPath.c_str());
-    return make_error<StringError>("Failed to listen on socket: " +
-                                   std::string(strerror(errno)),
-                                   inconvertibleErrorCode());
-  }
-
-  DBG() << "Listening on " << SocketPath << "\n";
-  return ListenFd;
-}
-
-/* Accept a connection from the listen socket */
-static Expected<int> acceptConnection(int ListenFd) {
-  struct sockaddr_un ClientAddr;
-  socklen_t ClientLen = sizeof(ClientAddr);
-
-  int ClientFd = accept(ListenFd, (struct sockaddr *)&ClientAddr, &ClientLen);
-  if (ClientFd < 0)
-    return make_error<StringError>("Failed to accept connection: " +
-                                   std::string(strerror(errno)),
-                                   inconvertibleErrorCode());
-
-  DBG() << "Accepted connection on fd " << ClientFd << "\n";
-  return ClientFd;
+  DBG() << "Disconnected: session shutting down\n";
+  return ExitCode;
 }
 
 int main(int argc, char *argv[]) {
@@ -693,141 +244,44 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  DBG() << "Starting daemon in " << (StdioMode ? "stdio" : "standalone")
-        << " mode\n";
+  StringMap<ExecutorAddr> RPCSymbols{
+      {"autojit_rpc_register", ExecutorAddr::fromPtr(autojit_rpc_register)},
+      {"autojit_rpc_materialize",
+       ExecutorAddr::fromPtr(autojit_rpc_materialize)},
+  };
 
   if (StdioMode) {
-    // Stdio mode: single connection via stdin/stdout (for child processes)
-    autojit::AutoJIT JIT;
-    Instance = &JIT;
-
-    auto SSP = std::make_shared<SymbolStringPool>();
-    auto D = std::make_unique<DynamicThreadPoolTaskDispatcher>(std::nullopt);
-    auto ES = std::make_unique<ExecutionSession>(
-        std::make_unique<SimpleRemoteEPC>(std::move(SSP), std::move(D)));
-    auto &EPC = static_cast<SimpleRemoteEPC &>(ES->getExecutorProcessControl());
-    auto T = ExitOnErr(
-        FDSimpleRemoteEPCTransport::Create(EPC, STDIN_FILENO, STDOUT_FILENO));
-
-    EPC.setTransport(*T);
-
-    // Receive the setup message from the target process
-    SimpleRemoteEPC::Setup S;
-    S.CreateMemoryAccess = SimpleRemoteEPC::createDefaultMemoryAccess;
-    S.CreateMemoryManager = SimpleRemoteEPC::createDefaultMemoryManager;
-    ExitOnErr(EPC.setup(std::move(S)));
-
-    LLJITBuilder Builder;
-    Builder.setExecutionSession(std::move(ES));
-    ExitOnErr(Instance->initialize(Builder, T.get()));
-
-    // Send setup message to the target process
-    SimpleRemoteEPCExecutorInfo EI;
-    EI.TargetTriple = sys::getProcessTriple();
-    EI.PageSize = ExitOnErr(sys::Process::getPageSize());
-    EI.BootstrapSymbols["autojit_rpc_register"] =
-        ExecutorAddr::fromPtr(autojit_rpc_register);
-    EI.BootstrapSymbols["autojit_rpc_materialize"] =
-        ExecutorAddr::fromPtr(autojit_rpc_materialize);
-
-    using SPSSerialize =
-        shared::SPSArgList<shared::SPSSimpleRemoteEPCExecutorInfo>;
-    auto SetupPacketBytes =
-        shared::WrapperFunctionResult::allocate(SPSSerialize::size(EI));
-    shared::SPSOutputBuffer OB(SetupPacketBytes.data(), SetupPacketBytes.size());
-    if (!SPSSerialize::serialize(OB, EI)) {
-      LOG() << "Could not encode setup packet\n";
-      exit(1);
-    }
-
-    ExitOnErr(T->sendMessage(SimpleRemoteEPCOpcode::Setup, 0, ExecutorAddr(),
-                             {SetupPacketBytes.data(), SetupPacketBytes.size()}));
-
-    DBG() << "Client connected, entering event loop\n";
-    int ExitCode = EPC.waitForDisconnect();
-    DBG() << "Host disconnected, daemon shutting down\n";
-    return ExitCode;
+    // Single connection via stdin/stdout (typically as child process)
+    DBG() << "Daemon runs in stdio mode\n";
+    return runSession(STDIN_FILENO, STDOUT_FILENO, RPCSymbols);
   }
 
-  // Standalone mode: listen on Unix domain socket for multiple connections
-  int ListenFd = ExitOnErr(createListenSocket());
-
+  // Standalone mode: multiple connections via Unix domain socket
+  DBG() << "Daemon runs in standalone mode\n";
+  int ListenFd = AutoCleanupSocket::listen(getDaemonSocketPath(), getpid());
   while (true) {
     DBG() << "Waiting for connection...\n";
-    int ClientFd = ExitOnErr(acceptConnection(ListenFd));
 
-    // Fork a child process to handle this connection
-    // This allows each connection to have its own isolated JIT instance
-    pid_t pid = fork();
-    if (pid < 0) {
+    // Fork new child process for each connection
+    int ClientFd = AutoCleanupSocket::accept(ListenFd);
+    DBG() << "Accepted connection on fd " << ClientFd << "\n";
+
+    pid_t PID = fork();
+    if (PID < 0) {
       LOG() << "Failed to fork for client connection: " << strerror(errno) << "\n";
       close(ClientFd);
       continue;
     }
 
-    if (pid == 0) {
-      // Child process: handle this connection
-      close(ListenFd);  // Don't need the listen socket in child
-
-      // Create a new AutoJIT instance for this connection (stack variable)
-      autojit::AutoJIT JIT;
-      Instance = &JIT;
-
-      // Create EPC and transport for this connection
-      auto SSP = std::make_shared<SymbolStringPool>();
-      auto D = std::make_unique<DynamicThreadPoolTaskDispatcher>(std::nullopt);
-      auto ES = std::make_unique<ExecutionSession>(
-          std::make_unique<SimpleRemoteEPC>(std::move(SSP), std::move(D)));
-      auto &EPC = static_cast<SimpleRemoteEPC &>(ES->getExecutorProcessControl());
-      auto T = ExitOnErr(FDSimpleRemoteEPCTransport::Create(EPC, ClientFd, ClientFd));
-
-      EPC.setTransport(*T);
-
-      // Receive the setup message from the client
-      SimpleRemoteEPC::Setup S;
-      S.CreateMemoryAccess = SimpleRemoteEPC::createDefaultMemoryAccess;
-      S.CreateMemoryManager = SimpleRemoteEPC::createDefaultMemoryManager;
-      ExitOnErr(EPC.setup(std::move(S)));
-
-      // Initialize JIT for this connection
-      LLJITBuilder Builder;
-      Builder.setExecutionSession(std::move(ES));
-      ExitOnErr(Instance->initialize(Builder, T.get()));
-
-      // Send setup message to the client
-      SimpleRemoteEPCExecutorInfo EI;
-      EI.TargetTriple = sys::getProcessTriple();
-      EI.PageSize = ExitOnErr(sys::Process::getPageSize());
-      EI.BootstrapSymbols["autojit_rpc_register"] =
-          ExecutorAddr::fromPtr(autojit_rpc_register);
-      EI.BootstrapSymbols["autojit_rpc_materialize"] =
-          ExecutorAddr::fromPtr(autojit_rpc_materialize);
-
-      using SPSSerialize =
-          shared::SPSArgList<shared::SPSSimpleRemoteEPCExecutorInfo>;
-      auto SetupPacketBytes =
-          shared::WrapperFunctionResult::allocate(SPSSerialize::size(EI));
-      shared::SPSOutputBuffer OB(SetupPacketBytes.data(), SetupPacketBytes.size());
-      if (!SPSSerialize::serialize(OB, EI)) {
-        LOG() << "Could not encode setup packet\n";
-        exit(1);
-      }
-
-      ExitOnErr(T->sendMessage(SimpleRemoteEPCOpcode::Setup, 0, ExecutorAddr(),
-                               {SetupPacketBytes.data(), SetupPacketBytes.size()}));
-
-      DBG() << "Client connected, entering event loop\n";
-      int ExitCode = EPC.waitForDisconnect();
-      DBG() << "Client disconnected\n";
-      exit(ExitCode);
+    if (PID == 0) {
+      // Child process handles new connection
+      close(ListenFd);
+      exit(runSession(ClientFd, ClientFd, RPCSymbols));
     }
 
-    // Parent process: close client fd and continue accepting connections
+    // Parent process continues accepting connections
     close(ClientFd);
   }
 
-  close(ListenFd);
-  std::string SocketPath = getDaemonSocketPath();
-  unlink(SocketPath.c_str());
   return 0;
 }

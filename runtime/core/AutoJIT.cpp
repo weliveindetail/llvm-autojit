@@ -428,8 +428,6 @@ private:
 #endif
 
 autojit::AutoJIT::~AutoJIT() {
-  if (Transport)
-    Transport->disconnect();
   // Terminate the JIT before static destructors run to avoid races
   if (auto Err = JIT_->getExecutionSession().endSession())
     LOG() << toString(std::move(Err));
@@ -442,8 +440,7 @@ autojit::AutoJIT::AutoJIT() : HostProcess_(dlopenHostProcess()) {
   autojit::initializeDebugLog();
 }
 
-Error autojit::AutoJIT::initialize(LLJITBuilder &B, SimpleRemoteEPCTransport *Transport) {
-  this->Transport = Transport;
+Error autojit::AutoJIT::initialize(LLJITBuilder &B) {
 #if defined(AUTOJIT_ENABLE_ORC_RUNTIME)
   const char *OrcRtStart =
       reinterpret_cast<const char *>(_binary_liborc_rt_start);

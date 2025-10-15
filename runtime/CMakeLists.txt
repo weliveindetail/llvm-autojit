@@ -58,7 +58,7 @@ install(
 )
 
 # Daemon executable
-add_executable(autojitd remote/Daemon.cpp core/AutoJIT.cpp ${orc_rt})
+add_executable(autojitd remote/Daemon.cpp remote/Session.cpp core/AutoJIT.cpp ${orc_rt})
 set_target_properties(autojitd PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )

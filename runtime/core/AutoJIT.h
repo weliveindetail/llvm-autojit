@@ -45,7 +45,7 @@ public:
   ~AutoJIT();
 
   static AutoJIT &get(std::vector<std::string> &NewModules);
-  llvm::Error initialize(llvm::orc::LLJITBuilder &B, llvm::orc::SimpleRemoteEPCTransport *Transport = nullptr);
+  llvm::Error initialize(llvm::orc::LLJITBuilder &B);
   uint64_t lookup(const char *Symbol);
   bool haveHostSymbol(llvm::StringRef Name) const;
   llvm::orc::ThreadSafeModule loadModule(llvm::StringRef FilePath) const;
@@ -53,7 +53,6 @@ public:
 
 private:
   std::unique_ptr<llvm::orc::LLJIT> JIT_;
-  llvm::orc::SimpleRemoteEPCTransport *Transport;
   mutable llvm::sys::DynamicLibrary HostProcess_;
   mutable std::unordered_set<std::string> HostSymbolsCache_;
 };
