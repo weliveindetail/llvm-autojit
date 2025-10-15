@@ -1,12 +1,28 @@
 #!/usr/bin/env bash
 
+# Parse arguments
+link_static_runtime=false
+
+for arg in "$@"; do
+  case $arg in
+    --static)
+      link_static_runtime=true
+      ;;
+  esac
+done
+
 clang="clang"
 CFLAGS="-O0 -g -fpass-plugin=@CMAKE_INSTALL_PREFIX@/lib/autojit.so"
-LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime -rdynamic"
 
 if [ -n "$AUTOJIT_DEBUG" ]; then
   # Enable debug output from the plugin
   CFLAGS="$CFLAGS -Xclang -load -Xclang @CMAKE_INSTALL_PREFIX@/lib/autojit.so -mllvm -autojit-debug"
+fi
+
+if $link_static_runtime; then
+  LDFLAGS="-L@CMAKE_INSTALL_PREFIX@/lib -Wl,--whole-archive -lautojit_static-x86_64 -Wl,--no-whole-archive -rdynamic"
+else
+  LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime -rdynamic"
 fi
 
 if [ "@AUTOJIT_BUILD_UNIFIED@" = "On" ]; then
