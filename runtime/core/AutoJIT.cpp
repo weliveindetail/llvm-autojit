@@ -4,7 +4,6 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/ExecutionEngine/ObjectCache.h"
-#include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/Core.h"
 #include "llvm/ExecutionEngine/Orc/Debugging/DebuggerSupport.h"
 #include "llvm/ExecutionEngine/Orc/EPCDynamicLibrarySearchGenerator.h"
@@ -78,8 +77,8 @@ void autojit::initializeDebugLog() {
   g_autojit_debug_initialized = true;
 }
 
-static bool useTPDE() {
-  if (const char *Var = std::getenv("AUTOJIT_USE_TPDE")) {
+static bool isEnvVarSet(const char *Name) {
+  if (const char *Var = std::getenv(Name)) {
     std::string Val{Var};
     std::transform(Val.begin(), Val.end(), Val.begin(), ::tolower);
     if (Val == "1" || Val == "on" || Val == "true" || Val == "yes")
@@ -342,12 +341,54 @@ ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
   return ThreadSafeModule(std::move(M), std::move(Context));
 }
 
-class CachingCompiler : public IRCompileLayer::IRCompiler {
+class BasicCompiler : public IRCompileLayer::IRCompiler {
 public:
-  CachingCompiler(JITTargetMachineBuilder JTMB)
+  BasicCompiler(JITTargetMachineBuilder JTMB)
       : IRCompiler(options(JTMB)), JTMB(std::move(JTMB)) {
     TM = ExitOnErr(this->JTMB.createTargetMachine());
   }
+
+  Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
+    SmallVector<char, 0> Buffer;
+    compileObject(M, Buffer);
+
+    constexpr bool RequiresNullTerminator = false;
+    return std::make_unique<SmallVectorMemoryBuffer>(std::move(Buffer), getObjFileName(M.getModuleIdentifier()),
+                                                     RequiresNullTerminator);
+  }
+
+protected:
+  IRSymbolMapper::ManglingOptions options(const JITTargetMachineBuilder &JTMB) {
+    return irManglingOptionsFromTargetOptions(JTMB.getOptions());
+  }
+
+  std::string getObjFileName(std::string Name) {
+    if (Name.ends_with(".ll") || Name.ends_with(".bc"))
+      Name = Name.substr(0, Name.size() - 3);
+    return Name + ".o";
+  }
+
+  void compileObject(Module &M, SmallVectorImpl<char> &Buffer) {
+    if (M.getDataLayout().isDefault())
+      M.setDataLayout(TM->createDataLayout());
+    MCContext *Ctx;
+    legacy::PassManager PM;
+    raw_svector_ostream ObjStream(Buffer);
+    if (TM->addPassesToEmitMC(PM, Ctx, ObjStream)) {
+      LOG() << "Target does not support JIT MC emission\n";
+      exit(1);
+    }
+    PM.run(M);
+  }
+
+  JITTargetMachineBuilder JTMB;
+  std::unique_ptr<TargetMachine> TM;
+};
+
+class CachingCompiler : public BasicCompiler {
+public:
+  CachingCompiler(JITTargetMachineBuilder JTMB)
+      : BasicCompiler(std::move(JTMB)) {}
 
   Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
     constexpr bool IsText = false;
@@ -379,27 +420,8 @@ private:
   }
 
   std::string cacheFileName(const Module &M) {
-    std::string CacheFile = M.getModuleIdentifier();
-    if (CacheFile.ends_with(".ll") || CacheFile.ends_with(".bc"))
-      CacheFile = CacheFile.substr(0, CacheFile.size() - 3);
-    return CacheFile + ".o";
+    return getObjFileName(M.getModuleIdentifier());
   }
-
-  void compileObject(Module &M, SmallVectorImpl<char> &Buffer) {
-    if (M.getDataLayout().isDefault())
-      M.setDataLayout(TM->createDataLayout());
-    MCContext *Ctx;
-    legacy::PassManager PM;
-    raw_svector_ostream ObjStream(Buffer);
-    if (TM->addPassesToEmitMC(PM, Ctx, ObjStream)) {
-      LOG() << "Target does not support JIT MC emission\n";
-      exit(1);
-    }
-    PM.run(M);
-  }
-
-  JITTargetMachineBuilder JTMB;
-  std::unique_ptr<TargetMachine> TM;
 };
 
 #if defined(AUTOJIT_ENABLE_TPDE)
@@ -460,10 +482,13 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B) {
 
   B.CreateCompileFunction = [&](JITTargetMachineBuilder JTMB)
       -> Expected<std::unique_ptr<IRCompileLayer::IRCompiler>> {
+    if (LLVM_UNLIKELY(isEnvVarSet("AUTOJIT_DISABLE_OBJECT_CACHE"))) {
+      return std::make_unique<BasicCompiler>(std::move(JTMB));
+    }
     return std::make_unique<CachingCompiler>(std::move(JTMB));
   };
 
-  if (useTPDE()) {
+  if (isEnvVarSet("AUTOJIT_USE_TPDE")) {
 #if defined(AUTOJIT_ENABLE_TPDE)
     B.CreateCompileFunction = [](JITTargetMachineBuilder JTMB)
         -> Expected<std::unique_ptr<IRCompileLayer::IRCompiler>> {

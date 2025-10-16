@@ -70,6 +70,8 @@ else:
 config.environment['AUTOJIT_DAEMON_PATH'] = str(daemon_bin)
 print(f"Daemon {daemon_state_str}: {str(daemon_bin)}")
 
+config.environment['AUTOJIT_DISABLE_OBJECT_CACHE'] = 'On'
+
 config.available_features.add('shell')
 if hasattr(config, 'enable_plugins') and config.enable_plugins:
     config.available_features.add('plugins')
@@ -97,7 +99,7 @@ except subprocess.CalledProcessError as ex:
     print(f"Failed to run ldd on {str(runtime)}: {ex}")
 
 print('Environment:')
-for name in { 'PATH', 'AUTOJIT_DAEMON_PATH', 'AUTOJITD_FORCE_SPAWN', 'AUTOJITD_FORCE_DAEMON', 'AUTOJIT_USE_TPDE', 'XDG_RUNTIME_DIR' }:
+for name in config.environment:
     if name in config.environment:
         print(f"  export {name}=\"{config.environment[name]}\"")
 print('')
