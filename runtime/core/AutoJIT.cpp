@@ -5,6 +5,7 @@
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/ExecutionEngine/ObjectCache.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
+#include "llvm/ExecutionEngine/Orc/Core.h"
 #include "llvm/ExecutionEngine/Orc/Debugging/DebuggerSupport.h"
 #include "llvm/ExecutionEngine/Orc/EPCDynamicLibrarySearchGenerator.h"
 #include "llvm/ExecutionEngine/Orc/IRTransformLayer.h"
@@ -482,6 +483,15 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B) {
   B.setJITTargetMachineBuilder(JTMB);
 
   JIT_ = ExitOnErr(B.create());
+
+  // LLJIT sets up lookup flags for process symbols to MatchExportedSymbolsOnly.
+  // It has caused EPCDynamicLibrarySearchGenerator to discard matched symbols,
+  // which failed remote lookup but not in-process lookup. This might be an
+  // inconsistency in ORC. The below workaround adds another generator that
+  // matches all symbols. This adds another RPC roundtrip, which is suboptimal.
+  auto &MainJD = JIT_->getMainJITDylib();
+  auto ProcessSymbols = JIT_->getProcessSymbolsJITDylib();
+  MainJD.addToLinkOrder(*ProcessSymbols, JITDylibLookupFlags::MatchAllSymbols);
 
   if (g_autojit_debug)
     if (Error E = enableDebuggerSupport(*JIT_))
