@@ -27,9 +27,33 @@
 using namespace llvm;
 using namespace llvm::orc;
 
-static llvm::ExitOnError ExitOnErr("[autojitd] ");
+static ExitOnError ExitOnErr("[autojitd] ");
 
 namespace autojit {
+
+class Transport : public SimpleRemoteEPCTransport {
+public:
+  Transport(SimpleRemoteEPCTransportClient &C, int InFD, int OutFD);
+  ~Transport() override;
+
+  Error start() override;
+
+  Error sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
+                    ExecutorAddr TagAddr, ArrayRef<char> ArgBytes) override;
+
+  void disconnect() override;
+
+private:
+  Error readBytes(char *Dst, size_t Size, bool *IsEOF = nullptr);
+  int writeBytes(const char *Src, size_t Size);
+  void listenLoop();
+
+  std::mutex M;
+  SimpleRemoteEPCTransportClient &C;
+  std::thread ListenerThread;
+  int InFD, OutFD;
+  std::atomic<bool> Disconnected{false};
+};
 
 class RemoteEPC : public ExecutorProcessControl,
                   public SimpleRemoteEPCTransportClient,
@@ -47,8 +71,6 @@ public:
   RemoteEPC &operator=(RemoteEPC &&) = delete;
   ~RemoteEPC();
 
-  int waitForDisconnect();
-
   Expected<int32_t> runAsMain(ExecutorAddr, ArrayRef<std::string>) override {
     llvm_unreachable("Daemon is passive");
   }
@@ -61,7 +83,17 @@ public:
     llvm_unreachable("Daemon is passive");
   }
 
-  Error disconnect() override { llvm_unreachable("Daemon is passive"); }
+  void handleDisconnect(Error Err) override {
+    llvm_unreachable("Daemon is passive");
+  }
+
+  int waitForDisconnect();
+
+  Error disconnect() override {
+    T->disconnect();
+    Disconnecting = true;
+    return Error::success();
+  }
 
   void callWrapperAsync(ExecutorAddr WrapperFnAddr,
                         IncomingWFRHandler OnComplete,
@@ -70,8 +102,6 @@ public:
   Expected<HandleMessageAction>
   handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo, ExecutorAddr TagAddr,
                 SimpleRemoteEPCArgBytesVector ArgBytes) override;
-
-  void handleDisconnect(Error Err) override;
 
   void setTransport(SimpleRemoteEPCTransport &T) { this->T = &T; }
 
@@ -88,6 +118,7 @@ public:
 private:
   Error handleSetup(uint64_t SeqNo, ExecutorAddr TagAddr,
                     SimpleRemoteEPCArgBytesVector ArgBytes);
+  void handleHangup(SimpleRemoteEPCArgBytesVector ArgBytes);
 
   Error handleResult(uint64_t SeqNo, ExecutorAddr TagAddr,
                      SimpleRemoteEPCArgBytesVector ArgBytes);
@@ -107,7 +138,8 @@ private:
   std::mutex ServerStateMutex;
   std::condition_variable DisconnectCV;
   Error DisconnectErr = Error::success();
-  bool Disconnected = false;
+  bool Disconnecting = false;
+  bool FullShutdownRequested = false;
 
   SimpleRemoteEPCTransport *T;
   std::unique_ptr<EPCGenericDylibManager> EPCDylibMgr;
@@ -120,6 +152,8 @@ private:
 
 } // namespace autojit
 
+//////////////////////////////////////////////////////////////////// Session ///
+
 autojit::Session::Session(int InFD, int OutFD,
                           std::unique_ptr<ExecutionSession> &ES) {
   auto SSP = std::make_shared<SymbolStringPool>();
@@ -127,15 +161,14 @@ autojit::Session::Session(int InFD, int OutFD,
   ES = std::make_unique<ExecutionSession>(
       std::make_unique<RemoteEPC>(std::move(SSP), std::move(D)));
   EPC_ = static_cast<RemoteEPC *>(&ES->getExecutorProcessControl());
-  Transport_ =
-      ExitOnErr(FDSimpleRemoteEPCTransport::Create(*EPC_, InFD, OutFD));
+  Transport_ = std::make_unique<Transport>(*EPC_, InFD, OutFD);
   EPC_->setTransport(*Transport_);
 }
 
 autojit::Session::~Session() {}
 
 autojit::AutoJIT *
-autojit::Session::launch(std::unique_ptr<llvm::orc::ExecutionSession> ES,
+autojit::Session::launch(std::unique_ptr<ExecutionSession> ES,
                          StringMap<ExecutorAddr> BootstrapSymbols) {
   ExitOnErr(EPC_->waitForSetup());
 
@@ -167,10 +200,183 @@ autojit::Session::launch(std::unique_ptr<llvm::orc::ExecutionSession> ES,
 
 int autojit::Session::waitForDisconnect() { return EPC_->waitForDisconnect(); }
 
+////////////////////////////////////////////////////////////////// Transport ///
+
+struct FDMsgHeader {
+  static constexpr unsigned MsgSizeOffset = 0;
+  static constexpr unsigned OpCOffset = MsgSizeOffset + sizeof(uint64_t);
+  static constexpr unsigned SeqNoOffset = OpCOffset + sizeof(uint64_t);
+  static constexpr unsigned TagAddrOffset = SeqNoOffset + sizeof(uint64_t);
+  static constexpr unsigned Size = TagAddrOffset + sizeof(uint64_t);
+};
+
+autojit::Transport::Transport(SimpleRemoteEPCTransportClient &C, int InFD,
+                              int OutFD)
+    : C(C), InFD(InFD), OutFD(OutFD) {}
+
+autojit::Transport::~Transport() {
+  disconnect();
+  ListenerThread.join();
+}
+
+Error autojit::Transport::start() {
+  ListenerThread = std::thread([this]() { listenLoop(); });
+  return Error::success();
+}
+
+Error autojit::Transport::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
+                                      ExecutorAddr TagAddr,
+                                      ArrayRef<char> ArgBytes) {
+  char HeaderBuffer[FDMsgHeader::Size];
+
+  *((support::ulittle64_t *)(HeaderBuffer + FDMsgHeader::MsgSizeOffset)) =
+      FDMsgHeader::Size + ArgBytes.size();
+  *((support::ulittle64_t *)(HeaderBuffer + FDMsgHeader::OpCOffset)) =
+      static_cast<uint64_t>(OpC);
+  *((support::ulittle64_t *)(HeaderBuffer + FDMsgHeader::SeqNoOffset)) = SeqNo;
+  *((support::ulittle64_t *)(HeaderBuffer + FDMsgHeader::TagAddrOffset)) =
+      TagAddr.getValue();
+
+  std::lock_guard<std::mutex> Lock(M);
+  if (Disconnected)
+    return make_error<StringError>("FD-transport disconnected",
+                                   inconvertibleErrorCode());
+  if (int ErrNo = writeBytes(HeaderBuffer, FDMsgHeader::Size))
+    return errorCodeToError(std::error_code(ErrNo, std::generic_category()));
+  if (int ErrNo = writeBytes(ArgBytes.data(), ArgBytes.size()))
+    return errorCodeToError(std::error_code(ErrNo, std::generic_category()));
+  return Error::success();
+}
+
+void autojit::Transport::disconnect() {
+  if (Disconnected)
+    return; // Return if already disconnected.
+
+  if (Error Err =
+          sendMessage(SimpleRemoteEPCOpcode::Hangup, 0, ExecutorAddr{}, {})) {
+    LOG() << "Failed to sent final Hangup\n";
+  }
+
+  Disconnected = true;
+  bool CloseOutFD = InFD != OutFD;
+
+  while (close(InFD) == -1)
+    if (errno == EBADF)
+      break;
+
+  if (CloseOutFD)
+    while (close(OutFD) == -1)
+      if (errno == EBADF)
+        break;
+}
+
+Error autojit::Transport::readBytes(char *Dst, size_t Size, bool *IsEOF) {
+  assert((Size == 0 || Dst) && "Attempt to read into null.");
+  ssize_t Completed = 0;
+  while (Completed < static_cast<ssize_t>(Size)) {
+    ssize_t Read = ::read(InFD, Dst + Completed, Size - Completed);
+    if (Read <= 0) {
+      auto ErrNo = errno;
+      if (Read == 0) {
+        if (Completed == 0 && IsEOF) {
+          *IsEOF = true;
+          return Error::success();
+        }
+        return make_error<StringError>("Unexpected end-of-file",
+                                       inconvertibleErrorCode());
+      }
+      if (ErrNo == EAGAIN || ErrNo == EINTR)
+        continue;
+      std::lock_guard<std::mutex> Lock(M);
+      if (Disconnected && IsEOF) { // disconnect called,  pretend this is EOF.
+        *IsEOF = true;
+        return Error::success();
+      }
+      return errorCodeToError(std::error_code(ErrNo, std::generic_category()));
+    }
+    Completed += Read;
+  }
+  return Error::success();
+}
+
+int autojit::Transport::writeBytes(const char *Src, size_t Size) {
+  assert((Size == 0 || Src) && "Attempt to append from null.");
+  ssize_t Completed = 0;
+  while (Completed < static_cast<ssize_t>(Size)) {
+    ssize_t Written = ::write(OutFD, Src + Completed, Size - Completed);
+    if (Written < 0) {
+      auto ErrNo = errno;
+      if (ErrNo == EAGAIN || ErrNo == EINTR)
+        continue;
+      return ErrNo;
+    }
+    Completed += Written;
+  }
+  return 0;
+}
+
+void autojit::Transport::listenLoop() {
+  while (true) {
+    // Read the header buffer
+    char HeaderBuffer[FDMsgHeader::Size];
+    {
+      bool IsEOF = false;
+      if (auto Err = readBytes(HeaderBuffer, FDMsgHeader::Size, &IsEOF)) {
+        LOG() << "Failed to read message header: " << toString(std::move(Err))
+              << "\n";
+        continue;
+      }
+      if (IsEOF)
+        break;
+    }
+
+    // Decode header buffer
+    uint64_t MsgSize;
+    SimpleRemoteEPCOpcode OpC;
+    uint64_t SeqNo;
+    ExecutorAddr TagAddr;
+
+    MsgSize =
+        *((support::ulittle64_t *)(HeaderBuffer + FDMsgHeader::MsgSizeOffset));
+    OpC = static_cast<SimpleRemoteEPCOpcode>(static_cast<uint64_t>(
+        *((support::ulittle64_t *)(HeaderBuffer + FDMsgHeader::OpCOffset))));
+    SeqNo =
+        *((support::ulittle64_t *)(HeaderBuffer + FDMsgHeader::SeqNoOffset));
+    TagAddr.setValue(
+        *((support::ulittle64_t *)(HeaderBuffer + FDMsgHeader::TagAddrOffset)));
+
+    if (MsgSize < FDMsgHeader::Size) {
+      LOG() << "Message size too small: " << MsgSize << " bytes\n";
+      continue;
+    }
+
+    // Read the argument bytes
+    SimpleRemoteEPCArgBytesVector ArgBytes;
+    ArgBytes.resize(MsgSize - FDMsgHeader::Size);
+    if (auto Err = readBytes(ArgBytes.data(), ArgBytes.size())) {
+      LOG() << "Failed to read message payload: " << toString(std::move(Err))
+            << "\n";
+      continue;
+    }
+
+    if (Error Err =
+            C.handleMessage(OpC, SeqNo, TagAddr, ArgBytes).takeError()) {
+      LOG() << "Failed to handle message: " << toString(std::move(Err)) << "\n";
+      continue;
+    }
+  }
+
+  if (!Disconnected) {
+    LOG() << "Unexpected disconnect\n";
+  }
+}
+
+////////////////////////////////////////////////////////////////// RemoteEPC ///
+
 autojit::RemoteEPC::~RemoteEPC() {
 #ifndef NDEBUG
   std::lock_guard<std::mutex> Lock(ServerStateMutex);
-  assert(Disconnected && "Destroyed without disconnection");
+  assert(Disconnecting && "Destroyed without disconnection");
 #endif // NDEBUG
 }
 
@@ -301,23 +507,34 @@ autojit::RemoteEPC::handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
     handleCallWrapper(SeqNo, TagAddr, std::move(ArgBytes));
     break;
   case SimpleRemoteEPCOpcode::Hangup:
+    handleHangup(std::move(ArgBytes));
     return EndSession;
   }
   return ContinueSession;
 }
 
-void autojit::RemoteEPC::handleDisconnect(Error Err) {
-  if (Err) {
-    DBG() << "Disconnect error: " << toString(std::move(Err)) << "\n";
+void autojit::RemoteEPC::handleHangup(SimpleRemoteEPCArgBytesVector ArgBytes) {
+  auto WFR =
+      shared::WrapperFunctionResult::copyFrom(ArgBytes.data(), ArgBytes.size());
+  if (const char *ErrMsg = WFR.getOutOfBandError()) {
+    LOG() << "Hangup error: " << ErrMsg << "\n";
+    return;
   }
+
+  using SPSSerialize = shared::SPSArgList<bool>;
+  shared::SPSInputBuffer IB(WFR.data(), WFR.size());
+  if (!SPSSerialize::deserialize(IB, FullShutdownRequested)) {
+    DBG() << "Hangup-decode error\n";
+  }
+
   std::unique_lock<std::mutex> Lock(ServerStateMutex);
-  Disconnected = true;
+  Disconnecting = true;
   DisconnectCV.notify_all();
 }
 
 int autojit::RemoteEPC::waitForDisconnect() {
   std::unique_lock<std::mutex> Lock(ServerStateMutex);
-  DisconnectCV.wait(Lock, [this]() { return Disconnected; });
+  DisconnectCV.wait(Lock, [this]() { return Disconnecting; });
   if (DisconnectErr) {
     DBG() << "Disconnect-decode error: " << toString(std::move(DisconnectErr))
           << "\n";
@@ -384,16 +601,18 @@ Error autojit::RemoteEPC::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
            << " bytes\n";
   }
 
+  std::unique_lock<std::mutex> Lock(ServerStateMutex);
+  if (Disconnecting && !FullShutdownRequested) {
+    LOG() << "Warning: ignore RPC invocation after disconnect\n";
+    return Error::success();
+  }
+
   if (OpC == SimpleRemoteEPCOpcode::CallWrapper && TagAddr.getValue() == 0) {
-    LOG() << "Warning: supressing invocation of nullptr in target process!\n";
-    return Error::success(); // TODO: If we returned an error, is it rcoverable?
+    LOG() << "Warning: supress RPC invocation of nullptr\n";
+    return Error::success();
   }
-  auto Err = T->sendMessage(OpC, SeqNo, TagAddr, ArgBytes);
-  {
-    if (Err)
-      dbgs() << "  \\--> RemoteEPC::sendMessage failed\n";
-  }
-  return Err;
+
+  return T->sendMessage(OpC, SeqNo, TagAddr, ArgBytes);
 }
 
 Error autojit::RemoteEPC::handleSetup(uint64_t SeqNo, ExecutorAddr TagAddr,

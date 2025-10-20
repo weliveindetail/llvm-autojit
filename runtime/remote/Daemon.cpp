@@ -19,6 +19,7 @@
 
 #include <csignal>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -230,7 +231,7 @@ static int runSession(int InFD, int OutFD,
   DBG() << "Connected: enter event loop\n";
   int ExitCode = Session.waitForDisconnect();
 
-  DBG() << "Disconnected: session shutting down\n";
+  DBG() << "Disconnect: session shutting down\n";
   return ExitCode;
 }
 
@@ -250,23 +251,25 @@ int main(int argc, char *argv[]) {
        ExecutorAddr::fromPtr(autojit_rpc_materialize)},
   };
 
+  pid_t PID = getpid();
   if (StdioMode) {
     // Single connection via stdin/stdout (typically as child process)
-    DBG() << "Daemon runs in stdio mode\n";
+    DBG() << "Daemon process " << PID << " runs in stdio mode\n";
     return runSession(STDIN_FILENO, STDOUT_FILENO, RPCSymbols);
   }
 
   // Standalone mode: multiple connections via Unix domain socket
-  DBG() << "Daemon runs in standalone mode\n";
-  int ListenFd = AutoCleanupSocket::listen(getDaemonSocketPath(), getpid());
+  LOG() << "Daemon process " << PID << " runs in standalone mode\n";
+  int ListenFd = AutoCleanupSocket::listen(getDaemonSocketPath(), PID);
   while (true) {
-    DBG() << "Waiting for connection...\n";
+    LOG() << "Waiting for connection...\n";
+    fflush(stderr);
 
     // Fork new child process for each connection
     int ClientFd = AutoCleanupSocket::accept(ListenFd);
-    DBG() << "Accepted connection on fd " << ClientFd << "\n";
+    LOG() << "Accepted connection on fd " << ClientFd << "\n";
 
-    pid_t PID = fork();
+    PID = fork();
     if (PID < 0) {
       LOG() << "Failed to fork for client connection: " << strerror(errno) << "\n";
       close(ClientFd);

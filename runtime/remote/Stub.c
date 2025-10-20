@@ -40,7 +40,7 @@
 
 /* Global state */
 static int g_daemon_fd = -1;
-static pid_t g_daemon_pid = -1;
+static pid_t g_daemon_child_pid = -1;
 static pthread_once_t g_init_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_io_mutex = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_next_seqno = 1;
@@ -1320,8 +1320,9 @@ static int message_loop_until(int fd, uint64_t stop_opcode,
       DEBUG_LOG("Received stop opcode 0x%02lx, exiting message loop\n",
                 stop_opcode);
       return 0;
+    }
 
-    } else if (msg.opcode == OPCODE_CALLWRAPPER) {
+    if (msg.opcode == OPCODE_CALLWRAPPER) {
       /* Handle RPC call from daemon */
       if (handle_callwrapper_message(fd, &msg) < 0) {
         ERROR_LOG("Failed to handle CallWrapper message\n");
@@ -1332,8 +1333,8 @@ static int message_loop_until(int fd, uint64_t stop_opcode,
       /* Continue loop */
 
     } else if (msg.opcode == OPCODE_HANGUP) {
-      /* Daemon disconnected */
-      ERROR_LOG("Daemon sent Hangup\n");
+      /* Sporadic daemon disconnect */
+      ERROR_LOG("Daemon sent unexpected Hangup\n");
       free_epc_message(&msg);
       return -1;
 
@@ -1351,28 +1352,6 @@ static int message_loop_until(int fd, uint64_t stop_opcode,
  * ============================================================================
  */
 
-static void cleanup_daemon(void) {
-  if (g_daemon_fd >= 0) {
-    /* Send hangup message only if we spawned the daemon */
-    if (g_daemon_pid > 0) {
-      epc_message_t hangup = {.opcode = OPCODE_HANGUP,
-                              .seqno = 0,
-                              .tag_addr = 0,
-                              .arg_bytes = NULL,
-                              .arg_size = 0};
-      send_epc_message(g_daemon_fd, &hangup);
-    }
-
-    close(g_daemon_fd);
-    g_daemon_fd = -1;
-  }
-  if (g_daemon_pid > 0) {
-    kill(g_daemon_pid, SIGTERM);
-    waitpid(g_daemon_pid, NULL, 0);
-    g_daemon_pid = -1;
-  }
-}
-
 static void to_lowercase(char *str) {
   for (; *str; ++str)
     *str = tolower(*str);
@@ -1388,6 +1367,76 @@ static int checkenv(const char *var) {
     if (strcmp(envvar, true_values[i]) == 0)
       return 1;
   return 0;
+}
+
+static void clean_shutdown(void) {
+  DEBUG_LOG("Run synchronous shutdown process\n");
+  epc_message_t hangup_msg;
+  if (message_loop_until(g_daemon_fd, OPCODE_HANGUP, &hangup_msg) == 0) {
+    ERROR_LOG("Daemon sent synchronous Hangup\n");
+    free_epc_message(&hangup_msg);
+  } else {
+    ERROR_LOG("Failed to receive Hangup message from daemon\n");
+  }
+}
+
+static int waitpid_timeout(pid_t pid, int *status, int timeout_ms) {
+  int interval_ms = 8; // check after 8, 16, 32, etc.
+  const int interval_max = timeout_ms >> 1;
+  while (interval_ms < interval_max) {
+    pid_t ret = waitpid(pid, status, WNOHANG);
+    if (ret == -1)
+      return -1;
+    if (ret == pid)
+      return 0;
+    usleep(interval_ms * 1000);
+    interval_ms <<= 1;
+  }
+  return -1;
+}
+
+static int shutdown_child_process(void) {
+  if (waitpid_timeout(g_daemon_child_pid, NULL, 256) == 0)
+    return 0;
+  kill(g_daemon_child_pid, SIGTERM);
+  if (waitpid(g_daemon_child_pid, NULL, 0) == 0)
+    return 0;
+  return -1;
+}
+
+static void cleanup_daemon(void) {
+  if (g_daemon_fd < 0)
+    return;
+
+  uint8_t full_shutdown_request = 0;
+  epc_message_t hangup = {.opcode = OPCODE_HANGUP,
+                          .seqno = 0,
+                          .tag_addr = 0,
+                          .arg_bytes = &full_shutdown_request,
+                          .arg_size = 1};
+
+  /* Run full OrcJIT shutdown only if requested explicitly */
+  if (checkenv("AUTOJITD_FULL_SHUTDOWN")) {
+    DEBUG_LOG("Request full synchronous shutdown from daemon\n");
+    full_shutdown_request = 1;
+    send_epc_message(g_daemon_fd, &hangup);
+    clean_shutdown();
+  } else {
+    DEBUG_LOG("Send asynchronous hangup to daemon\n");
+    send_epc_message(g_daemon_fd, &hangup);
+  }
+
+  /* If the daemon runs in a child process, make sure it did shut down */
+  if (g_daemon_child_pid > 0) {
+    if (shutdown_child_process() < 0) {
+      errno = ETIMEDOUT;
+      perror("autojitd child process shutdown timed out");
+    }
+    g_daemon_child_pid = -1;
+  }
+
+  close(g_daemon_fd);
+  g_daemon_fd = -1;
 }
 
 /* Get the socket path for autojitd
@@ -1460,7 +1509,7 @@ static void initialize_daemon(void) {
   if (daemon_fd >= 0) {
     /* Successfully connected to existing daemon */
     g_daemon_fd = daemon_fd;
-    g_daemon_pid = -1; /* No child process to track */
+    g_daemon_child_pid = -1; /* No child process to track */
     DEBUG_LOG("Connected to existing daemon\n");
   } else {
     /* No existing daemon found - spawn a new one */
@@ -1504,9 +1553,9 @@ static void initialize_daemon(void) {
     /* Parent process */
     close(fds[0]);
     g_daemon_fd = fds[1];
-    g_daemon_pid = pid;
+    g_daemon_child_pid = pid;
 
-    DEBUG_LOG("Daemon started with pid %d\n", g_daemon_pid);
+    DEBUG_LOG("Daemon started with pid %d\n", g_daemon_child_pid);
   }
 
   if (checkenv("AUTOJIT_WAIT_FOR_DEBUGGER")) {

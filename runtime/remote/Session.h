@@ -8,6 +8,7 @@
 namespace autojit {
 
 class RemoteEPC;
+class Transport;
 
 class Session {
 public:
@@ -21,7 +22,7 @@ public:
   int waitForDisconnect();
 
 private:
-  std::unique_ptr<llvm::orc::SimpleRemoteEPCTransport> Transport_;
+  std::unique_ptr<Transport> Transport_;
   autojit::AutoJIT AutoJIT_;
   RemoteEPC *EPC_;
 };
