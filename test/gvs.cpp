@@ -1,8 +1,9 @@
-// Check that lazy and static code uses the same global variables
+// Check that lazy and static code use the same global variables
 //
-// RUN: %clang %s -o %t.exe -fpass-plugin=%autojit_plugin \
-// RUN:        -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -rdynamic
-// RUN: %t.exe | FileCheck %s
+// RUN: %clang %s -fpass-plugin=%autojit_plugin -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
+// RUN: %clang %s -fpass-plugin=%autojit_plugin -rdynamic -L%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive -o %t_remote.exe
+// RUN: %t_inprocess.exe | FileCheck %s
+// RUN: %t_remote.exe | FileCheck %s
 //
 // CHECK: SimpleGV static = [[ADDR1:[0-9a-f]+]]
 // CHECK: DumperGV static = [[ADDR2:[0-9a-f]+]]

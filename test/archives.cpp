@@ -7,8 +7,10 @@
 // RUN: %clang -fpass-plugin=%autojit_plugin -c %S/Inputs/multiply.cpp -o %t_multiply.o
 // RUN: rm -f %t.a
 // RUN: %ar cq %t.a %t_add.o %t_multiply.o %t_hello.o
-// RUN: %clang %t.o -Wl,--whole-archive %t.a -Wl,--no-whole-archive -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -rdynamic -o %t.exe
-// RUN: %t.exe 2>&1 | FileCheck %s
+// RUN: %clang %t.o -Wl,--whole-archive %t.a -Wl,--no-whole-archive -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
+// RUN: %clang %t.o -Wl,--whole-archive %t.a -Wl,--no-whole-archive -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive -o %t_remote.exe
+// RUN: %t_inprocess.exe | FileCheck %s
+// RUN: %t_remote.exe | FileCheck %s
 
 // CHECK: AutoJIT Runtime Test
 // CHECK: Hello from AutoJIT!

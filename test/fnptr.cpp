@@ -1,8 +1,9 @@
 // Check that function pointers don't break in lazy code
 //
-// RUN: %clang %s -o %t.exe -fpass-plugin=%autojit_plugin \
-// RUN:        -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -rdynamic
-// RUN: %t.exe | FileCheck %s
+// RUN: %clang %s -rdynamic -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
+// RUN: %clang %s -rdynamic -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive -o %t_remote.exe
+// RUN: %t_inprocess.exe | FileCheck %s
+// RUN: %t_remote.exe | FileCheck %s
 //
 // CHECK: Address of foo static = [[ADDR:[0-9a-f]+]]
 // CHECK: Address of foo lazy = [[ADDR]]
