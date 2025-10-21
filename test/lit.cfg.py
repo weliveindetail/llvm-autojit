@@ -36,6 +36,10 @@ def is_set(var_name: str) -> bool:
     val = os.getenv(var_name)
     return val is not None and val.strip().lower() in {"1", "on", "yes", "true"}
 
+# Forward for debugging if enabled on host
+if is_set('AUTOJIT_DEBUG'):
+    config.environment['AUTOJITD_DEBUG'] = 'On'
+
 # Check for existing autojitd daemon process
 daemon_running = False
 daemon_bin = Path(config.autojit_tools_dir) / 'autojitd'
