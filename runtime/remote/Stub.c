@@ -43,7 +43,7 @@ static int g_daemon_fd = -1;
 static pid_t g_daemon_child_pid = -1;
 static pthread_once_t g_init_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_io_mutex = PTHREAD_MUTEX_INITIALIZER;
-static uint64_t g_next_seqno = 1;
+static uint64_t g_next_seqno = 0;
 
 /* Cached function addresses from daemon bootstrap symbols */
 static uint64_t g_register_fn_addr = 0;
@@ -275,6 +275,21 @@ static void free_epc_message(epc_message_t *msg) {
   msg->arg_size = 0;
 }
 
+static uint64_t next_sequence_number() {
+  return __sync_fetch_and_add(&g_next_seqno, 1);
+}
+
+static void count_sequence_number(uint64_t actual) {
+  uint64_t expected = next_sequence_number();
+  if (actual != expected) {
+    ERROR_LOG("Warning: Expected sequence number %lu but got: %lu\n", expected,
+              actual);
+    if (g_debug) {
+      exit(1);
+    }
+  }
+}
+
 /* ============================================================================
  * Bootstrap Symbol Parsing
  * ============================================================================
@@ -287,6 +302,9 @@ static int parse_setup_message(const epc_message_t *msg) {
    * - bootstrap_map: map<string, bytes> (we skip this)
    * - bootstrap_symbols: map<string, uint64_t>
    */
+
+  /* Keep sequence numbers in sync bi-directionally */
+  count_sequence_number(msg->seqno);
 
   const uint8_t *ptr = msg->arg_bytes;
   const uint8_t *end = msg->arg_bytes + msg->arg_size;
@@ -1166,7 +1184,7 @@ static int send_setup_message(int fd) {
 
   /* Send Setup message */
   epc_message_t setup_msg = {.opcode = OPCODE_SETUP,
-                             .seqno = 0,
+                             .seqno = next_sequence_number(),
                              .tag_addr = 0,
                              .arg_bytes = setup_data.data,
                              .arg_size = setup_data.size};
@@ -1193,7 +1211,7 @@ static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *data,
                                  size_t *result_size) {
   /* Send CallWrapper message */
   epc_message_t call_msg = {.opcode = OPCODE_CALLWRAPPER,
-                            .seqno = __sync_fetch_and_add(&g_next_seqno, 1),
+                            .seqno = next_sequence_number(),
                             .tag_addr = fn_addr,
                             .arg_bytes = (uint8_t *)data,
                             .arg_size = args_size};
@@ -1262,6 +1280,9 @@ static int handle_callwrapper_message(int fd, const epc_message_t *msg) {
 
   DEBUG_LOG("Handling CallWrapper: fn=0x%lx, seqno=%lu, arg_size=%zu\n",
             msg->tag_addr, msg->seqno, msg->arg_size);
+
+  /* Keep sequence numbers in sync bi-directionally */
+  count_sequence_number(msg->seqno);
 
   /* Allocate result buffer - wrapper functions write result here
    * Result format is WrapperFunctionResult: [size:8][data:variable]

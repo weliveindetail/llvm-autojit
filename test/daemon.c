@@ -6,8 +6,10 @@
 // FIXME: We need --whole-archive for llvm_orc_registerJITLoaderGDBWrapper()
 // RUN: %clang -fpass-plugin=%autojit_plugin -xc -c %s -o %t.o
 // RUN: %clang %t.o -L%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive -rdynamic -pthread -o %t.exe
-// RUN: env AUTOJITD_FULL_SHUTDOWN=Off %t.exe | FileCheck %s
-// RUN: env AUTOJITD_FULL_SHUTDOWN=On %t.exe | FileCheck %s
+// RUN: env AUTOJITD_FULL_SHUTDOWN=Off %t.exe 2>&1 | FileCheck %s
+// RUN: env AUTOJITD_FULL_SHUTDOWN=On %t.exe 2>&1 | FileCheck %s
+
+// CHECK-NOT: JIT session error
 
 // CHECK: AutoJIT Daemon Test
 // CHECK: add(1, 4) = 5
