@@ -106,6 +106,7 @@ public:
   void setTransport(SimpleRemoteEPCTransport &T) { this->T = &T; }
 
   Error waitForSetup();
+  Error sendSetupMessage(StringMap<ExecutorAddr> Symbols);
 
   static Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
   createDefaultMemoryManager(RemoteEPC &SREPC);
@@ -167,34 +168,17 @@ autojit::Session::Session(int InFD, int OutFD,
 
 autojit::Session::~Session() {}
 
-autojit::AutoJIT *
-autojit::Session::launch(std::unique_ptr<ExecutionSession> ES,
-                         StringMap<ExecutorAddr> BootstrapSymbols) {
+autojit::AutoJIT *autojit::Session::launch(std::unique_ptr<ExecutionSession> ES,
+                                           StringMap<ExecutorAddr> Symbols) {
+  // Start message queue and wait for setup from target process
   ExitOnErr(EPC_->waitForSetup());
 
   LLJITBuilder Builder;
   Builder.setExecutionSession(std::move(ES));
   ExitOnErr(AutoJIT_.initialize(Builder));
 
-  // Send setup message to the target process
-  SimpleRemoteEPCExecutorInfo EI;
-  EI.TargetTriple = sys::getProcessTriple();
-  EI.PageSize = ExitOnErr(sys::Process::getPageSize());
-  EI.BootstrapSymbols = std::move(BootstrapSymbols);
-
-  using SPSSerialize =
-      shared::SPSArgList<shared::SPSSimpleRemoteEPCExecutorInfo>;
-  auto SetupPacketBytes =
-      shared::WrapperFunctionResult::allocate(SPSSerialize::size(EI));
-  shared::SPSOutputBuffer OB(SetupPacketBytes.data(), SetupPacketBytes.size());
-  if (!SPSSerialize::serialize(OB, EI)) {
-    LOG() << "Could not encode setup packet\n";
-    exit(1);
-  }
-
-  ExitOnErr(Transport_->sendMessage(
-      SimpleRemoteEPCOpcode::Setup, 0, ExecutorAddr(),
-      {SetupPacketBytes.data(), SetupPacketBytes.size()}));
+  // Send our own setup message to the target process
+  ExitOnErr(EPC_->sendSetupMessage(std::move(Symbols)));
   return &AutoJIT_;
 }
 
@@ -575,12 +559,13 @@ autojit::RemoteEPC::createDefaultMemoryAccess(RemoteEPC &SREPC) {
 Error autojit::RemoteEPC::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
                                       ExecutorAddr TagAddr,
                                       ArrayRef<char> ArgBytes) {
-  assert(OpC != SimpleRemoteEPCOpcode::Setup &&
-         "RemoteEPC sending Setup message? That's the wrong direction.");
-
   {
     dbgs() << "RemoteEPC::sendMessage: opc = ";
     switch (OpC) {
+    case SimpleRemoteEPCOpcode::Setup:
+      dbgs() << "Setup";
+      assert(!TagAddr && "Non-zero TagAddr for Setup?");
+      break;
     case SimpleRemoteEPCOpcode::Hangup:
       dbgs() << "Hangup";
       assert(SeqNo == 0 && "Non-zero SeqNo for Hangup?");
@@ -593,8 +578,6 @@ Error autojit::RemoteEPC::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
     case SimpleRemoteEPCOpcode::CallWrapper:
       dbgs() << "CallWrapper";
       break;
-    default:
-      llvm_unreachable("Invalid opcode");
     }
     dbgs() << ", seqno = " << SeqNo << ", tag-addr = " << TagAddr
            << ", arg-buffer = " << formatv("{0:x}", ArgBytes.size())
@@ -709,6 +692,27 @@ Error autojit::RemoteEPC::waitForSetup() {
   this->MemAccess = OwnedMemAccess.get();
 
   return Error::success();
+}
+
+Error autojit::RemoteEPC::sendSetupMessage(StringMap<ExecutorAddr> Symbols) {
+  SimpleRemoteEPCExecutorInfo EI;
+  EI.TargetTriple = sys::getProcessTriple();
+  EI.PageSize = ExitOnErr(sys::Process::getPageSize());
+  EI.BootstrapSymbols = std::move(Symbols);
+
+  using SPSSerialize =
+      shared::SPSArgList<shared::SPSSimpleRemoteEPCExecutorInfo>;
+  auto SetupPacketBytes =
+      shared::WrapperFunctionResult::allocate(SPSSerialize::size(EI));
+  shared::SPSOutputBuffer OB(SetupPacketBytes.data(), SetupPacketBytes.size());
+  if (!SPSSerialize::serialize(OB, EI)) {
+    LOG() << "Could not encode setup packet\n";
+    exit(1);
+  }
+
+  return sendMessage(SimpleRemoteEPCOpcode::Setup, getNextSeqNo(),
+                     ExecutorAddr(),
+                     {SetupPacketBytes.data(), SetupPacketBytes.size()});
 }
 
 Error autojit::RemoteEPC::handleResult(uint64_t SeqNo, ExecutorAddr TagAddr,

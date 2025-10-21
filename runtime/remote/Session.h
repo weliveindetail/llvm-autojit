@@ -16,9 +16,8 @@ public:
           std::unique_ptr<llvm::orc::ExecutionSession> &ES);
   ~Session();
 
-  autojit::AutoJIT *
-  launch(std::unique_ptr<llvm::orc::ExecutionSession> ES,
-         llvm::StringMap<llvm::orc::ExecutorAddr> BootstrapSymbols);
+  autojit::AutoJIT *launch(std::unique_ptr<llvm::orc::ExecutionSession> ES,
+                           llvm::StringMap<llvm::orc::ExecutorAddr> Symbols);
   int waitForDisconnect();
 
 private:

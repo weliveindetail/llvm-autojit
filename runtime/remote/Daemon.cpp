@@ -222,11 +222,17 @@ static std::string getDaemonSocketPath() {
   return std::string("/tmp/autojitd-") + std::to_string(getuid()) + ".sock";
 }
 
-static int runSession(int InFD, int OutFD,
-                      const StringMap<ExecutorAddr> &BootstrapSymbols) {
+static int runSession(int InFD, int OutFD) {
   std::unique_ptr<llvm::orc::ExecutionSession> ES;
   autojit::Session Session(InFD, OutFD, ES);
-  Instance = Session.launch(std::move(ES), BootstrapSymbols);
+
+  StringMap<ExecutorAddr> RPCSymbols{
+      {"autojit_rpc_register", ExecutorAddr::fromPtr(autojit_rpc_register)},
+      {"autojit_rpc_materialize",
+       ExecutorAddr::fromPtr(autojit_rpc_materialize)},
+  };
+
+  Instance = Session.launch(std::move(ES), std::move(RPCSymbols));
 
   DBG() << "Connected: enter event loop\n";
   int ExitCode = Session.waitForDisconnect();
@@ -245,17 +251,11 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  StringMap<ExecutorAddr> RPCSymbols{
-      {"autojit_rpc_register", ExecutorAddr::fromPtr(autojit_rpc_register)},
-      {"autojit_rpc_materialize",
-       ExecutorAddr::fromPtr(autojit_rpc_materialize)},
-  };
-
   pid_t PID = getpid();
   if (StdioMode) {
     // Single connection via stdin/stdout (typically as child process)
     DBG() << "Daemon process " << PID << " runs in stdio mode\n";
-    return runSession(STDIN_FILENO, STDOUT_FILENO, RPCSymbols);
+    return runSession(STDIN_FILENO, STDOUT_FILENO);
   }
 
   // Standalone mode: multiple connections via Unix domain socket
@@ -279,7 +279,7 @@ int main(int argc, char *argv[]) {
     if (PID == 0) {
       // Child process handles new connection
       close(ListenFd);
-      exit(runSession(ClientFd, ClientFd, RPCSymbols));
+      exit(runSession(ClientFd, ClientFd));
     }
 
     // Parent process continues accepting connections
