@@ -92,7 +92,7 @@ static std::string toString(GlobalValue::LinkageTypes LT) {
   case GlobalValue::ExternalLinkage:
     return "extern";
   case GlobalValue::AvailableExternallyLinkage:
-    return "av_ext";
+    return "available_externally";
   case GlobalValue::LinkOnceAnyLinkage:
     return "linkonce";
   case GlobalValue::LinkOnceODRLinkage:
@@ -115,11 +115,7 @@ static std::string toString(GlobalValue::LinkageTypes LT) {
   return "<unknown>";
 }
 
-static raw_ostream &operator<<(raw_ostream &OS, GlobalValue::LinkageTypes LT) {
-  OS << toString(LT);
-  return OS;
-}
-
+#if !defined(NDEBUG)
 static StringRef toString(GlobalVariable::UnnamedAddr UA) {
   switch (UA) {
   case GlobalVariable::UnnamedAddr::None:
@@ -131,6 +127,7 @@ static StringRef toString(GlobalVariable::UnnamedAddr UA) {
   }
   return "<unknown>";
 }
+#endif
 
 static std::string getModuleGUID(const std::string &SourcePath) {
   // Generate MD5 hash of the source path
@@ -276,11 +273,12 @@ ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
     if (GV.hasWeakLinkage() || GV.hasLinkOnceLinkage()) {
       if (!haveHostSymbol(GV.getName())) {
         DBG() << "Keep definiton for " << GV.getName() << " ("
-              << GV.getLinkage() << " linkage and no host process symbol)\n";
+              << toString(GV.getLinkage())
+              << " linkage and no host process symbol)\n";
         continue;
       }
       DBG() << "Matched host process symbol for " << GV.getName() << " ("
-            << GV.getLinkage() << " linkage)\n";
+            << toString(GV.getLinkage()) << " linkage)\n";
     }
     DBG() << "Turn into declaration " << GV.getName() << "\n";
     GV.dropAllReferences();
@@ -298,7 +296,7 @@ ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
       DropAliases.insert(&GA);
       continue;
     }
-    bool RuntimeFixup = false;
+    [[maybe_unused]] bool RuntimeFixup = false;
     if (auto *AliasFn = dyn_cast<Function>(GA.getAliasee())) {
       if (GA.hasAtLeastLocalUnnamedAddr() &&
           AliasFn->getUnnamedAddr() == GlobalVariable::UnnamedAddr::None) {
@@ -310,8 +308,8 @@ ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
     std::string Info;
     if (auto *AliasFn = dyn_cast<Function>(GA.getAliasee())) {
       raw_string_ostream(Info)
-          << GA.getLinkage() << " " << toString(GA.getUnnamedAddr()) << " -> "
-          << AliasFn->getLinkage() << " "
+          << toString(GA.getLinkage()) << " " << toString(GA.getUnnamedAddr())
+          << " -> " << toString(AliasFn->getLinkage()) << " "
           << toString(AliasFn->getUnnamedAddr());
     } else {
       Info = "no function alias";

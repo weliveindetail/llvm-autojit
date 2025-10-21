@@ -275,7 +275,7 @@ static void free_epc_message(epc_message_t *msg) {
   msg->arg_size = 0;
 }
 
-static uint64_t next_sequence_number() {
+static uint64_t next_sequence_number(void) {
   return __sync_fetch_and_add(&g_next_seqno, 1);
 }
 
@@ -1509,7 +1509,7 @@ static int connect_to_existing_daemon(void) {
     return -1;
   }
 
-  DEBUG_LOG("Successfully connected to existing daemon\n");
+  DEBUG_LOG("Successfully connected to daemon\n");
   return fd;
 }
 
@@ -1523,18 +1523,27 @@ static void initialize_daemon(void) {
     daemon_fd = connect_to_existing_daemon();
 
   if (checkenv("AUTOJITD_FORCE_DAEMON") && daemon_fd < 0) {
-    ERROR_LOG("connecting to daemon failed: %s\n", strerror(errno));
+    if (checkenv("AUTOJITD_FORCE_SPAWN")) {
+      ERROR_LOG("connecting to daemon failed: AUTOJITD_FORCE_SPAWN and "
+                "AUTOJITD_FORCE_DAEMON are mutually exclusive. One must be "
+                "disabled in host environment.\n");
+    } else {
+      ERROR_LOG("connecting to daemon failed: %s\n", strerror(errno));
+    }
     exit(1);
   }
 
   if (daemon_fd >= 0) {
-    /* Successfully connected to existing daemon */
+    /* Connected to daemon, no child process to track */
     g_daemon_fd = daemon_fd;
-    g_daemon_child_pid = -1; /* No child process to track */
-    DEBUG_LOG("Connected to existing daemon\n");
+    g_daemon_child_pid = -1;
   } else {
-    /* No existing daemon found - spawn a new one */
-    DEBUG_LOG("No existing daemon found, spawning new daemon\n");
+    /* No daemon found, spawn our own */
+    const char *daemon_path = getenv("AUTOJIT_DAEMON_PATH");
+    if (!daemon_path)
+      daemon_path = "autojitd";
+    DEBUG_LOG("No daemon found, spawning autojitd in child-process: %s\n",
+              daemon_path);
 
     /* Create socketpair for bidirectional communication */
     int fds[2];
@@ -1560,11 +1569,7 @@ static void initialize_daemon(void) {
       if (fds[0] > STDERR_FILENO)
         close(fds[0]);
 
-      /* Find daemon executable */
-      const char *daemon_path = getenv("AUTOJIT_DAEMON_PATH");
-      if (!daemon_path)
-        daemon_path = "autojitd";
-
+      /* Run autojitd executable */
       execl(daemon_path, "autojitd", "--stdio", NULL);
       fprintf(stderr, "autojit-stub: failed to exec daemon '%s': %s\n",
               daemon_path, strerror(errno));
@@ -1580,8 +1585,9 @@ static void initialize_daemon(void) {
   }
 
   if (checkenv("AUTOJIT_WAIT_FOR_DEBUGGER")) {
-    int c;
     printf("Waiting for debugger. Press ENTER to continue...");
+    fflush(stdout);
+    int c;
     while ((c = getchar()) != '\n' && c != EOF) ;
   }
 
@@ -1761,7 +1767,7 @@ void __llvm_autojit_materialize(void **GuidInPtrOut) {
   pthread_once(&g_init_once, initialize_daemon);
 
   uint64_t guid = (uint64_t)(uintptr_t)(*GuidInPtrOut);
-  DEBUG_LOG("Requesting function: __llvm_autojit_fn_%lu\n", guid);
+  DEBUG_LOG("Requesting function: __autojit_fn_%lu\n", guid);
 
   /* Encode arguments: SPSArgList<uint64_t> */
   sps_buffer_t args;
