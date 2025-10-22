@@ -1,4 +1,5 @@
 #include "runtime/AutoJITRuntime.h"
+#include "runtime/remote/StubSPS.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -102,96 +103,6 @@ static int read_all(int fd, void *buf, size_t count) {
     ptr += nread;
     remaining -= nread;
   }
-  return 0;
-}
-
-/* ============================================================================
- * SPS (Simple Packed Serialization) Encoding/Decoding
- * ============================================================================
- *
- * We only implement what we need:
- * - uint64_t (8 bytes, native endian)
- * - string (uint64_t length + bytes)
- * - WrapperFunctionResult wrapper (uint64_t size + data)
- */
-
-typedef struct {
-  uint8_t *data;
-  size_t size;
-  size_t capacity;
-} sps_buffer_t;
-
-static void sps_buffer_init(sps_buffer_t *buf, size_t capacity) {
-  buf->data = malloc(capacity);
-  buf->size = 0;
-  buf->capacity = capacity;
-}
-
-static void sps_buffer_free(sps_buffer_t *buf) {
-  free(buf->data);
-  buf->data = NULL;
-  buf->size = 0;
-  buf->capacity = 0;
-}
-
-static void sps_write_uint64(sps_buffer_t *buf, uint64_t value) {
-  if (buf->size + 8 > buf->capacity) {
-    buf->capacity *= 2;
-    buf->data = realloc(buf->data, buf->capacity);
-  }
-  memcpy(buf->data + buf->size, &value, 8);
-  buf->size += 8;
-}
-
-static void sps_write_string(sps_buffer_t *buf, const char *str) {
-  uint64_t len = strlen(str);
-  sps_write_uint64(buf, len);
-
-  if (buf->size + len > buf->capacity) {
-    buf->capacity = buf->size + len + 256;
-    buf->data = realloc(buf->data, buf->capacity);
-  }
-  memcpy(buf->data + buf->size, str, len);
-  buf->size += len;
-}
-
-static void sps_write_uint8(sps_buffer_t *buf, uint8_t value) {
-  if (buf->size + 1 > buf->capacity) {
-    buf->capacity *= 2;
-    buf->data = realloc(buf->data, buf->capacity);
-  }
-  memcpy(buf->data + buf->size, &value, 1);
-  buf->size += 1;
-}
-
-static int sps_read_uint64(const uint8_t **ptr, const uint8_t *end,
-                           uint64_t *value) {
-  if (*ptr + 8 > end) {
-    ERROR_LOG("SPS: buffer underrun reading uint64\n");
-    return -1;
-  }
-  memcpy(value, *ptr, 8);
-  *ptr += 8;
-  return 0;
-}
-
-static int sps_read_string(const uint8_t **ptr, const uint8_t *end, char **str,
-                           uint64_t *len) {
-  if (sps_read_uint64(ptr, end, len) < 0)
-    return -1;
-
-  if (*ptr + *len > end) {
-    ERROR_LOG("SPS: buffer underrun reading string\n");
-    return -1;
-  }
-
-  *str = malloc(*len + 1);
-  if (!*str)
-    return -1;
-
-  memcpy(*str, *ptr, *len);
-  (*str)[*len] = '\0';
-  *ptr += *len;
   return 0;
 }
 

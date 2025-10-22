@@ -41,7 +41,7 @@ llvm_map_components_to_libnames(llvm_libs
 )
 
 # Static stub library: pure C, no LLVM deps
-add_library(autojit-stub STATIC remote/Stub.c remote/StubDebug.c)
+add_library(autojit-stub STATIC remote/Stub.c remote/StubDebug.c remote/StubSPS.c)
 set_target_properties(autojit-stub PROPERTIES
   OUTPUT_NAME "autojit_static-${CMAKE_SYSTEM_PROCESSOR}"
   ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
