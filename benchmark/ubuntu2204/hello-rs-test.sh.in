@@ -5,7 +5,7 @@ echo "Test hello-rs with autojit"
 rm -f /tmp/autojit_*
 rm -f hello
 
-export AUTOJIT_DEBUG=1
+export AUTOJIT_DEBUG=On
 
 rustc -Z llvm-plugins="@CMAKE_INSTALL_PREFIX@/lib/autojit.so" \
       -L @CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime \
