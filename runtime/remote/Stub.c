@@ -155,6 +155,16 @@ static void sps_write_string(sps_buffer_t *buf, const char *str) {
   buf->size += len;
 }
 
+static void sps_write_skip(sps_buffer_t *buf, size_t count) {
+  if (buf->size + count > buf->capacity) {
+    buf->capacity = buf->size + count + 256;
+    buf->data = realloc(buf->data, buf->capacity);
+  }
+  /* Zero out the skipped bytes */
+  memset(buf->data + buf->size, 0, count);
+  buf->size += count;
+}
+
 static int sps_read_uint64(const uint8_t **ptr, const uint8_t *end,
                            uint64_t *value) {
   if (*ptr + 8 > end) {
@@ -412,12 +422,12 @@ static int message_loop_until(int fd, uint64_t stop_opcode,
                               epc_message_t *stop_msg);
 
 /* EH-frame registration wrappers - defined later in the file */
-static void llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
-                                                    size_t ArgSize,
-                                                    uint8_t *ResultPtr);
-static void llvm_orc_deregisterEHFrameSectionWrapper(const char *ArgData,
+static ssize_t llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
                                                       size_t ArgSize,
-                                                      uint8_t *ResultPtr);
+                                                      sps_buffer_t *Result);
+static ssize_t llvm_orc_deregisterEHFrameSectionWrapper(const char *ArgData,
+                                                        size_t ArgSize,
+                                                        sps_buffer_t *Result);
 
 /* ============================================================================
  * Bootstrap Service Implementations (Simplified Stubs)
@@ -425,143 +435,168 @@ static void llvm_orc_deregisterEHFrameSectionWrapper(const char *ArgData,
  */
 
 /* Memory write wrappers - decode SPS and perform writes directly to memory */
-static void stub_mem_write_uint8s_wrapper(const char *ArgData, size_t ArgSize) {
+static ssize_t stub_mem_write_uint8s_wrapper(const char *ArgData,
+                                             size_t ArgSize,
+                                             sps_buffer_t *Result) {
   /* Decode SPSSequence<SPSMemoryAccessUInt8Write>
    * Each write is: (ExecutorAddr Addr, uint8_t Value)
    */
+  (void)Result; /* Unused */
   const uint8_t *ptr = (const uint8_t *)ArgData;
   const uint8_t *end = ptr + ArgSize;
 
   uint64_t count;
   if (sps_read_uint64(&ptr, end, &count) < 0)
-    return;
+    return -1;
 
   for (uint64_t i = 0; i < count; i++) {
     uint64_t addr;
     uint8_t value;
     if (sps_read_uint64(&ptr, end, &addr) < 0)
-      return;
+      return -1;
     if (ptr + 1 > end)
-      return;
+      return -1;
     value = *ptr++;
 
     *(uint8_t *)addr = value;
   }
+
+  return 0; /* Success, no result data */
 }
 
-static void stub_mem_write_uint16s_wrapper(const char *ArgData,
-                                           size_t ArgSize) {
+static ssize_t stub_mem_write_uint16s_wrapper(const char *ArgData,
+                                              size_t ArgSize,
+                                              sps_buffer_t *Result) {
+  (void)Result; /* Unused */
   const uint8_t *ptr = (const uint8_t *)ArgData;
   const uint8_t *end = ptr + ArgSize;
 
   uint64_t count;
   if (sps_read_uint64(&ptr, end, &count) < 0)
-    return;
+    return -1;
 
   for (uint64_t i = 0; i < count; i++) {
     uint64_t addr;
     uint16_t value;
     if (sps_read_uint64(&ptr, end, &addr) < 0)
-      return;
+      return -1;
     if (ptr + 2 > end)
-      return;
+      return -1;
     memcpy(&value, ptr, 2);
     ptr += 2;
 
     *(uint16_t *)addr = value;
   }
+
+  return 0; /* Success, no result data */
 }
 
-static void stub_mem_write_uint32s_wrapper(const char *ArgData,
-                                           size_t ArgSize) {
+static ssize_t stub_mem_write_uint32s_wrapper(const char *ArgData,
+                                              size_t ArgSize,
+                                              sps_buffer_t *Result) {
+  (void)Result; /* Unused */
   const uint8_t *ptr = (const uint8_t *)ArgData;
   const uint8_t *end = ptr + ArgSize;
 
   uint64_t count;
   if (sps_read_uint64(&ptr, end, &count) < 0)
-    return;
+    return -1;
 
   for (uint64_t i = 0; i < count; i++) {
     uint64_t addr;
     uint32_t value;
     if (sps_read_uint64(&ptr, end, &addr) < 0)
-      return;
+      return -1;
     if (ptr + 4 > end)
-      return;
+      return -1;
     memcpy(&value, ptr, 4);
     ptr += 4;
 
     *(uint32_t *)addr = value;
   }
+
+  return 0; /* Success, no result data */
 }
 
-static void stub_mem_write_uint64s_wrapper(const char *ArgData,
-                                           size_t ArgSize) {
+static ssize_t stub_mem_write_uint64s_wrapper(const char *ArgData,
+                                              size_t ArgSize,
+                                              sps_buffer_t *Result) {
+  (void)Result; /* Unused */
   const uint8_t *ptr = (const uint8_t *)ArgData;
   const uint8_t *end = ptr + ArgSize;
 
   uint64_t count;
   if (sps_read_uint64(&ptr, end, &count) < 0)
-    return;
+    return -1;
 
   for (uint64_t i = 0; i < count; i++) {
     uint64_t addr, value;
     if (sps_read_uint64(&ptr, end, &addr) < 0)
-      return;
+      return -1;
     if (sps_read_uint64(&ptr, end, &value) < 0)
-      return;
+      return -1;
 
     *(uint64_t *)addr = value;
   }
+
+  return 0; /* Success, no result data */
 }
 
-static void stub_mem_write_buffers_wrapper(const char *ArgData,
-                                           size_t ArgSize) {
+static ssize_t stub_mem_write_buffers_wrapper(const char *ArgData,
+                                              size_t ArgSize,
+                                              sps_buffer_t *Result) {
   /* Decode SPSSequence<SPSMemoryAccessBufferWrite>
    * Each write is: (ExecutorAddr Addr, SPSSequence<uint8_t> Buffer)
    */
+  (void)Result; /* Unused */
   const uint8_t *ptr = (const uint8_t *)ArgData;
   const uint8_t *end = ptr + ArgSize;
 
   uint64_t count;
   if (sps_read_uint64(&ptr, end, &count) < 0)
-    return;
+    return -1;
 
   for (uint64_t i = 0; i < count; i++) {
     uint64_t addr, buf_size;
     if (sps_read_uint64(&ptr, end, &addr) < 0)
-      return;
+      return -1;
     if (sps_read_uint64(&ptr, end, &buf_size) < 0)
-      return;
+      return -1;
     if (ptr + buf_size > end)
-      return;
+      return -1;
 
     memcpy((void *)addr, ptr, buf_size);
     ptr += buf_size;
   }
+
+  return 0; /* Success, no result data */
 }
 
-static void stub_mem_write_pointers_wrapper(const char *ArgData,
-                                            size_t ArgSize) {
+static ssize_t stub_mem_write_pointers_wrapper(const char *ArgData,
+                                               size_t ArgSize,
+                                               sps_buffer_t *Result) {
   /* Decode SPSSequence<SPSMemoryAccessPointerWrite>
    * Each write is: (ExecutorAddr Addr, ExecutorAddr Value)
    */
+  (void)Result; /* Unused */
   const uint8_t *ptr = (const uint8_t *)ArgData;
   const uint8_t *end = ptr + ArgSize;
 
   uint64_t count;
   if (sps_read_uint64(&ptr, end, &count) < 0)
-    return;
+    return -1;
 
   for (uint64_t i = 0; i < count; i++) {
     uint64_t addr, value;
     if (sps_read_uint64(&ptr, end, &addr) < 0)
-      return;
+      return -1;
     if (sps_read_uint64(&ptr, end, &value) < 0)
-      return;
+      return -1;
 
     *(uint64_t *)addr = value;
   }
+
+  return 0; /* Success, no result data */
 }
 
 /* Memory manager and dylib manager - minimal stub implementations
@@ -577,8 +612,8 @@ static int g_dylib_mgr_instance = 0;
 /* Dylib manager implementation using dlopen/dlsym */
 #include <dlfcn.h>
 
-static void stub_dylib_open_wrapper(const char *ArgData, size_t ArgSize,
-                                    uint8_t *ResultPtr) {
+static ssize_t stub_dylib_open_wrapper(const char *ArgData, size_t ArgSize,
+                                       sps_buffer_t *Result) {
   /* Args: (ExecutorAddr Instance, SPSString Path, uint64_t Mode)
    * Returns: SPSExpected<SPSExecutorAddr> - the dylib handle or error
    */
@@ -589,10 +624,7 @@ static void stub_dylib_open_wrapper(const char *ArgData, size_t ArgSize,
   uint64_t instance;
   if (sps_read_uint64(&ptr, end, &instance) < 0) {
     DEBUG_LOG("stub_dylib_open_wrapper: failed to read instance\n");
-    /* Return error */
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0; /* size = 0 means empty result */
-    return;
+    return -1;
   }
 
   /* Read path string */
@@ -600,9 +632,7 @@ static void stub_dylib_open_wrapper(const char *ArgData, size_t ArgSize,
   uint64_t path_len;
   if (sps_read_string(&ptr, end, &path, &path_len) < 0) {
     DEBUG_LOG("stub_dylib_open_wrapper: failed to read path\n");
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   /* Read mode flags */
@@ -610,9 +640,7 @@ static void stub_dylib_open_wrapper(const char *ArgData, size_t ArgSize,
   if (sps_read_uint64(&ptr, end, &mode) < 0) {
     DEBUG_LOG("stub_dylib_open_wrapper: failed to read mode\n");
     free(path);
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   DEBUG_LOG("stub_dylib_open_wrapper: path=%s, mode=0x%lx\n", path, mode);
@@ -630,34 +658,28 @@ static void stub_dylib_open_wrapper(const char *ArgData, size_t ArgSize,
   if (!handle) {
     const char *err = dlerror();
     DEBUG_LOG("stub_dylib_open_wrapper: dlopen failed: %s\n", err);
-    /* Return error */
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   DEBUG_LOG("stub_dylib_open_wrapper: dlopen succeeded, handle=0x%lx\n",
             (uint64_t)(uintptr_t)handle);
 
-  /* Return success with handle
+  /* Skip space for size (8 bytes) + flag (1 byte), then write handle address
    * Format: [size:8][has_value:1_byte][value:8_if_has_value]
-   * SPSExpected with success = size=9, has_value=1, value=handle_addr
+   * SPSExpected with success
    */
-  uint8_t *result = ResultPtr;
-  uint64_t result_size = 9; /* 1 byte flag + 8 bytes handle */
-  memcpy(result, &result_size, 8);
-  result[8] = 1; /* Success flag */
+  sps_write_skip(Result, 9);
   uint64_t handle_addr = (uint64_t)(uintptr_t)handle;
-  memcpy(result + 9, &handle_addr, 8);
+  sps_write_uint64(Result, handle_addr);
+
+  return 0; /* Success */
 }
 
-static void stub_dylib_lookup_wrapper(const char *ArgData, size_t ArgSize,
-                                      uint8_t *ResultPtr) {
-  /* Args: (ExecutorAddr Instance, ExecutorAddr Handle, SPSRemoteSymbolLookupSet)
-   * Returns: SPSExpected<SPSSequence<SPSExecutorSymbolDef>>
-   *
-   * For now, just return an empty sequence to satisfy the daemon.
-   * Full implementation would need to parse the symbol lookup set and call dlsym.
+static ssize_t stub_dylib_lookup_wrapper(const char *ArgData, size_t ArgSize,
+                                         sps_buffer_t *Result) {
+  /* Args: (ExecutorAddr Instance, ExecutorAddr Handle,
+   * SPSRemoteSymbolLookupSet) Returns:
+   * SPSExpected<SPSSequence<SPSExecutorSymbolDef>>
    */
   const uint8_t *ptr = (const uint8_t *)ArgData;
   const uint8_t *end = ptr + ArgSize;
@@ -665,17 +687,13 @@ static void stub_dylib_lookup_wrapper(const char *ArgData, size_t ArgSize,
   /* Read instance pointer (ignored) */
   uint64_t instance;
   if (sps_read_uint64(&ptr, end, &instance) < 0) {
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   /* Read dylib handle */
   uint64_t handle_addr;
   if (sps_read_uint64(&ptr, end, &handle_addr) < 0) {
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   void *handle = (void *)(uintptr_t)handle_addr;
@@ -684,44 +702,30 @@ static void stub_dylib_lookup_wrapper(const char *ArgData, size_t ArgSize,
   /* Read symbol lookup set - for now just count symbols */
   uint64_t num_symbols;
   if (sps_read_uint64(&ptr, end, &num_symbols) < 0) {
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   DEBUG_LOG("stub_dylib_lookup_wrapper: looking up %lu symbols\n", num_symbols);
 
-  /* For each symbol in the lookup set */
-  sps_buffer_t result_buf;
-  sps_buffer_init(&result_buf, 1024);
-
-  /* Write success flag (1 byte = 1 for success) */
-  uint8_t success_flag = 1;
-  memcpy(result_buf.data, &success_flag, 1);
-  result_buf.size = 1;
+  /* Skip space for size (8 bytes) + success flag (1 byte) */
+  sps_write_skip(Result, 9);
 
   /* Write sequence size (number of symbols found) */
-  sps_write_uint64(&result_buf, num_symbols);
+  sps_write_uint64(Result, num_symbols);
 
   /* For each symbol, read name and lookup */
   for (uint64_t i = 0; i < num_symbols; i++) {
     char *sym_name;
     uint64_t name_len;
     if (sps_read_string(&ptr, end, &sym_name, &name_len) < 0) {
-      sps_buffer_free(&result_buf);
-      uint64_t *result = (uint64_t *)ResultPtr;
-      result[0] = 0;
-      return;
+      return -1;
     }
 
     /* Read required flag */
     uint8_t required;
     if (ptr >= end) {
       free(sym_name);
-      sps_buffer_free(&result_buf);
-      uint64_t *result = (uint64_t *)ResultPtr;
-      result[0] = 0;
-      return;
+      return -1;
     }
     required = *ptr++;
 
@@ -736,35 +740,30 @@ static void stub_dylib_lookup_wrapper(const char *ArgData, size_t ArgSize,
       /* Write null address and flags
        * ExecutorSymbolDef: (ExecutorAddr=0, JITSymbolFlags=(0, 0))
        */
-      sps_write_uint64(&result_buf, 0);
+      sps_write_uint64(Result, 0);
       uint8_t flag_byte = 0;
-      memcpy(result_buf.data + result_buf.size, &flag_byte, 1);
-      result_buf.size += 1;
-      memcpy(result_buf.data + result_buf.size, &flag_byte, 1);
-      result_buf.size += 1;
+      memcpy(Result->data + Result->size, &flag_byte, 1);
+      Result->size += 1;
+      memcpy(Result->data + Result->size, &flag_byte, 1);
+      Result->size += 1;
     } else {
       DEBUG_LOG("    Found at: 0x%lx\n", (uint64_t)(uintptr_t)sym_addr);
       /* Write ExecutorSymbolDef: (ExecutorAddr address, JITSymbolFlags flags)
        * JITSymbolFlags is a tuple of (UnderlyingType, TargetFlagsType)
        * Both are typically uint8_t, so we write them as 1-byte values
        */
-      sps_write_uint64(&result_buf, (uint64_t)(uintptr_t)sym_addr);
+      sps_write_uint64(Result, (uint64_t)(uintptr_t)sym_addr);
       /* Flags: UnderlyingType = 0 (no special flags), written as uint8_t */
       uint8_t flag_byte = 0;
-      memcpy(result_buf.data + result_buf.size, &flag_byte, 1);
-      result_buf.size += 1;
+      memcpy(Result->data + Result->size, &flag_byte, 1);
+      Result->size += 1;
       /* TargetFlags: TargetFlagsType = 0, written as uint8_t */
-      memcpy(result_buf.data + result_buf.size, &flag_byte, 1);
-      result_buf.size += 1;
+      memcpy(Result->data + Result->size, &flag_byte, 1);
+      Result->size += 1;
     }
   }
 
-  /* Copy result to output buffer */
-  uint8_t *result = ResultPtr;
-  memcpy(result, &result_buf.size, 8); /* Size prefix */
-  memcpy(result + 8, result_buf.data, result_buf.size);
-
-  sps_buffer_free(&result_buf);
+  return 0; /* Success */
 }
 
 /* Memory manager implementation using mmap/mprotect/munmap
@@ -772,8 +771,8 @@ static void stub_dylib_lookup_wrapper(const char *ArgData, size_t ArgSize,
  */
 #include <sys/mman.h>
 
-static void stub_mem_reserve_wrapper(const char *ArgData, size_t ArgSize,
-                                     uint8_t *ResultPtr) {
+static ssize_t stub_mem_reserve_wrapper(const char *ArgData, size_t ArgSize,
+                                        sps_buffer_t *Result) {
   /* Args: (ExecutorAddr Instance, uint64_t Size)
    * Returns: SPSExpected<SPSExecutorAddr> - allocated memory address or error
    */
@@ -784,18 +783,14 @@ static void stub_mem_reserve_wrapper(const char *ArgData, size_t ArgSize,
   uint64_t instance;
   if (sps_read_uint64(&ptr, end, &instance) < 0) {
     DEBUG_LOG("stub_mem_reserve_wrapper: failed to read instance\n");
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   /* Read size */
   uint64_t size;
   if (sps_read_uint64(&ptr, end, &size) < 0) {
     DEBUG_LOG("stub_mem_reserve_wrapper: failed to read size\n");
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   DEBUG_LOG("stub_mem_reserve_wrapper: size=%lu\n", size);
@@ -808,27 +803,25 @@ static void stub_mem_reserve_wrapper(const char *ArgData, size_t ArgSize,
                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
     DEBUG_LOG("stub_mem_reserve_wrapper: mmap failed: %s\n", strerror(errno));
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   DEBUG_LOG("stub_mem_reserve_wrapper: allocated at 0x%lx\n",
             (uint64_t)(uintptr_t)mem);
 
-  /* Return success with address
-   * Format: [size:8][success_flag:1][address:8]
+  /* Skip space for size (8 bytes) + flag (1 byte), then write address
+   * Format: [size:8][has_value:1_byte][value:8_if_has_value]
+   * SPSExpected with success
    */
-  uint8_t *result = ResultPtr;
-  uint64_t result_size = 9; /* 1 byte flag + 8 bytes address */
-  memcpy(result, &result_size, 8);
-  result[8] = 1; /* Success flag */
+  sps_write_skip(Result, 9);
   uint64_t mem_addr = (uint64_t)(uintptr_t)mem;
-  memcpy(result + 9, &mem_addr, 8);
+  sps_write_uint64(Result, mem_addr);
+
+  return 0; /* Success */
 }
 
-static void stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
-                                      uint8_t *ResultPtr) {
+static ssize_t stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
+                                         sps_buffer_t *Result) {
   /* Args: (ExecutorAddr Instance, SPSFinalizeRequest)
    * Returns: SPSError - empty for success, error message for failure
    *
@@ -849,9 +842,7 @@ static void stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
   uint64_t instance;
   if (sps_read_uint64(&ptr, end, &instance) < 0) {
     DEBUG_LOG("stub_mem_finalize_wrapper: failed to read instance\n");
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   DEBUG_LOG("stub_mem_finalize_wrapper: processing finalize request\n");
@@ -860,9 +851,7 @@ static void stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
   uint64_t num_segments;
   if (sps_read_uint64(&ptr, end, &num_segments) < 0) {
     DEBUG_LOG("stub_mem_finalize_wrapper: failed to read num_segments\n");
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   DEBUG_LOG("  Processing %lu segments\n", num_segments);
@@ -872,9 +861,7 @@ static void stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
     /* Read RemoteAllocGroup flags (1 byte) */
     if (ptr >= end) {
       DEBUG_LOG("stub_mem_finalize_wrapper: buffer underrun at segment %lu\n", i);
-      uint64_t *result = (uint64_t *)ResultPtr;
-      result[0] = 0;
-      return;
+      return -1;
     }
     uint8_t prot_flags = *ptr++;
 
@@ -882,35 +869,27 @@ static void stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
     uint64_t addr;
     if (sps_read_uint64(&ptr, end, &addr) < 0) {
       DEBUG_LOG("stub_mem_finalize_wrapper: failed to read address\n");
-      uint64_t *result = (uint64_t *)ResultPtr;
-      result[0] = 0;
-      return;
+      return -1;
     }
 
     /* Read segment size */
     uint64_t size;
     if (sps_read_uint64(&ptr, end, &size) < 0) {
       DEBUG_LOG("stub_mem_finalize_wrapper: failed to read size\n");
-      uint64_t *result = (uint64_t *)ResultPtr;
-      result[0] = 0;
-      return;
+      return -1;
     }
 
     /* Read content sequence length */
     uint64_t content_len;
     if (sps_read_uint64(&ptr, end, &content_len) < 0) {
       DEBUG_LOG("stub_mem_finalize_wrapper: failed to read content_len\n");
-      uint64_t *result = (uint64_t *)ResultPtr;
-      result[0] = 0;
-      return;
+      return -1;
     }
 
     /* Skip content bytes */
     if (ptr + content_len > end) {
       DEBUG_LOG("stub_mem_finalize_wrapper: content out of bounds\n");
-      uint64_t *result = (uint64_t *)ResultPtr;
-      result[0] = 0;
-      return;
+      return -1;
     }
 
     /* If there's content, write it to the segment */
@@ -943,9 +922,7 @@ static void stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
     /* Apply memory protection */
     if (mprotect((void *)(uintptr_t)addr, size, prot) < 0) {
       DEBUG_LOG("  mprotect failed: %s\n", strerror(errno));
-      uint64_t *result = (uint64_t *)ResultPtr;
-      result[0] = 0;
-      return;
+      return -1;
     }
   }
 
@@ -954,26 +931,25 @@ static void stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
   uint64_t num_actions;
   if (sps_read_uint64(&ptr, end, &num_actions) < 0) {
     DEBUG_LOG("stub_mem_finalize_wrapper: failed to read num_actions\n");
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   DEBUG_LOG("  Skipping %lu actions\n", num_actions);
   /* We could parse and execute actions here, but for now just skip them */
 
-  /* Return success (empty error)
+  /* Skip space for size (8 bytes) + HasError flag (1 byte)
    * Format: [size:8][HasError:1_byte]
-   * SPSError format: bool HasError (0=success, 1=error), followed by error string if HasError==1
+   * SPSError format: bool HasError (0=success, 1=error), followed by error
+   * string if HasError==1 handle_callwrapper_message() will write the HasError
+   * field based on return value
    */
-  uint8_t *result = ResultPtr;
-  uint64_t result_size = 1; /* Just HasError bool */
-  memcpy(result, &result_size, 8);
-  result[8] = 0; /* HasError=false (0 = no error) */
+  sps_write_skip(Result, 9);
+
+  return 1; /* Success - SPSError return type (different from SPSExpected) */
 }
 
-static void stub_mem_deallocate_wrapper(const char *ArgData, size_t ArgSize,
-                                        uint8_t *ResultPtr) {
+static ssize_t stub_mem_deallocate_wrapper(const char *ArgData, size_t ArgSize,
+                                           sps_buffer_t *Result) {
   /* Args: (ExecutorAddr Instance, SPSSequence<SPSExecutorAddr>)
    * Returns: SPSError - empty for success, error message for failure
    */
@@ -984,9 +960,7 @@ static void stub_mem_deallocate_wrapper(const char *ArgData, size_t ArgSize,
   uint64_t instance;
   if (sps_read_uint64(&ptr, end, &instance) < 0) {
     DEBUG_LOG("stub_mem_deallocate_wrapper: failed to read instance\n");
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   /* Read sequence of allocation descriptors
@@ -997,9 +971,7 @@ static void stub_mem_deallocate_wrapper(const char *ArgData, size_t ArgSize,
   uint64_t count;
   if (sps_read_uint64(&ptr, end, &count) < 0) {
     DEBUG_LOG("stub_mem_deallocate_wrapper: failed to read count\n");
-    uint64_t *result = (uint64_t *)ResultPtr;
-    result[0] = 0;
-    return;
+    return -1;
   }
 
   DEBUG_LOG("stub_mem_deallocate_wrapper: deallocating %lu addresses\n", count);
@@ -1012,23 +984,22 @@ static void stub_mem_deallocate_wrapper(const char *ArgData, size_t ArgSize,
     uint64_t addr;
     if (sps_read_uint64(&ptr, end, &addr) < 0) {
       DEBUG_LOG("stub_mem_deallocate_wrapper: failed to read address %lu\n", i);
-      uint64_t *result = (uint64_t *)ResultPtr;
-      result[0] = 0;
-      return;
+      return -1;
     }
 
     DEBUG_LOG("  Would munmap address 0x%lx (size unknown, skipping)\n", addr);
     /* TODO: Track allocation sizes to properly munmap(addr, size) */
   }
 
-  /* Return success (empty error)
+  /* Skip space for size (8 bytes) + HasError flag (1 byte)
    * Format: [size:8][HasError:1_byte]
-   * SPSError format: bool HasError (0=success, 1=error), followed by error string if HasError==1
+   * SPSError format: bool HasError (0=success, 1=error), followed by error
+   * string if HasError==1 handle_callwrapper_message() will write the HasError
+   * field based on return value
    */
-  uint8_t *result = ResultPtr;
-  uint64_t result_size = 1; /* Just HasError bool */
-  memcpy(result, &result_size, 8);
-  result[8] = 0; /* HasError=false (0 = no error) */
+  sps_write_skip(Result, 9);
+
+  return 1; /* Success - SPSError return type (different from SPSExpected) */
 }
 
 /* ============================================================================
@@ -1275,7 +1246,7 @@ static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *data,
 /* Handle CallWrapper message - find and invoke the wrapper function */
 static int handle_callwrapper_message(int fd, const epc_message_t *msg) {
   /* tag_addr contains the function pointer to call */
-  typedef void (*WrapperFn)(const char *, size_t, uint8_t *);
+  typedef ssize_t (*WrapperFn)(const char *, size_t, sps_buffer_t *);
   WrapperFn fn = (WrapperFn)(uintptr_t)msg->tag_addr;
 
   DEBUG_LOG("Handling CallWrapper: fn=0x%lx, seqno=%lu, arg_size=%zu\n",
@@ -1284,34 +1255,67 @@ static int handle_callwrapper_message(int fd, const epc_message_t *msg) {
   /* Keep sequence numbers in sync bi-directionally */
   count_sequence_number(msg->seqno);
 
-  /* Allocate result buffer - wrapper functions write result here
-   * Result format is WrapperFunctionResult: [size:8][data:variable]
-   * We allocate a generous buffer since we don't know the result size upfront
+  /* Initialize result buffer - wrapper functions write result data here
+   * Wrappers that return data will write starting at offset 9 (leaving space
+   * for size + flag)
    */
-  uint8_t result_buf[4096];
-  memset(result_buf, 0, sizeof(result_buf));
+  sps_buffer_t result_buf;
+  sps_buffer_init(&result_buf, 256);
 
-  /* Call the wrapper function */
-  fn((const char *)msg->arg_bytes, msg->arg_size, result_buf);
+  /* Call the wrapper function
+   * Returns: -1 for error, 0 for SPSExpected success, 1 for SPSError success
+   */
+  ssize_t ret = fn((const char *)msg->arg_bytes, msg->arg_size, &result_buf);
 
-  /* Extract result size from first 8 bytes */
-  uint64_t result_data_size;
-  memcpy(&result_data_size, result_buf, 8);
+  /* Check for error return */
+  if (ret < 0) {
+    ERROR_LOG("Wrapper function returned error\n");
+    sps_buffer_free(&result_buf);
+    /* Send empty result on error */
+    epc_message_t result_msg = {.opcode = OPCODE_RESULT,
+                                .seqno = msg->seqno,
+                                .tag_addr = 0,
+                                .arg_bytes = NULL,
+                                .arg_size = 0};
+    if (send_epc_message(fd, &result_msg) < 0) {
+      ERROR_LOG("Failed to send Result message\n");
+      return -1;
+    }
+    return 0;
+  }
 
-  /* Send Result message with the result data (skip the 8-byte size prefix) */
+  /* Finalize the result buffer by writing size field and success/HasError flag
+   * Wrappers left space at the beginning (bytes 0-8 for size, byte 8 for flag)
+   */
+  if (result_buf.size > 9) {
+    /* Calculate the data size (everything after byte 8) */
+    uint64_t data_size = result_buf.size - 8;
+    /* Write size field at offset 0 */
+    memcpy(result_buf.data, &data_size, 8);
+    /* Write flag at offset 8:
+     * - ret == 0: SPSExpected, write has_value=1 (success)
+     * - ret == 1: SPSError, write HasError=0 (no error)
+     * Both cases write 1 or 0 respectively based on success
+     */
+    result_buf.data[8] = (ret == 0) ? 1 : 0;
+  }
+
+  /* Send Result message with the result data */
   epc_message_t result_msg = {.opcode = OPCODE_RESULT,
                               .seqno = msg->seqno,
                               .tag_addr = 0,
-                              .arg_bytes = result_buf + 8,
-                              .arg_size = result_data_size};
+                              .arg_bytes = result_buf.data,
+                              .arg_size = result_buf.size};
 
   if (send_epc_message(fd, &result_msg) < 0) {
+    sps_buffer_free(&result_buf);
     ERROR_LOG("Failed to send Result message\n");
     return -1;
   }
 
-  DEBUG_LOG("Sent Result for seqno=%lu, result_size=%lu\n", msg->seqno,
-            result_data_size);
+  sps_buffer_free(&result_buf);
+  DEBUG_LOG("Sent Result for seqno=%lu, result_size=%zu\n", msg->seqno,
+            result_buf.size);
   return 0;
 }
 
@@ -1640,9 +1644,9 @@ extern void __deregister_frame(const void *);
  * Args: SPSExecutorAddrRange (Start:uint64_t, Size:uint64_t)
  * Returns: SPSError (bool HasError, optional error string)
  */
-static void llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
-                                                    size_t ArgSize,
-                                                    uint8_t *ResultPtr) {
+static ssize_t llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
+                                                      size_t ArgSize,
+                                                      sps_buffer_t *Result) {
   const uint8_t *ptr = (const uint8_t *)ArgData;
   const uint8_t *end = ptr + ArgSize;
 
@@ -1651,12 +1655,7 @@ static void llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
   if (sps_read_uint64(&ptr, end, &start_addr) < 0 ||
       sps_read_uint64(&ptr, end, &size) < 0) {
     DEBUG_LOG("llvm_orc_registerEHFrameSectionWrapper: failed to read args\n");
-    /* Return error */
-    uint8_t *result = ResultPtr;
-    uint64_t result_size = 1;
-    memcpy(result, &result_size, 8);
-    result[8] = 1; /* HasError = true */
-    return;
+    return -1;
   }
 
   DEBUG_LOG("Registering EH frame section: addr=0x%lx, size=%lu\n", start_addr,
@@ -1669,20 +1668,24 @@ static void llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
    */
   __register_frame((const void *)(uintptr_t)start_addr);
 
-  /* Return success (empty error) */
-  uint8_t *result = ResultPtr;
-  uint64_t result_size = 1;
-  memcpy(result, &result_size, 8);
-  result[8] = 0; /* HasError = false */
+  /* Skip space for size (8 bytes) + HasError flag (1 byte)
+   * Format: [size:8][HasError:1_byte]
+   * SPSError format: bool HasError (0=success, 1=error), followed by error
+   * string if HasError==1 handle_callwrapper_message() will write the HasError
+   * field based on return value
+   */
+  sps_write_skip(Result, 9);
+
+  return 1; /* Success - SPSError return type (different from SPSExpected) */
 }
 
 /* Wrapper for deregistering EH frames - called by daemon via RPC
  * Args: SPSExecutorAddrRange (Start:uint64_t, Size:uint64_t)
  * Returns: SPSError (bool HasError, optional error string)
  */
-static void llvm_orc_deregisterEHFrameSectionWrapper(const char *ArgData,
-                                                      size_t ArgSize,
-                                                      uint8_t *ResultPtr) {
+static ssize_t llvm_orc_deregisterEHFrameSectionWrapper(const char *ArgData,
+                                                        size_t ArgSize,
+                                                        sps_buffer_t *Result) {
   const uint8_t *ptr = (const uint8_t *)ArgData;
   const uint8_t *end = ptr + ArgSize;
 
@@ -1691,12 +1694,7 @@ static void llvm_orc_deregisterEHFrameSectionWrapper(const char *ArgData,
   if (sps_read_uint64(&ptr, end, &start_addr) < 0 ||
       sps_read_uint64(&ptr, end, &size) < 0) {
     DEBUG_LOG("llvm_orc_deregisterEHFrameSectionWrapper: failed to read args\n");
-    /* Return error */
-    uint8_t *result = ResultPtr;
-    uint64_t result_size = 1;
-    memcpy(result, &result_size, 8);
-    result[8] = 1; /* HasError = true */
-    return;
+    return -1;
   }
 
   DEBUG_LOG("Deregistering EH frame section: addr=0x%lx, size=%lu\n", start_addr,
@@ -1705,11 +1703,15 @@ static void llvm_orc_deregisterEHFrameSectionWrapper(const char *ArgData,
   /* Call __deregister_frame with the start address */
   __deregister_frame((const void *)(uintptr_t)start_addr);
 
-  /* Return success (empty error) */
-  uint8_t *result = ResultPtr;
-  uint64_t result_size = 1;
-  memcpy(result, &result_size, 8);
-  result[8] = 0; /* HasError = false */
+  /* Skip space for size (8 bytes) + HasError flag (1 byte)
+   * Format: [size:8][HasError:1_byte]
+   * SPSError format: bool HasError (0=success, 1=error), followed by error
+   * string if HasError==1 handle_callwrapper_message() will write the HasError
+   * field based on return value
+   */
+  sps_write_skip(Result, 9);
+
+  return 1; /* Success - SPSError return type (different from SPSExpected) */
 }
 
 /* ============================================================================
