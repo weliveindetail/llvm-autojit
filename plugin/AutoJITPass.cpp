@@ -335,6 +335,12 @@ LLVM_ABI Target &getTheX86_64Target() __attribute__((weak));
 
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
+  if (const char *Var = std::getenv("AUTOJIT_DEBUG")) {
+    std::string Val{Var};
+    std::transform(Val.begin(), Val.end(), Val.begin(), ::tolower);
+    if (Val == "1" || Val == "on" || Val == "true" || Val == "yes")
+      AutoJITDebug = true;
+  }
 #if defined(AUTOJIT_ENABLE_TPDE)
   if (getTheX86_32Target && getTheX86_64Target) {
     RegisterTargetMachine<X86TargetMachineTPDE> X(getTheX86_32Target());
