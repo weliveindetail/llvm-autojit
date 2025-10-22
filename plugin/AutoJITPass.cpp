@@ -39,8 +39,10 @@ static cl::opt<bool> AutoJITDebug(
 
 namespace {
 
-static GlobalValue::GUID uniqueGUID(Twine ModName, Twine FuncName) {
-  auto UniqueName = (ModName + ":" + FuncName).str();
+static GlobalValue::GUID uniqueGUID(Twine ModName, Function *F) {
+  if (F->hasLinkOnceLinkage())
+    return GlobalValue::getGUID(F->getName());
+  std::string UniqueName = (ModName + ":" + F->getName()).str();
   return GlobalValue::getGUID(UniqueName);
 }
 
@@ -146,10 +148,25 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
 
     for (Function *F : LazifyFns) {
       auto FnName = F->getName();
-      auto FnGUID = uniqueGUID(M.getSourceFileName(), FnName);
+      auto FnGUID = uniqueGUID(M.getSourceFileName(), F);
       if (LLVM_UNLIKELY(AutoJITDebug)) {
         errs() << "autojit-plugin: Lazify function " << FnName << " as "
                << guidToFnName(FnGUID) << "\n";
+      }
+      // TODO: Hidden definitions generate no (observable) symbols in the static
+      // binary, but they are part of the linker-visible ABI of the object file.
+      // If the visibility change below causes issues, we could come up with a
+      // mechanism that adds a new module-specific externally visibile function,
+      // which forwards the call.
+      if (F->hasHiddenVisibility() && F->hasLinkOnceLinkage()) {
+        // A link-once symbol generates a static function frame and we want all
+        // calls to run through it. Right now, dlsym is the only way for AutoJIT
+        // to find it, so we must add it to the dynamic symbol table.
+        if (LLVM_UNLIKELY(AutoJITDebug)) {
+          errs() << "autojit-plugin: Promote link-once function "
+                 << F->getName() << "\n";
+        }
+        F->setVisibility(GlobalValue::DefaultVisibility);
       }
 
       lazifyFn(F, FnGUID, MaterializeFn);

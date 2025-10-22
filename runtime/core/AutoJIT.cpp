@@ -142,8 +142,10 @@ static std::string getModuleGUID(const std::string &SourcePath) {
   return Result.str().str();
 }
 
-static GlobalValue::GUID getFunctionGUID(Twine ModName, Twine FuncName) {
-  auto UniqueName = (ModName + ":" + FuncName).str();
+static GlobalValue::GUID getFunctionGUID(Twine ModName, Function *F) {
+  if (F->hasLinkOnceLinkage())
+    return GlobalValue::getGUID(F->getName());
+  auto UniqueName = (ModName + ":" + F->getName()).str();
   return GlobalValue::getGUID(UniqueName);
 }
 
@@ -231,27 +233,18 @@ ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
     // Rename our JITed definition, so we can find it from the trampoline ID in
     // the static function frame.
     std::string OriginalName = F.getName().str();
-    GlobalValue::GUID G = getFunctionGUID(SourcePath, OriginalName);
+    GlobalValue::GUID G = getFunctionGUID(SourcePath, &F);
     std::string ImplName = autojit::guidToFnName(G);
     F.setName(ImplName);
 
-    if (F.hasHiddenVisibility()) {
-      // Hidden definitions generate no (observable) symbols in the static
-      // binary. We could synthesize one here, but it's easier to just add an
-      // alias.
-      DBG() << "Add " << OriginalName << " alias for " << ImplName << "\n";
-      F.setVisibility(GlobalValue::DefaultVisibility);
-      GlobalAlias::create(OriginalName, &F);
-    } else {
-      // Inject a declaration for the original name. The JIT will see it and
-      // lookup the symbol in the host process, which has the static function
-      // frame with a trampoline into our JITed definition. This keeps function
-      // pointers stable.
-      DBG() << "Import " << OriginalName << " as " << ImplName << "\n";
-      Function *ProxyDecl = Function::Create(
-          F.getFunctionType(), Function::ExternalLinkage, OriginalName, *M);
-      F.replaceAllUsesWith(ProxyDecl);
-    }
+    // Inject a declaration for the original name. The JIT will see it and
+    // lookup the symbol in the host process, which has the static function
+    // frame with a trampoline into our JITed definition. This keeps function
+    // pointers stable.
+    DBG() << "Import " << OriginalName << " as " << ImplName << "\n";
+    Function *ProxyDecl = Function::Create(
+        F.getFunctionType(), Function::ExternalLinkage, OriginalName, *M);
+    F.replaceAllUsesWith(ProxyDecl);
   }
 
   if (GlobalVariable *Ctors = M->getNamedGlobal("llvm.global_ctors")) {
