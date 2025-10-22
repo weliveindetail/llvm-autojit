@@ -17,6 +17,7 @@ export AUTOJIT_DAEMON_PATH=/workspace/install/bin/autojitd
 cd /workspace/install/benchmark
 ./setup.sh
 ./bzip2-test.sh
+./json-test.sh
 
 if command -v rustc >/dev/null 2>&1; then
   ./hello-rs-test.sh

@@ -16,6 +16,7 @@ export AUTOJIT_BUILD_DIR=build_autojit_shlib
 cd /workspace/install/benchmark
 ./setup.sh
 ./bzip2-test.sh
+./json-test.sh
 
 if command -v rustc >/dev/null 2>&1; then
   ./hello-rs-test.sh

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -xeuo pipefail
+
+mkdir -p json
+rm -rf json/$AUTOJIT_BUILD_DIR
+
+cc="cc"
+cxx="c++"
+CFLAGS="-fpass-plugin=@CMAKE_INSTALL_PREFIX@/lib/autojit.so"
+
+if [ "$AUTOJIT_LINK_STATIC_RUNTIME" = "On" ]; then
+  # FIXME: Make arch generic, right now it's specific for Intel
+  LDFLAGS="-L@CMAKE_INSTALL_PREFIX@/lib -Wl,--whole-archive -lautojit_static-x86_64 -Wl,--no-whole-archive -rdynamic"
+else
+  LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime -rdynamic"
+fi
+
+if [ "@AUTOJIT_BUILD_UNIFIED@" = "On" ]; then
+  # Use the just-built compiler and linker
+  LDFLAGS="$LDFLAGS -fuse-ld=lld -B@CMAKE_INSTALL_PREFIX@/bin"
+  cc="@CMAKE_INSTALL_PREFIX@/bin/clang"
+  cxx="@CMAKE_INSTALL_PREFIX@/bin/clang++"
+fi
+
+echo "Building autojit binary.."
+cmake -G Ninja \
+      -S llvm-autojit-bench/json \
+      -B json/$AUTOJIT_BUILD_DIR \
+      -D JSON_CI=On \
+      -D CMAKE_BUILD_TYPE=Debug \
+      -D CMAKE_CXX_COMPILER="$cxx" \
+      -D CMAKE_CXX_FLAGS="$CFLAGS" \
+      -D CMAKE_EXE_LINKER_FLAGS="$LDFLAGS" \
+      -D CMAKE_SHARED_LINKER_FLAGS="$LDFLAGS"

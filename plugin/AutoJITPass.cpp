@@ -170,6 +170,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
                  << F->getName() << "\n";
         }
         F->setVisibility(GlobalValue::DefaultVisibility);
+        F->setDSOLocal(false);
       }
 
       lazifyFn(F, FnGUID, MaterializeFn);
