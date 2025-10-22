@@ -6,6 +6,8 @@
  * llvm/lib/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.cpp
  */
 
+#include "runtime/remote/StubSPS.h"
+
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -94,35 +96,7 @@ static void append_jit_debug_descriptor(const char *obj_addr, uint64_t size) {
  * The wrapper functions receive SPS-encoded arguments:
  * - ExecutorAddrRange (start:8, size:8)
  * - bool (auto_register:1)
- *
- * They must return a CWrapperFunctionResult:
- * - [size:8][data:size] where size=0 for success
  */
-
-typedef struct {
-  uint64_t size;
-  char *data;
-} cwrapper_function_result_t;
-
-static cwrapper_function_result_t make_success_result(void) {
-  cwrapper_function_result_t result;
-  result.size = 0;
-  result.data = NULL;
-  return result;
-}
-
-static cwrapper_function_result_t make_error_result(const char *error_msg) {
-  cwrapper_function_result_t result;
-  size_t msg_len = strlen(error_msg);
-  result.size = msg_len;
-  result.data = malloc(msg_len);
-  if (result.data) {
-    memcpy(result.data, error_msg, msg_len);
-  } else {
-    result.size = 0;
-  }
-  return result;
-}
 
 /* Parse SPS-encoded arguments: SPSError(SPSExecutorAddrRange, bool) */
 static int parse_register_args(const char *data, uint64_t size,
@@ -150,15 +124,15 @@ static int parse_register_args(const char *data, uint64_t size,
  * ============================================================================
  */
 
-__attribute__((used)) cwrapper_function_result_t
-llvm_orc_registerJITLoaderGDBWrapper(const char *data, uint64_t size) {
+__attribute__((used)) ssize_t llvm_orc_registerJITLoaderGDBWrapper(
+    const char *data, uint64_t size, sps_buffer_t *Result) {
   uint64_t start_addr;
   uint64_t range_size;
   int auto_register;
 
   if (parse_register_args(data, size, &start_addr, &range_size,
                           &auto_register) < 0) {
-    return make_error_result("Failed to parse arguments");
+    return -1;
   }
 
   const char *obj_addr = (const char *)(uintptr_t)start_addr;
@@ -169,11 +143,13 @@ llvm_orc_registerJITLoaderGDBWrapper(const char *data, uint64_t size) {
     __jit_debug_register_code();
   }
 
-  return make_success_result();
+  /* SPSError [has_error:1_byte] */
+  sps_write_uint8(Result, 0);
+  return 0;
 }
 
-__attribute__((used)) cwrapper_function_result_t
-llvm_orc_registerJITLoaderGDBAllocAction(const char *data, size_t size) {
+__attribute__((used)) ssize_t llvm_orc_registerJITLoaderGDBAllocAction(
+    const char *data, size_t size, sps_buffer_t *Result) {
   /* Same implementation as the wrapper function */
-  return llvm_orc_registerJITLoaderGDBWrapper(data, size);
+  return llvm_orc_registerJITLoaderGDBWrapper(data, size, Result);
 }
