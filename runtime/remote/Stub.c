@@ -932,6 +932,7 @@ static int send_setup_message(int fd) {
   /* Setup message format (SPS encoded):
    * - target_triple: string
    * - page_size: uint64_t
+   * - stdlibs: uint64_t
    * - bootstrap_map: map<string, bytes>
    * - bootstrap_symbols: map<string, uint64_t>
    */
@@ -946,6 +947,10 @@ static int send_setup_message(int fd) {
   /* Get page size */
   uint64_t page_size = sysconf(_SC_PAGESIZE);
   sps_write_uint64(&setup_data, page_size);
+
+  /* Get stdlibs */
+  uint64_t stdlibs = 0;
+  sps_write_uint64(&setup_data, stdlibs);
 
   /* Bootstrap map - empty for now */
   sps_write_uint64(&setup_data, 0);
