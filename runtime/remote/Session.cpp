@@ -158,8 +158,9 @@ private:
 
 autojit::Session::Session(int InFD, int OutFD,
                           std::unique_ptr<ExecutionSession> &ES) {
+  unsigned NumThreads = 1;
+  auto D = std::make_unique<DynamicThreadPoolTaskDispatcher>(NumThreads);
   auto SSP = std::make_shared<SymbolStringPool>();
-  auto D = std::make_unique<DynamicThreadPoolTaskDispatcher>(std::nullopt);
   ES = std::make_unique<ExecutionSession>(
       std::make_unique<RemoteEPC>(std::move(SSP), std::move(D)));
   EPC_ = static_cast<RemoteEPC *>(&ES->getExecutorProcessControl());
