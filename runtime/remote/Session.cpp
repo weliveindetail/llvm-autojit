@@ -31,6 +31,37 @@ static ExitOnError ExitOnErr("[autojitd] ");
 
 namespace autojit {
 
+struct RemoteEPCExecutorInfo {
+  std::string TargetTriple;
+  uint64_t PageSize;
+  StringMap<std::vector<char>> BootstrapMap;
+  StringMap<ExecutorAddr> BootstrapSymbols;
+
+  MSVCPError deserialize(shared::WrapperFunctionResult Bytes);
+};
+
+} // namespace autojit
+
+using SPSRemoteEPCExecutorInfo = shared::SPSTuple<
+    shared::SPSString, uint64_t,
+    shared::SPSSequence<
+        shared::SPSTuple<shared::SPSString, shared::SPSSequence<char>>>,
+    shared::SPSSequence<
+        shared::SPSTuple<shared::SPSString, shared::SPSExecutorAddr>>>;
+
+template <>
+class shared::SPSSerializationTraits<SPSRemoteEPCExecutorInfo,
+                                     autojit::RemoteEPCExecutorInfo> {
+public:
+  static bool deserialize(SPSInputBuffer &IB,
+                          autojit::RemoteEPCExecutorInfo &SI) {
+    return SPSRemoteEPCExecutorInfo::AsArgList ::deserialize(
+        IB, SI.TargetTriple, SI.PageSize, SI.BootstrapMap, SI.BootstrapSymbols);
+  }
+};
+
+namespace autojit {
+
 class Transport : public SimpleRemoteEPCTransport {
 public:
   Transport(SimpleRemoteEPCTransportClient &C, int InFD, int OutFD);
@@ -640,27 +671,27 @@ Error autojit::RemoteEPC::handleSetup(uint64_t RemoteSeqNo,
   return Error::success();
 }
 
+MSVCPError autojit::RemoteEPCExecutorInfo::deserialize(
+    shared::WrapperFunctionResult Bytes) {
+  if (const char *ErrMsg = Bytes.getOutOfBandError())
+    return make_error<StringError>(ErrMsg, inconvertibleErrorCode());
+
+  shared::SPSInputBuffer IB(Bytes.data(), Bytes.size());
+  if (!shared::SPSArgList<SPSRemoteEPCExecutorInfo>::deserialize(IB, *this))
+    return make_error<StringError>("Could not deserialize setup message",
+                                   inconvertibleErrorCode());
+  return Error::success();
+}
+
 Error autojit::RemoteEPC::waitForSetup() {
-  std::promise<MSVCPExpected<SimpleRemoteEPCExecutorInfo>> EIP;
+  std::promise<MSVCPError> EIP;
+  RemoteEPCExecutorInfo EI;
   auto EIF = EIP.get_future();
 
   // Prepare a handler for the setup packet.
   PendingCallWrapperResults[0] =
       RunInPlace()([&](shared::WrapperFunctionResult SetupMsgBytes) {
-        if (const char *ErrMsg = SetupMsgBytes.getOutOfBandError()) {
-          EIP.set_value(
-              make_error<StringError>(ErrMsg, inconvertibleErrorCode()));
-          return;
-        }
-        using SPSSerialize =
-            shared::SPSArgList<shared::SPSSimpleRemoteEPCExecutorInfo>;
-        shared::SPSInputBuffer IB(SetupMsgBytes.data(), SetupMsgBytes.size());
-        SimpleRemoteEPCExecutorInfo EI;
-        if (SPSSerialize::deserialize(IB, EI))
-          EIP.set_value(EI);
-        else
-          EIP.set_value(make_error<StringError>(
-              "Could not deserialize setup message", inconvertibleErrorCode()));
+        EIP.set_value(EI.deserialize(std::move(SetupMsgBytes)));
       });
 
   // Start the transport.
@@ -668,30 +699,31 @@ Error autojit::RemoteEPC::waitForSetup() {
     return Err;
 
   // Wait for setup packet to arrive.
-  auto EI = EIF.get();
-  if (!EI) {
+  if (auto Err = EIF.get()) {
     T->disconnect();
-    return EI.takeError();
+    return Err;
   }
 
   {
     dbgs() << "RemoteEPC received setup message:\n"
-           << "  Triple: " << EI->TargetTriple << "\n"
-           << "  Page size: " << EI->PageSize << "\n"
-           << "  Bootstrap map" << (EI->BootstrapMap.empty() ? " empty" : ":")
+           << "  Triple: " << EI.TargetTriple << "\n"
+           << "  Page size: " << EI.PageSize << "\n"
+           << "  Bootstrap map" << (EI.BootstrapMap.empty() ? " empty" : ":")
            << "\n";
-    for (const auto &KV : EI->BootstrapMap)
+    for (const auto &KV : EI.BootstrapMap)
       dbgs() << "    " << KV.first() << ": " << KV.second.size()
              << "-byte SPS encoded buffer\n";
     dbgs() << "  Bootstrap symbols"
-           << (EI->BootstrapSymbols.empty() ? " empty" : ":") << "\n";
-    for (const auto &KV : EI->BootstrapSymbols)
+           << (EI.BootstrapSymbols.empty() ? " empty" : ":") << "\n";
+    for (const auto &KV : EI.BootstrapSymbols)
       dbgs() << "    " << KV.first() << ": " << KV.second << "\n";
   }
-  TargetTriple = Triple(EI->TargetTriple);
-  PageSize = EI->PageSize;
-  BootstrapMap = std::move(EI->BootstrapMap);
-  BootstrapSymbols = std::move(EI->BootstrapSymbols);
+
+  // Initialize base class members
+  this->TargetTriple = Triple(EI.TargetTriple);
+  this->PageSize = EI.PageSize;
+  this->BootstrapMap = std::move(EI.BootstrapMap);
+  this->BootstrapSymbols = std::move(EI.BootstrapSymbols);
 
   // Get dispatch symbols for RPC calls back to the stub
   using namespace SimpleRemoteEPCDefaultBootstrapSymbolNames;
