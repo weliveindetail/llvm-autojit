@@ -219,11 +219,19 @@ ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
       continue;
     }
     if (F.hasAvailableExternallyLinkage()) {
-      DBG() << "Turn into declaration " << F.getName()
-            << " (available-externally linkage)\n";
-      F.dropAllReferences();
-      F.setLinkage(GlobalValue::ExternalLinkage);
-      continue;
+      if (F.hasFnAttribute(Attribute::AlwaysInline)) {
+        // Mandatory definition that was meant to be inlined in all call-sites
+        DBG() << "Keep as internal defintion " << F.getName()
+              << " (always-inline with available-externally linkage)\n";
+        F.setLinkage(GlobalValue::InternalLinkage);
+      } else {
+        // Optional definition for cross-module optimization
+        DBG() << "Remove optional definition " << F.getName()
+              << " (available-externally linkage)\n";
+        DropFunctions.insert(&F);
+        F.dropAllReferences();
+        continue;
+      }
     }
     if (F.hasLocalLinkage()) {
       DBG() << "Keep " << F.getName() << " (local definition)\n";
