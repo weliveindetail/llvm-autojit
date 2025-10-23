@@ -453,8 +453,8 @@ autojit::AutoJIT::AutoJIT() : HostProcess_(dlopenHostProcess()) {
   autojit::initializeDebugLog();
 }
 
-Error autojit::AutoJIT::initialize(LLJITBuilder &B) {
-#if defined(AUTOJIT_ENABLE_ORC_RUNTIME)
+[[maybe_unused]]
+static std::unique_ptr<MemoryBuffer> getEmbeddedOrcRuntime() {
   const char *OrcRtStart =
       reinterpret_cast<const char *>(_binary_liborc_rt_start);
   const char *OrcRtEnd = reinterpret_cast<const char *>(_binary_liborc_rt_end);
@@ -466,8 +466,18 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B) {
   DBG() << "Install embedded orc-runtime from memory range " << MemRngStr
         << "\n";
 #endif
-  B.setPlatformSetUp(orc::ExecutorNativePlatform(
-      MemoryBuffer::getMemBuffer(OrcRuntimeData, "orc_rt", false)));
+  return MemoryBuffer::getMemBuffer(OrcRuntimeData, "orc_rt", false);
+}
+
+Error autojit::AutoJIT::initialize(LLJITBuilder &B, bool HaveOrcRuntimeDeps) {
+#if defined(AUTOJIT_ENABLE_ORC_RUNTIME)
+  if (!isEnvVarSet("AUTOJITD_DISABLE_ORC_RUNTIME")) {
+    if (HaveOrcRuntimeDeps) {
+      B.setPlatformSetUp(orc::ExecutorNativePlatform(getEmbeddedOrcRuntime()));
+    } else {
+      DBG() << "Cannot install embedded orc-runtime: missing C++ stdlib\n";
+    }
+  }
 #endif
 
   B.CreateCompileFunction = [&](JITTargetMachineBuilder JTMB)
@@ -560,7 +570,8 @@ autojit::AutoJIT &autojit::AutoJIT::get(std::vector<std::string> &NewModules) {
       Builder.setExecutorProcessControl(
           ExitOnErr(SelfExecutorProcessControl::Create()));
       *Instance = std::make_unique<AutoJIT>();
-      ExitOnErr(Instance->get()->initialize(Builder));
+      constexpr bool HaveSupportedCxxStdlib = true;
+      ExitOnErr(Instance->get()->initialize(Builder, HaveSupportedCxxStdlib));
       std::atexit(llvm_shutdown);
     }
   }

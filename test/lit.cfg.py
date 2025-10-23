@@ -17,6 +17,7 @@ config.substitutions.append(('%autojit_tools_dir', config.autojit_tools_dir))
 config.substitutions.append(('%arch', config.host_arch))
 
 bin = Path(config.llvm_tools_dir)
+config.substitutions.append(('%clang_c', str(bin / 'clang')))
 config.substitutions.append(('%clang', str(bin / 'clang++')))
 config.substitutions.append(('%ar', str(bin / 'llvm-ar')))
 config.substitutions.append(('opt', str(bin / 'opt')))

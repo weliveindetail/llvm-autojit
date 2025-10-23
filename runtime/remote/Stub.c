@@ -928,6 +928,26 @@ static void __orc_rt_jit_dispatch_impl(__orc_rt_Opaque *Ctx, const void *FnTag,
  * ============================================================================
  */
 
+enum StdLibFlagOffsets {
+  LibcGnu = 0,
+  LibcMusl = 1,
+  LibStdCxx = 8,
+  LibCxx = 9,
+};
+
+static uint64_t detect_stdlibs(void) {
+  uint64_t result = 0;
+  if (dlsym(RTLD_DEFAULT, "gnu_get_libc_version"))
+    result |= 1 << LibcGnu;
+  if (dlsym(RTLD_DEFAULT, "__musl_libc_version"))
+    result |= 1 << LibcMusl;
+  if (dlsym(RTLD_DEFAULT, "_ZSt4cout"))
+    result |= 1 << LibStdCxx;
+  if (dlsym(RTLD_DEFAULT, "_ZNSt3__14coutE"))
+    result |= 1 << LibCxx;
+  return result;
+}
+
 static int send_setup_message(int fd) {
   /* Setup message format (SPS encoded):
    * - target_triple: string
@@ -949,7 +969,7 @@ static int send_setup_message(int fd) {
   sps_write_uint64(&setup_data, page_size);
 
   /* Get stdlibs */
-  uint64_t stdlibs = 0;
+  uint64_t stdlibs = detect_stdlibs();
   sps_write_uint64(&setup_data, stdlibs);
 
   /* Bootstrap map - empty for now */

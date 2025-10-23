@@ -4,8 +4,8 @@
 // XFAIL: orc_rt
 
 // FIXME: We need --whole-archive for llvm_orc_registerJITLoaderGDBWrapper()
-// RUN: %clang -fpass-plugin=%autojit_plugin -xc -c %s -o %t.o
-// RUN: %clang %t.o -L%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive -rdynamic -pthread -o %t.exe
+// RUN: %clang_c -fpass-plugin=%autojit_plugin -c %s -o %t.o
+// RUN: %clang_c %t.o -L%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive -rdynamic -pthread -o %t.exe
 // RUN: env AUTOJITD_FULL_SHUTDOWN=Off %t.exe 2>&1 | FileCheck %s
 // RUN: env AUTOJITD_FULL_SHUTDOWN=On %t.exe 2>&1 | FileCheck %s
 

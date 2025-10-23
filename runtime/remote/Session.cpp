@@ -153,6 +153,7 @@ public:
                 SimpleRemoteEPCArgBytesVector ArgBytes) override;
 
   void setTransport(SimpleRemoteEPCTransport &T) { this->T = &T; }
+  bool hasSupportedCxxStdlib() const { return HaveSupportedCxxStdlib; }
 
   Error waitForSetup();
   Error sendSetupMessage(StringMap<ExecutorAddr> Symbols);
@@ -193,6 +194,7 @@ private:
   bool FullShutdownRequested = false;
 
   SimpleRemoteEPCTransport *T;
+  bool HaveSupportedCxxStdlib;
   std::unique_ptr<EPCGenericDylibManager> EPCDylibMgr;
   std::unique_ptr<jitlink::JITLinkMemoryManager> OwnedMemMgr;
   std::unique_ptr<MemoryAccess> OwnedMemAccess;
@@ -226,7 +228,7 @@ autojit::AutoJIT *autojit::Session::launch(std::unique_ptr<ExecutionSession> ES,
 
   LLJITBuilder Builder;
   Builder.setExecutionSession(std::move(ES));
-  ExitOnErr(AutoJIT_.initialize(Builder));
+  ExitOnErr(AutoJIT_.initialize(Builder, EPC_->hasSupportedCxxStdlib()));
 
   // Send our own setup message to the target process
   ExitOnErr(EPC_->sendSetupMessage(std::move(Symbols)));
@@ -737,11 +739,12 @@ Error autojit::RemoteEPC::waitForSetup() {
       dbgs() << "    " << KV.first() << ": " << KV.second << "\n";
   }
 
-  // Initialize base class members
+  // Initialize (base class) members
   this->TargetTriple = Triple(EI.TargetTriple);
   this->PageSize = EI.PageSize;
   this->BootstrapMap = std::move(EI.BootstrapMap);
   this->BootstrapSymbols = std::move(EI.BootstrapSymbols);
+  this->HaveSupportedCxxStdlib = EI.hasSupportedCxxStdlib();
 
   // Get dispatch symbols for RPC calls back to the stub
   using namespace SimpleRemoteEPCDefaultBootstrapSymbolNames;

@@ -45,7 +45,7 @@ public:
   ~AutoJIT();
 
   static AutoJIT &get(std::vector<std::string> &NewModules);
-  llvm::Error initialize(llvm::orc::LLJITBuilder &B);
+  llvm::Error initialize(llvm::orc::LLJITBuilder &B, bool HaveOrcRuntimeDeps);
   uint64_t lookup(const char *Symbol);
   bool haveHostSymbol(llvm::StringRef Name) const;
   llvm::orc::ThreadSafeModule loadModule(llvm::StringRef FilePath) const;
