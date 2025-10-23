@@ -1621,6 +1621,8 @@ void __llvm_autojit_register(const char *FilePath) {
   DEBUG_LOG("Module registered successfully\n");
 }
 
+void __jit_debug_register_code(void);
+
 void __llvm_autojit_materialize(void **GuidInPtrOut) {
   if (!GuidInPtrOut || *GuidInPtrOut == NULL) {
     ERROR_LOG("invalid parameters\n");
@@ -1663,6 +1665,9 @@ void __llvm_autojit_materialize(void **GuidInPtrOut) {
   free(result);
 
   DEBUG_LOG("Function materialized at address 0x%016lx\n", func_addr);
+
+  if (g_debug)
+    __jit_debug_register_code();
 
   /* Update pointer with returned address */
   *GuidInPtrOut = (void *)(uintptr_t)func_addr;

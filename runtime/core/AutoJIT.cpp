@@ -5,7 +5,8 @@
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/ExecutionEngine/ObjectCache.h"
 #include "llvm/ExecutionEngine/Orc/Core.h"
-#include "llvm/ExecutionEngine/Orc/Debugging/DebuggerSupport.h"
+#include "llvm/ExecutionEngine/Orc/DebugObjectManagerPlugin.h"
+#include "llvm/ExecutionEngine/Orc/EPCDebugObjectRegistrar.h"
 #include "llvm/ExecutionEngine/Orc/EPCDynamicLibrarySearchGenerator.h"
 #include "llvm/ExecutionEngine/Orc/IRTransformLayer.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
@@ -60,23 +61,6 @@ namespace llvm {
 
 static ExitOnError ExitOnErr("[autojit-runtime] ");
 
-void autojit::initializeDebugLog() {
-  if (g_autojit_debug_initialized)
-    return;
-  if (const char *Var = std::getenv("AUTOJIT_DEBUG")) {
-    std::string Val{Var};
-    std::transform(Val.begin(), Val.end(), Val.begin(), ::tolower);
-    if (Val == "1" || Val == "on" || Val == "true" || Val == "yes") {
-      g_autojit_debug = true;
-#if !defined(NDEBUG)
-      llvm::DebugFlag = true;
-      llvm::setCurrentDebugType("orc");
-#endif
-    }
-  }
-  g_autojit_debug_initialized = true;
-}
-
 static bool isEnvVarSet(const char *Name) {
   if (const char *Var = std::getenv(Name)) {
     std::string Val{Var};
@@ -85,6 +69,19 @@ static bool isEnvVarSet(const char *Name) {
       return true;
   }
   return false;
+}
+
+void autojit::initializeDebugLog() {
+  if (g_autojit_debug_initialized)
+    return;
+  if (isEnvVarSet("AUTOJIT_DEBUG")) {
+    g_autojit_debug = true;
+#if !defined(NDEBUG)
+    llvm::DebugFlag = true;
+    llvm::setCurrentDebugType("orc");
+#endif
+  }
+  g_autojit_debug_initialized = true;
 }
 
 static std::string toString(GlobalValue::LinkageTypes LT) {
@@ -511,9 +508,26 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B) {
   auto ProcessSymbols = JIT_->getProcessSymbolsJITDylib();
   MainJD.addToLinkOrder(*ProcessSymbols, JITDylibLookupFlags::MatchAllSymbols);
 
-  if (g_autojit_debug)
-    if (Error E = enableDebuggerSupport(*JIT_))
-      LOG() << "Failed to enable debugger support: " << toString(std::move(E));
+  if (g_autojit_debug) {
+    auto &ObjLayer = JIT_->getObjLinkingLayer();
+    if (auto *JITLinkObjLayer = dyn_cast<ObjectLinkingLayer>(&ObjLayer)) {
+      auto &ES = JIT_->getExecutionSession();
+      if (auto StubDebug = createJITLoaderGDBRegistrar(ES)) {
+        bool AutoRegisterCode = true;
+        if (isEnvVarSet("AUTOJIT_DEBUG_NO_AUTOREGISTER")) {
+          // Call __jit_debug_register_code() before debugging into JITed code
+          AutoRegisterCode = false;
+        }
+        constexpr bool RequireDebugSections = false;
+        auto Plugin = std::make_unique<DebugObjectManagerPlugin>(
+            ES, std::move(*StubDebug), RequireDebugSections, AutoRegisterCode);
+        JITLinkObjLayer->addPlugin(std::move(Plugin));
+      } else {
+        LOG() << "Cannot enable debugger support: "
+              << toString(StubDebug.takeError());
+      }
+    }
+  }
 
 #if !defined(NDEBUG)
   JIT_->getIRTransformLayer().setTransform(
