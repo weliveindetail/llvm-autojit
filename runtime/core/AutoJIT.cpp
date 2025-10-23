@@ -391,35 +391,29 @@ public:
 
   Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
     constexpr bool IsText = false;
-    constexpr bool RequiresNullTerminator = false;
+    constexpr bool RequiresNullTerm = false;
 
     // TODO: verify with input hash
-    std::string Name = cacheFileName(M);
-    if (auto CachedObject =
-            MemoryBuffer::getFile(Name, IsText, RequiresNullTerminator)) {
-      DBG() << "Loading module from cache " << Name
-            << " (source: " << M.getSourceFileName() << ")\n";
-      return std::move(*CachedObject);
-    }
+    const char *CacheFileStem = "/tmp/autojit_";
+    std::string ObjName = getObjFileName(M.getModuleIdentifier());
+    if (ObjName.starts_with(CacheFileStem))
+      if (auto Obj = MemoryBuffer::getFile(ObjName, IsText, RequiresNullTerm)) {
+        LOG() << "Loading module from cache " << ObjName
+              << " (source: " << M.getSourceFileName() << ")\n";
+        return std::move(*Obj);
+      }
 
     SmallVector<char, 0> Buffer;
     compileObject(M, Buffer);
 
-    std::error_code EC;
-    raw_fd_ostream OS(Name, EC, sys::fs::OF_None);
-    OS.write(Buffer.data(), Buffer.size());
+    if (ObjName.starts_with(CacheFileStem)) {
+      std::error_code EC;
+      raw_fd_ostream OS(ObjName, EC, sys::fs::OF_None);
+      OS.write(Buffer.data(), Buffer.size());
+    }
 
-    return std::make_unique<SmallVectorMemoryBuffer>(std::move(Buffer), Name,
-                                                     RequiresNullTerminator);
-  }
-
-private:
-  IRSymbolMapper::ManglingOptions options(const JITTargetMachineBuilder &JTMB) {
-    return irManglingOptionsFromTargetOptions(JTMB.getOptions());
-  }
-
-  std::string cacheFileName(const Module &M) {
-    return getObjFileName(M.getModuleIdentifier());
+    return std::make_unique<SmallVectorMemoryBuffer>(std::move(Buffer), ObjName,
+                                                     RequiresNullTerm);
   }
 };
 
