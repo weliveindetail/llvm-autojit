@@ -267,24 +267,24 @@ int main(int argc, char *argv[]) {
 
     // Fork new child process for each connection
     int ClientFd = AutoCleanupSocket::accept(ListenFd);
-    LOG() << "Accepted connection on fd " << ClientFd << "\n";
-
     PID = fork();
     if (PID < 0) {
       LOG() << "Failed to fork for client connection: " << strerror(errno) << "\n";
       close(ClientFd);
       continue;
     }
-
-    if (PID == 0) {
-      // Child process handles new connection
-      close(ListenFd);
-      exit(runSession(ClientFd, ClientFd));
-    }
-
     // Parent process continues accepting connections
-    close(ClientFd);
+    if (PID > 0) {
+      close(ClientFd);
+      continue;
+    }
+    // Child process handles new connection
+    close(ListenFd);
+    PID = getpid();
+    LOG() << "Accepted connection on fd " << ClientFd << " in sub-process "
+          << PID << "\n";
+    exit(runSession(ClientFd, ClientFd));
   }
 
-  return 0;
+  llvm_unreachable("Daemon can only terminate through signal");
 }
