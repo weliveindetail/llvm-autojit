@@ -3,8 +3,15 @@ if(AUTOJIT_ENABLE_TPDE)
 endif()
 
 if(AUTOJIT_ENABLE_ORC_RUNTIME)
-  # Build runtime: ninja -C runtimes/runtimes-bins orc_rt-x86_64
-  set(orc_rt_path ${CMAKE_BINARY_DIR}/lib/clang/20/lib/x86_64-unknown-linux-gnu/liborc_rt.a)
+  if (AUTOJIT_BUILD_UNIFIED)
+    # Build runtime: ninja -C runtimes/runtimes-bins orc_rt-x86_64
+    set(orc_rt_path ${CMAKE_BINARY_DIR}/lib/clang/20/lib/x86_64-unknown-linux-gnu/liborc_rt.a)
+  endif()
+  if(AUTOJIT_BUILD_EXTERNAL)
+    # clang-20 apt package has LLVM_ENABLE_PER_TARGET_RUNTIME_DIR=Off
+    set(orc_rt_path ${LLVM_BINARY_DIR}/lib/clang/20/lib/linux/liborc_rt-x86_64.a)
+  endif()
+
   add_custom_command(
     OUTPUT liborc_rt
     COMMAND ${CMAKE_COMMAND} -E copy ${orc_rt_path} ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt
