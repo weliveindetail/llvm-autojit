@@ -10,8 +10,20 @@
 
 #include <pthread.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Debug logging controlled by AUTOJIT_DEBUG */
+extern int g_debug;
+
+#define DEBUG_LOG(...)                                                         \
+  do {                                                                         \
+    if (g_debug)                                                               \
+      fprintf(stderr, "autojit-stub: " __VA_ARGS__);                           \
+  } while (0)
+
+#define ERROR_LOG(...) fprintf(stderr, "autojit-stub: " __VA_ARGS__)
 
 /* ============================================================================
  * GDB JIT Interface structures
@@ -67,6 +79,9 @@ static void append_jit_debug_descriptor(const char *obj_addr, uint64_t size) {
   struct jit_code_entry *entry = malloc(sizeof(struct jit_code_entry));
   if (!entry)
     return;
+
+  DEBUG_LOG("Adding debug object to GDB JIT interface ([0x%lx -- 0x%lx])\n",
+            (uintptr_t)obj_addr, size);
 
   entry->symfile_addr = obj_addr;
   entry->symfile_size = size;

@@ -1,35 +1,33 @@
 #include "runtime/AutoJITRuntime.h"
-#include "runtime/core/AutoJIT.h"
 
-#include "llvm/ADT/SmallSet.h"
-#include "llvm/Bitcode/BitcodeReader.h"
-#include "llvm/ExecutionEngine/ObjectCache.h"
-#include "llvm/ExecutionEngine/Orc/Core.h"
-#include "llvm/ExecutionEngine/Orc/DebugObjectManagerPlugin.h"
-#include "llvm/ExecutionEngine/Orc/EPCDebugObjectRegistrar.h"
-#include "llvm/ExecutionEngine/Orc/EPCDynamicLibrarySearchGenerator.h"
-#include "llvm/ExecutionEngine/Orc/IRTransformLayer.h"
-#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
-#include "llvm/ExecutionEngine/Orc/LLJIT.h"
-#include "llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h"
-#include "llvm/IR/GlobalAlias.h"
-#include "llvm/IR/GlobalValue.h"
-#include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/LegacyPassManager.h"
-#include "llvm/IR/Module.h"
-#include "llvm/IR/Verifier.h"
-#include "llvm/IRReader/IRReader.h"
-#include "llvm/Support/Compiler.h"
-#include "llvm/Support/Error.h"
-#include "llvm/Support/FileSystem.h"
-#include "llvm/Support/Format.h"
-#include "llvm/Support/ManagedStatic.h"
-#include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/Path.h"
-#include "llvm/Support/SmallVectorMemoryBuffer.h"
-#include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/TargetSelect.h"
-#include "llvm/Support/raw_ostream.h"
+#include "runtime/core/AutoJIT.h"
+#include "runtime/core/ExecutorPlatform.h"
+
+#include <llvm/ADT/SmallSet.h>
+#include <llvm/Bitcode/BitcodeReader.h>
+#include <llvm/ExecutionEngine/ObjectCache.h>
+#include <llvm/ExecutionEngine/Orc/Core.h>
+#include <llvm/ExecutionEngine/Orc/IRTransformLayer.h>
+#include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
+#include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/IR/GlobalAlias.h>
+#include <llvm/IR/GlobalValue.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/Verifier.h>
+#include <llvm/IRReader/IRReader.h>
+#include <llvm/Support/Compiler.h>
+#include <llvm/Support/Error.h>
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/Format.h>
+#include <llvm/Support/ManagedStatic.h>
+#include <llvm/Support/MemoryBuffer.h>
+#include <llvm/Support/Path.h>
+#include <llvm/Support/SmallVectorMemoryBuffer.h>
+#include <llvm/Support/SourceMgr.h>
+#include <llvm/Support/TargetSelect.h>
+#include <llvm/Support/raw_ostream.h>
 
 #if defined(AUTOJIT_ENABLE_TPDE)
 #include "tpde-llvm/LLVMCompiler.hpp"
@@ -453,32 +451,9 @@ autojit::AutoJIT::AutoJIT() : HostProcess_(dlopenHostProcess()) {
   autojit::initializeDebugLog();
 }
 
-[[maybe_unused]]
-static std::unique_ptr<MemoryBuffer> getEmbeddedOrcRuntime() {
-  const char *OrcRtStart =
-      reinterpret_cast<const char *>(_binary_liborc_rt_start);
-  const char *OrcRtEnd = reinterpret_cast<const char *>(_binary_liborc_rt_end);
-  StringRef OrcRuntimeData(OrcRtStart, OrcRtEnd - OrcRtStart);
-#if !defined(NDEBUG)
-  auto MemRngStr = format("[0x%" PRIx64 ", 0x%" PRIx64 "]",
-                          reinterpret_cast<uintptr_t>(OrcRtStart),
-                          reinterpret_cast<uintptr_t>(OrcRtEnd));
-  DBG() << "Install embedded orc-runtime from memory range " << MemRngStr
-        << "\n";
-#endif
-  return MemoryBuffer::getMemBuffer(OrcRuntimeData, "orc_rt", false);
-}
-
 Error autojit::AutoJIT::initialize(LLJITBuilder &B, bool HaveOrcRuntimeDeps) {
-#if defined(AUTOJIT_ENABLE_ORC_RUNTIME)
-  if (!isEnvVarSet("AUTOJITD_DISABLE_ORC_RUNTIME")) {
-    if (HaveOrcRuntimeDeps) {
-      B.setPlatformSetUp(orc::ExecutorNativePlatform(getEmbeddedOrcRuntime()));
-    } else {
-      DBG() << "Cannot install embedded orc-runtime: missing C++ stdlib\n";
-    }
-  }
-#endif
+  B.setPlatformSetUp(
+      autojit::ExecutorPlatform(g_autojit_debug, HaveOrcRuntimeDeps));
 
   B.CreateCompileFunction = [&](JITTargetMachineBuilder JTMB)
       -> Expected<std::unique_ptr<IRCompileLayer::IRCompiler>> {
@@ -508,27 +483,6 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B, bool HaveOrcRuntimeDeps) {
   B.setJITTargetMachineBuilder(JTMB);
 
   JIT_ = ExitOnErr(B.create());
-
-  if (g_autojit_debug) {
-    auto &ObjLayer = JIT_->getObjLinkingLayer();
-    if (auto *JITLinkObjLayer = dyn_cast<ObjectLinkingLayer>(&ObjLayer)) {
-      auto &ES = JIT_->getExecutionSession();
-      if (auto StubDebug = createJITLoaderGDBRegistrar(ES)) {
-        bool AutoRegisterCode = true;
-        if (isEnvVarSet("AUTOJIT_DEBUG_NO_AUTOREGISTER")) {
-          // Call __jit_debug_register_code() before debugging into JITed code
-          AutoRegisterCode = false;
-        }
-        constexpr bool RequireDebugSections = false;
-        auto Plugin = std::make_unique<DebugObjectManagerPlugin>(
-            ES, std::move(*StubDebug), RequireDebugSections, AutoRegisterCode);
-        JITLinkObjLayer->addPlugin(std::move(Plugin));
-      } else {
-        LOG() << "Cannot enable debugger support: "
-              << toString(StubDebug.takeError());
-      }
-    }
-  }
 
 #if !defined(NDEBUG)
   JIT_->getIRTransformLayer().setTransform(

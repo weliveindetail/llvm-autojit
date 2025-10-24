@@ -1,13 +1,12 @@
 #pragma once
 
 #include "AutoJITConfig.h"
-#include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
-#include "llvm/ExecutionEngine/Orc/Shared/SimpleRemoteEPCUtils.h"
+#include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/IR/GlobalValue.h>
-#include <llvm/Support/Compiler.h>
-#include <llvm/Support/Debug.h>
+#include <llvm/Support/DynamicLibrary.h>
+#include <llvm/Support/Error.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <cstdint>
@@ -26,14 +25,6 @@ extern bool g_autojit_debug;
 #endif
 
 #define LOG() ::llvm::errs() << "[autojit-runtime] "
-
-extern "C" {
-
-// Linker fills in relocations for the bounds of the linked liborc_rt.a, which
-// resolve to the actual memory load addresses at startup.
-extern const unsigned char _binary_liborc_rt_start[];
-extern const unsigned char _binary_liborc_rt_end[];
-}
 
 namespace autojit {
 

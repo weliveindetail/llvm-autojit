@@ -51,7 +51,7 @@ static uint64_t g_register_fn_addr = 0;
 static uint64_t g_materialize_fn_addr = 0;
 
 /* Debug logging controlled by AUTOJIT_DEBUG */
-static int g_debug = 0;
+int g_debug = 0;
 
 #define DEBUG_LOG(...)                                                         \
   do {                                                                         \

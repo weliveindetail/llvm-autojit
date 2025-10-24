@@ -58,7 +58,13 @@ install(
 )
 
 # Daemon executable
-add_executable(autojitd remote/Daemon.cpp remote/Session.cpp core/AutoJIT.cpp ${orc_rt})
+add_executable(autojitd
+  remote/Daemon.cpp
+  remote/Session.cpp
+  core/AutoJIT.cpp
+  core/ExecutorPlatform.cpp
+  ${orc_rt}
+)
 set_target_properties(autojitd PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
@@ -80,7 +86,12 @@ install(
 )
 
 # Shared library
-add_library(autojit-so SHARED inprocess/Shared.cpp core/AutoJIT.cpp ${orc_rt})
+add_library(autojit-so SHARED
+  inprocess/Shared.cpp
+  core/AutoJIT.cpp
+  core/ExecutorPlatform.cpp
+  ${orc_rt}
+)
 set_target_properties(autojit-so PROPERTIES
   LIBRARY_OUTPUT_NAME "autojit-runtime"
   VERSION "${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}"
