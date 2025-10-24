@@ -87,7 +87,7 @@ install(
 
 # Shared library
 add_library(autojit-so SHARED
-  inprocess/Shared.cpp
+  inprocess/Shlib.cpp
   core/AutoJIT.cpp
   core/ExecutorPlatform.cpp
   ${orc_rt}
