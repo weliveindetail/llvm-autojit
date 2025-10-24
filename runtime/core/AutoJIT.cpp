@@ -509,15 +509,6 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B, bool HaveOrcRuntimeDeps) {
 
   JIT_ = ExitOnErr(B.create());
 
-  // LLJIT sets up lookup flags for process symbols to MatchExportedSymbolsOnly.
-  // It has caused EPCDynamicLibrarySearchGenerator to discard matched symbols,
-  // which failed remote lookup but not in-process lookup. This might be an
-  // inconsistency in ORC. The below workaround adds another generator that
-  // matches all symbols. This adds another RPC roundtrip, which is suboptimal.
-  auto &MainJD = JIT_->getMainJITDylib();
-  auto ProcessSymbols = JIT_->getProcessSymbolsJITDylib();
-  MainJD.addToLinkOrder(*ProcessSymbols, JITDylibLookupFlags::MatchAllSymbols);
-
   if (g_autojit_debug) {
     auto &ObjLayer = JIT_->getObjLinkingLayer();
     if (auto *JITLinkObjLayer = dyn_cast<ObjectLinkingLayer>(&ObjLayer)) {

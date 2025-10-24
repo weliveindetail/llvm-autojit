@@ -658,8 +658,8 @@ static ssize_t stub_dylib_lookup_wrapper(const char *ArgData, size_t ArgSize,
        * Both are typically uint8_t, so we write them as 1-byte values
        */
       sps_write_uint64(Result, (uint64_t)(uintptr_t)sym_addr);
-      /* Flags: UnderlyingType = 0 (no special flags), written as uint8_t */
-      uint8_t flag_byte = 0;
+      /* Flags: Exported */
+      uint8_t flag_byte = 1 << 4;
       memcpy(Result->data + Result->size, &flag_byte, 1);
       Result->size += 1;
       /* TargetFlags: TargetFlagsType = 0, written as uint8_t */
