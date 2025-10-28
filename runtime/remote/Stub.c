@@ -827,16 +827,96 @@ static ssize_t stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
     }
   }
 
-  /* Skip the actions sequence for now (we don't need to process them) */
-  /* Actions are: SPSSequence<SPSAllocActionCallPair> */
+  /* Process allocation actions: SPSSequence<SPSAllocActionCallPair>
+   * Each action pair contains:
+   *   - Finalize: SPSWrapperFunctionCall (SPSTuple<ExecutorAddr, SPSSequence<char>>)
+   *   - Dealloc: SPSWrapperFunctionCall (SPSTuple<ExecutorAddr, SPSSequence<char>>)
+   */
   uint64_t num_actions;
   if (sps_read_uint64(&ptr, end, &num_actions) < 0) {
     DEBUG_LOG("stub_mem_finalize_wrapper: failed to read num_actions\n");
     return -1;
   }
 
-  DEBUG_LOG("  Skipping %lu actions\n", num_actions);
-  /* We could parse and execute actions here, but for now just skip them */
+  DEBUG_LOG("  Processing %lu allocation actions\n", num_actions);
+
+  /* Execute finalize actions in order */
+  for (uint64_t i = 0; i < num_actions; i++) {
+    /* Read Finalize WrapperFunctionCall */
+    uint64_t finalize_fn_addr;
+    if (sps_read_uint64(&ptr, end, &finalize_fn_addr) < 0) {
+      DEBUG_LOG("stub_mem_finalize_wrapper: failed to read finalize_fn_addr\n");
+      return -1;
+    }
+
+    uint64_t finalize_arg_size;
+    if (sps_read_uint64(&ptr, end, &finalize_arg_size) < 0) {
+      DEBUG_LOG("stub_mem_finalize_wrapper: failed to read finalize_arg_size\n");
+      return -1;
+    }
+
+    if (ptr + finalize_arg_size > end) {
+      DEBUG_LOG("stub_mem_finalize_wrapper: finalize args out of bounds\n");
+      return -1;
+    }
+
+    const char *finalize_args = (const char *)ptr;
+    ptr += finalize_arg_size;
+
+    /* Read Dealloc WrapperFunctionCall (we skip execution for now) */
+    uint64_t dealloc_fn_addr;
+    if (sps_read_uint64(&ptr, end, &dealloc_fn_addr) < 0) {
+      DEBUG_LOG("stub_mem_finalize_wrapper: failed to read dealloc_fn_addr\n");
+      return -1;
+    }
+
+    uint64_t dealloc_arg_size;
+    if (sps_read_uint64(&ptr, end, &dealloc_arg_size) < 0) {
+      DEBUG_LOG("stub_mem_finalize_wrapper: failed to read dealloc_arg_size\n");
+      return -1;
+    }
+
+    if (ptr + dealloc_arg_size > end) {
+      DEBUG_LOG("stub_mem_finalize_wrapper: dealloc args out of bounds\n");
+      return -1;
+    }
+
+    ptr += dealloc_arg_size; /* Skip dealloc args */
+
+    /* Execute finalize action if present (non-zero function address) */
+    if (finalize_fn_addr != 0) {
+      DEBUG_LOG("  Action %lu: calling finalize fn at 0x%lx with %lu bytes args\n",
+                i, finalize_fn_addr, finalize_arg_size);
+
+      typedef ssize_t (*WrapperFn)(const char *, size_t, sps_buffer_t *);
+      WrapperFn finalize_fn = (WrapperFn)(uintptr_t)finalize_fn_addr;
+
+      sps_buffer_t finalize_result;
+      sps_buffer_init(&finalize_result, 64);
+
+      ssize_t ret = finalize_fn(finalize_args, finalize_arg_size, &finalize_result);
+
+      sps_buffer_free(&finalize_result);
+
+      if (ret < 0) {
+        DEBUG_LOG("  Action %lu: finalize function failed\n", i);
+        /* TODO: Run dealloc actions in reverse order on failure */
+        return -1;
+      }
+
+      DEBUG_LOG("  Action %lu: finalize function succeeded\n", i);
+    } else {
+      DEBUG_LOG("  Action %lu: no finalize function (skipped)\n", i);
+    }
+
+    /* Note: Dealloc actions should be saved and executed later during
+     * stub_mem_deallocate_wrapper, but we don't track them yet.
+     */
+    if (dealloc_fn_addr != 0) {
+      DEBUG_LOG("  Action %lu: dealloc fn at 0x%lx (deferred, not tracked yet)\n",
+                i, dealloc_fn_addr);
+    }
+  }
 
   /* SPSError [has_error:1_byte] */
   sps_write_uint8(Result, 0);
