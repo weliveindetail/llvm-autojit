@@ -1209,28 +1209,33 @@ static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *data,
   DEBUG_LOG("Received result with seqno %lu, arg_size=%zu\n", result_msg.seqno,
             result_msg.arg_size);
 
-  /* The Result message arg_bytes contain the raw WrapperFunctionResult data.
-   * The size is already in result_msg.arg_size (no size prefix in the data).
-   * For void returns, the result may be empty (0 bytes).
-   * Out-of-band errors are sent separately via a different mechanism (not as Result messages).
-   */
-  if (result_msg.arg_size == 0) {
-    /* Empty result - void return */
-    *result = NULL;
-    *result_size = 0;
+  int ec = 0;
+  *result = NULL;
+
+  if (result_msg.arg_bytes != NULL && result_msg.arg_size == 0) {
+    /* Out-of-band errors have C-string in bytes and zero in size */
+    const char *c_str = (char *)result_msg.arg_bytes;
+    *result_size = strlen(c_str);
+    ec = -1;
   } else {
-    /* Non-empty result - copy it */
-    *result = malloc(result_msg.arg_size);
-    if (!*result) {
-      free_epc_message(&result_msg);
-      return -1;
-    }
-    memcpy(*result, result_msg.arg_bytes, result_msg.arg_size);
     *result_size = result_msg.arg_size;
   }
 
+  if (*result_size > 0) {
+    *result = malloc(*result_size);
+    if (!*result) {
+      free_epc_message(&result_msg);
+      *result_size = 0;
+      return -1;
+    }
+  }
+
+  if (*result) {
+    memcpy(*result, result_msg.arg_bytes, *result_size);
+  }
+
   free_epc_message(&result_msg);
-  return 0;
+  return ec;
 }
 
 /* ============================================================================
@@ -1701,13 +1706,7 @@ void __llvm_autojit_register(const char *FilePath) {
   sps_buffer_t args;
   sps_buffer_init(&args, 256);
   sps_write_string(&args, FilePath);
-
   DEBUG_LOG("Encoded %zu bytes for RPC call\n", args.size);
-  DEBUG_LOG("First 16 bytes (hex): ");
-  for (size_t i = 0; i < (args.size < 16 ? args.size : 16); i++) {
-    fprintf(stderr, "%02x ", args.data[i]);
-  }
-  fprintf(stderr, "\n");
 
   /* Call RPC function */
   uint8_t *result;
@@ -1715,7 +1714,11 @@ void __llvm_autojit_register(const char *FilePath) {
 
   if (call_wrapper_function(g_daemon_fd, g_register_fn_addr, args.data,
                             args.size, &result, &result_size) < 0) {
-    ERROR_LOG("Failed to call register RPC\n");
+    if (result_size) {
+      ERROR_LOG("autojit_rpc_register failed: %s\n", result);
+    } else {
+      ERROR_LOG("autojit_rpc_register failed\n");
+    }
     sps_buffer_free(&args);
     exit(1);
   }
@@ -1748,10 +1751,13 @@ void __llvm_autojit_materialize(void **GuidInPtrOut) {
   /* Call RPC function */
   uint8_t *result;
   size_t result_size;
-
   if (call_wrapper_function(g_daemon_fd, g_materialize_fn_addr, args.data,
-                            args.size, &result, &result_size) < 0) {
-    ERROR_LOG("Failed to call materialize RPC\n");
+                                 args.size, &result, &result_size) < 0) {
+    if (result_size) {
+      ERROR_LOG("autojit_rpc_materialize failed: %s\n", result);
+    } else {
+      ERROR_LOG("autojit_rpc_materialize failed\n");
+    }
     sps_buffer_free(&args);
     exit(1);
   }
