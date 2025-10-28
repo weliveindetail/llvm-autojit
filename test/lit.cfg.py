@@ -6,6 +6,14 @@ from pathlib import Path
 
 config.name = 'AutoJIT'
 config.test_format = lit.formats.ShTest(True)
+config.filecheck_opts = '--dump-input=fail --dump-input-filter=all'
+
+# timeout in seconds
+supported, err = lit_config.maxIndividualTestTimeIsSupported
+if supported:
+    lit_config.maxIndividualTestTime = 20
+else:
+    lit_config.warning("Per-test timeout not supported: " + err)
 
 config.suffixes = ['.cpp', '.c', '.ll']
 config.excludes = ["Inputs"]
@@ -68,6 +76,7 @@ if daemon_mode:
     daemon_state_str = "is up and running"
     config.environment['AUTOJITD_FORCE_DAEMON'] = 'On'
     config.environment['XDG_RUNTIME_DIR'] = os.environ['XDG_RUNTIME_DIR']
+    lit_config.warning("Running tests against external autojitd breaks test isolation")
 else:
     daemon_state_str = "is spawned for each test"
     config.environment['AUTOJITD_FORCE_SPAWN'] = 'On'
