@@ -66,16 +66,17 @@ int g_debug = 0;
  * ============================================================================
  */
 
-static int write_all(int fd, const void *buf, size_t count) {
+static int write_all(const void *buf, size_t count) {
   const char *ptr = (const char *)buf;
   size_t remaining = count;
 
   while (remaining > 0) {
-    ssize_t written = write(fd, ptr, remaining);
+    ssize_t written = write(g_daemon_fd, ptr, remaining);
     if (written < 0) {
       if (errno == EINTR)
         continue;
       ERROR_LOG("write failed: %s\n", strerror(errno));
+      g_daemon_fd = -1;
       return -1;
     }
     ptr += written;
@@ -84,20 +85,22 @@ static int write_all(int fd, const void *buf, size_t count) {
   return 0;
 }
 
-static int read_all(int fd, void *buf, size_t count) {
+static int read_all(void *buf, size_t count) {
   char *ptr = (char *)buf;
   size_t remaining = count;
 
   while (remaining > 0) {
-    ssize_t nread = read(fd, ptr, remaining);
+    ssize_t nread = read(g_daemon_fd, ptr, remaining);
     if (nread < 0) {
       if (errno == EINTR)
         continue;
       ERROR_LOG("read failed: %s\n", strerror(errno));
+      g_daemon_fd = -1;
       return -1;
     }
     if (nread == 0) {
       ERROR_LOG("unexpected EOF from daemon\n");
+      g_daemon_fd = -1;
       return -1;
     }
     ptr += nread;
@@ -119,7 +122,7 @@ typedef struct {
   size_t arg_size;
 } epc_message_t;
 
-static int send_epc_message(int fd, const epc_message_t *msg) {
+static int send_epc_message(const epc_message_t *msg) {
   pthread_mutex_lock(&g_io_mutex);
 
   /* Construct header: [MsgSize:8][OpCode:8][SeqNo:8][TagAddr:8] */
@@ -132,10 +135,10 @@ static int send_epc_message(int fd, const epc_message_t *msg) {
   memcpy(header + 24, &msg->tag_addr, 8);
 
   int ret = 0;
-  if (write_all(fd, header, FD_MSG_HEADER_SIZE) < 0) {
+  if (write_all(header, FD_MSG_HEADER_SIZE) < 0) {
     ret = -1;
   } else if (msg->arg_size > 0 &&
-             write_all(fd, msg->arg_bytes, msg->arg_size) < 0) {
+             write_all(msg->arg_bytes, msg->arg_size) < 0) {
     ret = -1;
   }
 
@@ -143,12 +146,12 @@ static int send_epc_message(int fd, const epc_message_t *msg) {
   return ret;
 }
 
-static int recv_epc_message(int fd, epc_message_t *msg) {
+static int recv_epc_message(epc_message_t *msg) {
   pthread_mutex_lock(&g_io_mutex);
 
   /* Read header: [MsgSize:8][OpCode:8][SeqNo:8][TagAddr:8] */
   uint8_t header[FD_MSG_HEADER_SIZE];
-  if (read_all(fd, header, FD_MSG_HEADER_SIZE) < 0) {
+  if (read_all(header, FD_MSG_HEADER_SIZE) < 0) {
     pthread_mutex_unlock(&g_io_mutex);
     return -1;
   }
@@ -176,7 +179,7 @@ static int recv_epc_message(int fd, epc_message_t *msg) {
       return -1;
     }
 
-    if (read_all(fd, msg->arg_bytes, msg->arg_size) < 0) {
+    if (read_all(msg->arg_bytes, msg->arg_size) < 0) {
       free(msg->arg_bytes);
       pthread_mutex_unlock(&g_io_mutex);
       return -1;
@@ -328,8 +331,7 @@ static int parse_setup_message(const epc_message_t *msg) {
  */
 
 /* Message handling functions - defined later in the file */
-static int message_loop_until(int fd, uint64_t stop_opcode,
-                              epc_message_t *stop_msg);
+static int message_loop_until(uint64_t stop_opcode, epc_message_t *stop_msg);
 
 /* EH-frame registration wrappers - defined later in the file */
 static ssize_t llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
@@ -1028,7 +1030,7 @@ static uint64_t detect_stdlibs(void) {
   return result;
 }
 
-static int send_setup_message(int fd) {
+static int send_setup_message(void) {
   /* Setup message format (SPS encoded):
    * - target_triple: string
    * - page_size: uint64_t
@@ -1155,7 +1157,7 @@ static int send_setup_message(int fd) {
                              .arg_bytes = setup_data.data,
                              .arg_size = setup_data.size};
 
-  int ret = send_epc_message(fd, &setup_msg);
+  int ret = send_epc_message(&setup_msg);
   sps_buffer_free(&setup_data);
 
   if (ret < 0) {
@@ -1172,7 +1174,7 @@ static int send_setup_message(int fd) {
  * ============================================================================
  */
 
-static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *data,
+static int call_wrapper_function(uint64_t fn_addr, const uint8_t *data,
                                  size_t args_size, uint8_t **result,
                                  size_t *result_size) {
   /* Send CallWrapper message */
@@ -1185,7 +1187,7 @@ static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *data,
   DEBUG_LOG("Calling wrapper function at 0x%lx with seqno %lu\n", fn_addr,
             call_msg.seqno);
 
-  if (send_epc_message(fd, &call_msg) < 0) {
+  if (send_epc_message(&call_msg) < 0) {
     ERROR_LOG("Failed to send CallWrapper message\n");
     return -1;
   }
@@ -1194,7 +1196,7 @@ static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *data,
    * CallWrapper messages from the daemon (e.g., memory reserve requests)
    */
   epc_message_t result_msg;
-  if (message_loop_until(fd, OPCODE_RESULT, &result_msg) < 0) {
+  if (message_loop_until(OPCODE_RESULT, &result_msg) < 0) {
     ERROR_LOG("Failed to receive Result message\n");
     return -1;
   }
@@ -1244,7 +1246,7 @@ static int call_wrapper_function(int fd, uint64_t fn_addr, const uint8_t *data,
  */
 
 /* Handle CallWrapper message - find and invoke the wrapper function */
-static int handle_callwrapper_message(int fd, const epc_message_t *msg) {
+static int handle_callwrapper_message(const epc_message_t *msg) {
   /* tag_addr contains the function pointer to call */
   typedef ssize_t (*WrapperFn)(const char *, size_t, sps_buffer_t *);
   WrapperFn fn = (WrapperFn)(uintptr_t)msg->tag_addr;
@@ -1277,7 +1279,7 @@ static int handle_callwrapper_message(int fd, const epc_message_t *msg) {
                                 .tag_addr = 0,
                                 .arg_bytes = NULL,
                                 .arg_size = 0};
-    if (send_epc_message(fd, &result_msg) < 0) {
+    if (send_epc_message(&result_msg) < 0) {
       ERROR_LOG("Failed to send Result message\n");
       return -1;
     }
@@ -1291,7 +1293,7 @@ static int handle_callwrapper_message(int fd, const epc_message_t *msg) {
                               .arg_bytes = result_buf.data,
                               .arg_size = result_buf.size};
 
-  if (send_epc_message(fd, &result_msg) < 0) {
+  if (send_epc_message(&result_msg) < 0) {
     sps_buffer_free(&result_buf);
     ERROR_LOG("Failed to send Result message\n");
     return -1;
@@ -1309,13 +1311,12 @@ static int handle_callwrapper_message(int fd, const epc_message_t *msg) {
  * error On success, the stop message is left in *stop_msg for the caller to
  * process
  */
-static int message_loop_until(int fd, uint64_t stop_opcode,
-                              epc_message_t *stop_msg) {
+static int message_loop_until(uint64_t stop_opcode, epc_message_t *stop_msg) {
   DEBUG_LOG("Entering message loop, waiting for opcode 0x%02lx\n", stop_opcode);
 
   while (1) {
     epc_message_t msg;
-    if (recv_epc_message(fd, &msg) < 0) {
+    if (recv_epc_message(&msg) < 0) {
       ERROR_LOG("Failed to receive message in message loop\n");
       return -1;
     }
@@ -1333,7 +1334,7 @@ static int message_loop_until(int fd, uint64_t stop_opcode,
 
     if (msg.opcode == OPCODE_CALLWRAPPER) {
       /* Handle RPC call from daemon */
-      if (handle_callwrapper_message(fd, &msg) < 0) {
+      if (handle_callwrapper_message(&msg) < 0) {
         ERROR_LOG("Failed to handle CallWrapper message\n");
         free_epc_message(&msg);
         return -1;
@@ -1381,7 +1382,7 @@ static int checkenv(const char *var) {
 static void clean_shutdown(void) {
   DEBUG_LOG("Run synchronous shutdown process\n");
   epc_message_t hangup_msg;
-  if (message_loop_until(g_daemon_fd, OPCODE_HANGUP, &hangup_msg) == 0) {
+  if (message_loop_until(OPCODE_HANGUP, &hangup_msg) == 0) {
     ERROR_LOG("Daemon sent synchronous Hangup\n");
     free_epc_message(&hangup_msg);
   } else {
@@ -1428,11 +1429,11 @@ static void cleanup_daemon(void) {
   if (checkenv("AUTOJITD_FULL_SHUTDOWN")) {
     DEBUG_LOG("Request full synchronous shutdown from daemon\n");
     full_shutdown_request = 1;
-    send_epc_message(g_daemon_fd, &hangup);
+    send_epc_message(&hangup);
     clean_shutdown();
   } else {
     DEBUG_LOG("Send asynchronous hangup to daemon\n");
-    send_epc_message(g_daemon_fd, &hangup);
+    send_epc_message(&hangup);
   }
 
   /* If the daemon runs in a child process, make sure it did shut down */
@@ -1580,7 +1581,7 @@ static void initialize_daemon(void) {
   }
 
   /* Send Setup message to daemon */
-  if (send_setup_message(g_daemon_fd) < 0) {
+  if (send_setup_message() < 0) {
     ERROR_LOG("Failed to send Setup message to daemon\n");
     cleanup_daemon();
     exit(1);
@@ -1591,7 +1592,7 @@ static void initialize_daemon(void) {
    * sending its Setup message. message_loop_until will handle these.
    */
   epc_message_t setup_msg;
-  if (message_loop_until(g_daemon_fd, OPCODE_SETUP, &setup_msg) < 0) {
+  if (message_loop_until(OPCODE_SETUP, &setup_msg) < 0) {
     ERROR_LOG("Failed to receive Setup message from daemon\n");
     cleanup_daemon();
     exit(1);
@@ -1712,8 +1713,8 @@ void __llvm_autojit_register(const char *FilePath) {
   uint8_t *result;
   size_t result_size;
 
-  if (call_wrapper_function(g_daemon_fd, g_register_fn_addr, args.data,
-                            args.size, &result, &result_size) < 0) {
+  if (call_wrapper_function(g_register_fn_addr, args.data, args.size, &result,
+                            &result_size) < 0) {
     if (result_size) {
       ERROR_LOG("autojit_rpc_register failed: %s\n", result);
     } else {
@@ -1751,8 +1752,8 @@ void __llvm_autojit_materialize(void **GuidInPtrOut) {
   /* Call RPC function */
   uint8_t *result;
   size_t result_size;
-  if (call_wrapper_function(g_daemon_fd, g_materialize_fn_addr, args.data,
-                                 args.size, &result, &result_size) < 0) {
+  if (call_wrapper_function(g_materialize_fn_addr, args.data, args.size,
+                            &result, &result_size) < 0) {
     if (result_size) {
       ERROR_LOG("autojit_rpc_materialize failed: %s\n", result);
     } else {
