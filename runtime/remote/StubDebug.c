@@ -6,6 +6,7 @@
  * llvm/lib/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.cpp
  */
 
+#include "runtime/remote/Stub.h"
 #include "runtime/remote/StubSPS.h"
 
 #include <pthread.h>
@@ -13,17 +14,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* Debug logging controlled by AUTOJIT_DEBUG */
-extern int g_debug;
-
-#define DEBUG_LOG(...)                                                         \
-  do {                                                                         \
-    if (g_debug)                                                               \
-      fprintf(stderr, "autojit-stub: " __VA_ARGS__);                           \
-  } while (0)
-
-#define ERROR_LOG(...) fprintf(stderr, "autojit-stub: " __VA_ARGS__)
 
 /* ============================================================================
  * GDB JIT Interface structures
@@ -80,9 +70,6 @@ static void append_jit_debug_descriptor(const char *obj_addr, uint64_t size) {
   if (!entry)
     return;
 
-  DEBUG_LOG("Adding debug object to GDB JIT interface ([0x%lx -- 0x%lx])\n",
-            (uintptr_t)obj_addr, size);
-
   entry->symfile_addr = obj_addr;
   entry->symfile_size = size;
   entry->prev_entry = NULL;
@@ -105,57 +92,46 @@ static void append_jit_debug_descriptor(const char *obj_addr, uint64_t size) {
 }
 
 /* ============================================================================
- * SPS Wrapper Function Implementation
- * ============================================================================
- *
- * The wrapper functions receive SPS-encoded arguments:
- * - ExecutorAddrRange (start:8, size:8)
- * - bool (auto_register:1)
- */
-
-/* Parse SPS-encoded arguments: SPSError(SPSExecutorAddrRange, bool) */
-static int parse_register_args(const char *data, uint64_t size,
-                               uint64_t *start_addr, uint64_t *range_size,
-                               int *auto_register) {
-  if (size < 17) /* Need at least 8 + 8 + 1 bytes */
-    return -1;
-
-  const uint8_t *ptr = (const uint8_t *)data;
-
-  /* Read ExecutorAddrRange: start address (8 bytes) + size (8 bytes) */
-  memcpy(start_addr, ptr, 8);
-  ptr += 8;
-  memcpy(range_size, ptr, 8);
-  ptr += 8;
-
-  /* Read bool: 1 byte (0 or 1) */
-  *auto_register = *ptr;
-
-  return 0;
-}
-
-/* ============================================================================
  * Exported Wrapper Functions
  * ============================================================================
  */
 
 __attribute__((used)) ssize_t llvm_orc_registerJITLoaderGDBWrapper(
     const char *data, uint64_t size, sps_buffer_t *Result) {
-  uint64_t start_addr;
-  uint64_t range_size;
-  int auto_register;
+  /* We decode 8 + 8 + 1 bytes */
+  if (size < 17)
+    return -1;
 
-  if (parse_register_args(data, size, &start_addr, &range_size,
-                          &auto_register) < 0) {
+  /* ExecutorAddrRange */
+  uint64_t start_addr;
+  memcpy(&start_addr, data, 8);
+  data += 8;
+
+  uint64_t end_addr;
+  memcpy(&end_addr, data, 8);
+  data += 8;
+
+  /* bool flag */
+  int auto_register = *data;
+
+  /* Debug object size is between 64 bytes and 1 GB */
+  if (start_addr > end_addr || end_addr - start_addr < 64  ||
+      end_addr - start_addr > (1 << 30)) {
+    DEBUG_LOG("Skip adding bogus debug object to GDB JIT interface: "
+              "[0x%lx -- 0x%lx]\n", start_addr, end_addr);
     return -1;
   }
 
-  const char *obj_addr = (const char *)(uintptr_t)start_addr;
-  append_jit_debug_descriptor(obj_addr, range_size);
+  DEBUG_LOG("Adding debug object to GDB JIT interface ([0x%lx -- 0x%lx])\n",
+            start_addr, end_addr);
 
-  /* Run into the rendezvous breakpoint if requested */
+  const char *obj_addr = (const char *)(uintptr_t)start_addr;
+  uint64_t obj_size = end_addr - start_addr;
+  append_jit_debug_descriptor(obj_addr, obj_size);
+
+  /* Invoke rendezvous breakpoint at the end of the current materialization */
   if (auto_register) {
-    __jit_debug_register_code();
+    __sync_lock_test_and_set(&__llvm_autojit_debug_register, 1);
   }
 
   /* SPSError [has_error:1_byte] */

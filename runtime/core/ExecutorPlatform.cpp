@@ -52,7 +52,7 @@ static Error installDebugSupport(ObjectLinkingLayer *JITLinkLayer) {
 
   bool AutoRegisterCode = true;
   if (isEnvVarSet("AUTOJIT_DEBUG_NO_AUTOREGISTER")) {
-    // Call __jit_debug_register_code() before debugging into JITed code
+    // Call __jit_debug_register_code() manually before debugging JITed code
     AutoRegisterCode = false;
   }
   constexpr bool RequireDebugSections = false;

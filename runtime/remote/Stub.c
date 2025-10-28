@@ -1,4 +1,4 @@
-#include "runtime/AutoJITRuntime.h"
+#include "runtime/remote/Stub.h"
 #include "runtime/remote/StubSPS.h"
 
 #include <ctype.h>
@@ -51,15 +51,8 @@ static uint64_t g_register_fn_addr = 0;
 static uint64_t g_materialize_fn_addr = 0;
 
 /* Debug logging controlled by AUTOJIT_DEBUG */
-int g_debug = 0;
-
-#define DEBUG_LOG(...)                                                         \
-  do {                                                                         \
-    if (g_debug)                                                               \
-      fprintf(stderr, "autojit-stub: " __VA_ARGS__);                           \
-  } while (0)
-
-#define ERROR_LOG(...) fprintf(stderr, "autojit-stub: " __VA_ARGS__)
+int __llvm_autojit_debug = 0;
+int __llvm_autojit_debug_register = 0;
 
 /* ============================================================================
  * Low-level I/O
@@ -207,7 +200,7 @@ static void count_sequence_number(uint64_t actual) {
   if (actual != expected) {
     ERROR_LOG("Warning: Expected sequence number %lu but got: %lu\n", expected,
               actual);
-    if (g_debug) {
+    if (__llvm_autojit_debug) {
       exit(1);
     }
   }
@@ -1503,7 +1496,7 @@ static int connect_to_existing_daemon(void) {
 }
 
 static void initialize_daemon(void) {
-  g_debug = checkenv("AUTOJIT_DEBUG");
+  __llvm_autojit_debug = checkenv("AUTOJIT_DEBUG");
   DEBUG_LOG("Initializing daemon\n");
 
   /* First, try to connect to an existing daemon */
@@ -1776,10 +1769,12 @@ void __llvm_autojit_materialize(void **GuidInPtrOut) {
   memcpy(&func_addr, result, 8);
   free(result);
 
-  DEBUG_LOG("Function materialized at address 0x%016lx\n", func_addr);
+  DEBUG_LOG("Materialized __autojit_fn_%lu at address 0x%016lx\n", guid,
+            func_addr);
 
-  if (g_debug)
+  if (__sync_lock_test_and_set(&__llvm_autojit_debug_register, 0)) {
     __jit_debug_register_code();
+  }
 
   /* Update pointer with returned address */
   *GuidInPtrOut = (void *)(uintptr_t)func_addr;
