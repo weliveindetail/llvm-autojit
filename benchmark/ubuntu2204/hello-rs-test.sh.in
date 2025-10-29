@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -xeuo pipefail
+
+echo "Test hello-rs with autojit"
+rm -f /tmp/autojit_*
+rm -f hello
+
+export AUTOJIT_DEBUG=1
+
+rustc -Z llvm-plugins="@CMAKE_INSTALL_PREFIX@/lib/autojit.so" \
+      -L @CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime \
+      -C link-arg=-Wl,-rpath,@CMAKE_INSTALL_PREFIX@/lib \
+      -C link-arg=-rdynamic \
+      -o hello \
+      llvm-autojit-bench/hello.rs
+
+./hello

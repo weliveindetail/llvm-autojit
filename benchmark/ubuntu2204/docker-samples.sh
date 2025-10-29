@@ -8,3 +8,7 @@ cd install/benchmark
 ./setup.sh
 ./bzip2-test.sh
 ./bzip2-test.sh --autojitd=/workspace/install/bin/autojitd
+
+if command -v rustc >/dev/null 2>&1; then
+  ./hello-rs-test.sh
+fi
