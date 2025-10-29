@@ -1,6 +1,8 @@
 #pragma once
 
+#include "AutoJITConfig.h"
 #include "runtime/AutoJITRuntime.h"
+#include "llvm/Config/llvm-config.h"
 
 /* Debug logging controlled by AUTOJIT_DEBUG */
 extern int __llvm_autojit_debug;

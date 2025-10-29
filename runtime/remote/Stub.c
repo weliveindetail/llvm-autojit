@@ -327,10 +327,10 @@ static int parse_setup_message(const epc_message_t *msg) {
 static int message_loop_until(uint64_t stop_opcode, epc_message_t *stop_msg);
 
 /* EH-frame registration wrappers - defined later in the file */
-static ssize_t llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
+static ssize_t llvm_orc_registerEHFrameAllocAction(const char *ArgData,
                                                       size_t ArgSize,
                                                       sps_buffer_t *Result);
-static ssize_t llvm_orc_deregisterEHFrameSectionWrapper(const char *ArgData,
+static ssize_t llvm_orc_deregisterEHFrameAllocAction(const char *ArgData,
                                                         size_t ArgSize,
                                                         sps_buffer_t *Result);
 
@@ -1131,13 +1131,21 @@ static int send_setup_message(void) {
                    (uint64_t)(uintptr_t)stub_mem_deallocate_wrapper);
 
   /* EH-frame registration wrappers */
-  sps_write_string(&setup_data, "llvm_orc_registerEHFrameSectionWrapper");
-  sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)llvm_orc_registerEHFrameSectionWrapper);
+  const char *register_ehframes = "llvm_orc_registerEHFrameAllocAction";
+  const char *deregister_ehframes = "llvm_orc_deregisterEHFrameAllocAction";
 
-  sps_write_string(&setup_data, "llvm_orc_deregisterEHFrameSectionWrapper");
+#if LLVM_VERSION_MAJOR < 21
+  register_ehframes = "llvm_orc_registerEHFrameSectionWrapper";
+  deregister_ehframes = "llvm_orc_deregisterEHFrameSectionWrapper";
+#endif
+
+  sps_write_string(&setup_data, register_ehframes);
   sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)llvm_orc_deregisterEHFrameSectionWrapper);
+                   (uint64_t)(uintptr_t)llvm_orc_registerEHFrameAllocAction);
+
+  sps_write_string(&setup_data, deregister_ehframes);
+  sps_write_uint64(&setup_data,
+                   (uint64_t)(uintptr_t)llvm_orc_deregisterEHFrameAllocAction);
 
   DEBUG_LOG(
       "Sending Setup message: triple=%s, page_size=%lu, bootstrap_symbols=17\n",
@@ -1622,7 +1630,7 @@ extern void __deregister_frame(const void *);
  * Args: SPSExecutorAddrRange (Start:uint64_t, Size:uint64_t)
  * Returns: SPSError (bool HasError, optional error string)
  */
-static ssize_t llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
+static ssize_t llvm_orc_registerEHFrameAllocAction(const char *ArgData,
                                                       size_t ArgSize,
                                                       sps_buffer_t *Result) {
   const uint8_t *ptr = (const uint8_t *)ArgData;
@@ -1632,7 +1640,7 @@ static ssize_t llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
   uint64_t start_addr, size;
   if (sps_read_uint64(&ptr, end, &start_addr) < 0 ||
       sps_read_uint64(&ptr, end, &size) < 0) {
-    DEBUG_LOG("llvm_orc_registerEHFrameSectionWrapper: failed to read args\n");
+    DEBUG_LOG("llvm_orc_registerEHFrameAllocAction: failed to read args\n");
     return -1;
   }
 
@@ -1655,7 +1663,7 @@ static ssize_t llvm_orc_registerEHFrameSectionWrapper(const char *ArgData,
  * Args: SPSExecutorAddrRange (Start:uint64_t, Size:uint64_t)
  * Returns: SPSError (bool HasError, optional error string)
  */
-static ssize_t llvm_orc_deregisterEHFrameSectionWrapper(const char *ArgData,
+static ssize_t llvm_orc_deregisterEHFrameAllocAction(const char *ArgData,
                                                         size_t ArgSize,
                                                         sps_buffer_t *Result) {
   const uint8_t *ptr = (const uint8_t *)ArgData;
@@ -1665,7 +1673,7 @@ static ssize_t llvm_orc_deregisterEHFrameSectionWrapper(const char *ArgData,
   uint64_t start_addr, size;
   if (sps_read_uint64(&ptr, end, &start_addr) < 0 ||
       sps_read_uint64(&ptr, end, &size) < 0) {
-    DEBUG_LOG("llvm_orc_deregisterEHFrameSectionWrapper: failed to read args\n");
+    DEBUG_LOG("llvm_orc_deregisterEHFrameAllocAction: failed to read args\n");
     return -1;
   }
 
