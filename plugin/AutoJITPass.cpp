@@ -271,6 +271,7 @@ private:
     Module *M = F->getParent();
     LLVMContext &Context = M->getContext();
     PointerType *FnPtrTy = PointerType::get(Context, 0);
+    PointerType *FnPtrPtrTy = PointerType::get(Context, 0);
 
     GlobalVariable *FnPtr =
         new GlobalVariable(*M, FnPtrTy, false, GlobalValue::InternalLinkage,
@@ -297,8 +298,7 @@ private:
     Value *V64 = ConstantInt::get(Type::getInt64Ty(Context), FnGUID);
     Value *VPtr = Builder.CreateIntToPtr(V64, FnPtrTy);
     Builder.CreateStore(VPtr, FnPtr);
-    Value *FnPtrAddr =
-        Builder.CreateBitCast(FnPtr, PointerType::get(FnPtrTy, 0));
+    Value *FnPtrAddr = Builder.CreateBitCast(FnPtr, FnPtrPtrTy);
     Builder.CreateCall(MaterializeFn, {FnPtrAddr});
     Value *MaterializedPtr =
         Builder.CreateLoad(FnPtrTy, FnPtr, "materialized_ptr");
