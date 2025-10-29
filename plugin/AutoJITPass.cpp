@@ -41,9 +41,9 @@ namespace {
 
 static GlobalValue::GUID uniqueGUID(Twine ModName, Function *F) {
   if (F->hasLinkOnceLinkage())
-    return GlobalValue::getGUID(F->getName());
+    return MD5Hash(F->getName());
   std::string UniqueName = (ModName + ":" + F->getName()).str();
-  return GlobalValue::getGUID(UniqueName);
+  return MD5Hash(UniqueName);
 }
 
 static std::string guidToFnName(GlobalValue::GUID Guid) {

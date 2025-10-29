@@ -139,9 +139,9 @@ static std::string getModuleGUID(const std::string &SourcePath) {
 
 static GlobalValue::GUID getFunctionGUID(Twine ModName, Function *F) {
   if (F->hasLinkOnceLinkage())
-    return GlobalValue::getGUID(F->getName());
+    return MD5Hash(F->getName());
   auto UniqueName = (ModName + ":" + F->getName()).str();
-  return GlobalValue::getGUID(UniqueName);
+  return MD5Hash(UniqueName);
 }
 
 static bool isStaticInit(const Function &F) {
