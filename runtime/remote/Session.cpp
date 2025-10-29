@@ -16,6 +16,13 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/TargetParser/Host.h>
 
+#if LLVM_VERSION_MAJOR >= 21
+#include <llvm/ExecutionEngine/Orc/MemoryAccess.h>
+using MemoryAccess = llvm::orc::MemoryAccess;
+#else
+using MemoryAccess = llvm::orc::ExecutorProcessControl::MemoryAccess;
+#endif
+
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -594,7 +601,7 @@ autojit::RemoteEPC::createDefaultMemoryManager(RemoteEPC &SREPC) {
   return std::make_unique<EPCGenericJITLinkMemoryManager>(SREPC, SAs);
 }
 
-Expected<std::unique_ptr<ExecutorProcessControl::MemoryAccess>>
+Expected<std::unique_ptr<MemoryAccess>>
 autojit::RemoteEPC::createDefaultMemoryAccess(RemoteEPC &SREPC) {
   EPCGenericMemoryAccess::FuncAddrs FAs;
   if (auto Err = SREPC.getBootstrapSymbols(
