@@ -155,15 +155,18 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       }
       // TODO: Hidden definitions generate no (observable) symbols in the static
       // binary, but they are part of the linker-visible ABI of the object file.
-      // If the visibility change below causes issues, we could come up with a
-      // mechanism that adds a new module-specific externally visibile function,
-      // which forwards the call.
-      if (F->hasHiddenVisibility() && F->hasLinkOnceLinkage()) {
-        // A link-once symbol generates a static function frame and we want all
-        // calls to run through it. Right now, dlsym is the only way for AutoJIT
-        // to find it, so we must add it to the dynamic symbol table.
+      // The visibility change below changes the ABI. We could avoid this by
+      // adding module-specific, externally visibile functions instead, that
+      // forward calls to the hidden one. However, it has signifcant impact on
+      // link-time and run-time as well, which is the bigger issue long-term.
+      if (F->hasHiddenVisibility()) {
+        // These symbols generate static function frames and we want all calls
+        // to run through it, because they might be touched by the linker (it
+        // does deduplication for link-once function for example). As long as
+        // dlsym is the only way for AutoJIT to find static function frames, we
+        // must make sure they go into the dynamic symbol table.
         if (LLVM_UNLIKELY(AutoJITDebug)) {
-          errs() << "autojit-plugin: Promote link-once function "
+          errs() << "autojit-plugin: Set hidden function to default visibility "
                  << F->getName() << "\n";
         }
         F->setVisibility(GlobalValue::DefaultVisibility);
