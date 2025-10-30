@@ -21,10 +21,17 @@ jobs:
           -w /workspace \
           weliveindetail/ubuntu-llvm20:22.04 \
           ./llvm-autojit/benchmark/ubuntu2204/docker-tests.sh
-    - name: Build sample projects
+    - name: Build sample projects with shared library
       run: |
         docker run --rm \
           -v ${{ github.workspace }}:/workspace/llvm-autojit \
           -w /workspace \
           weliveindetail/ubuntu-llvm20:22.04 \
-          ./llvm-autojit/benchmark/ubuntu2204/docker-samples.sh
+          ./llvm-autojit/benchmark/ubuntu2204/docker-samples-shlib.sh
+    - name: Build sample projects with static stub and autojitd
+      run: |
+        docker run --rm \
+          -v ${{ github.workspace }}:/workspace/llvm-autojit \
+          -w /workspace \
+          weliveindetail/ubuntu-llvm20:22.04 \
+          ./llvm-autojit/benchmark/ubuntu2204/docker-samples-autojitd.sh
