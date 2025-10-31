@@ -1,9 +1,14 @@
 #pragma once
 
+#include "AutoJITConfig.h"
+
 #include "runtime/core/AutoJIT.h"
 
+#include <llvm/ADT/StringMap.h>
 #include <llvm/ExecutionEngine/Orc/Core.h>
-#include <llvm/ExecutionEngine/Orc/Shared/SimpleRemoteEPCUtils.h>
+#include <llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h>
+
+#include <memory>
 
 namespace autojit {
 

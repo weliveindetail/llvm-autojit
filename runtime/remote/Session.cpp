@@ -1,6 +1,4 @@
 #include "runtime/remote/Session.h"
-#include "AutoJITConfig.h"
-#include "runtime/core/AutoJIT.h"
 
 #include <llvm/ExecutionEngine/Orc/Core.h>
 #include <llvm/ExecutionEngine/Orc/EPCGenericDylibManager.h>
@@ -504,27 +502,27 @@ autojit::RemoteEPC::handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
                                   SimpleRemoteEPCArgBytesVector ArgBytes) {
 
   {
-    dbgs() << "RemoteEPC::handleMessage: opc = ";
+    DBG() << "RemoteEPC::handleMessage: opc = ";
     switch (OpC) {
     case SimpleRemoteEPCOpcode::Setup:
-      dbgs() << "Setup";
+      DBG() << "Setup";
       assert(SeqNo == 0 && "Non-zero SeqNo for Setup?");
       assert(!TagAddr && "Non-zero TagAddr for Setup?");
       break;
     case SimpleRemoteEPCOpcode::Hangup:
-      dbgs() << "Hangup";
+      DBG() << "Hangup";
       assert(SeqNo == 0 && "Non-zero SeqNo for Hangup?");
       assert(!TagAddr && "Non-zero TagAddr for Hangup?");
       break;
     case SimpleRemoteEPCOpcode::Result:
-      dbgs() << "Result";
+      DBG() << "Result";
       assert(!TagAddr && "Non-zero TagAddr for Result?");
       break;
     case SimpleRemoteEPCOpcode::CallWrapper:
-      dbgs() << "CallWrapper";
+      DBG() << "CallWrapper";
       break;
     }
-    dbgs() << ", seqno = " << SeqNo << ", tag-addr = " << TagAddr
+    DBG() << ", seqno = " << SeqNo << ", tag-addr = " << TagAddr
            << ", arg-buffer = " << formatv("{0:x}", ArgBytes.size())
            << " bytes\n";
   }
@@ -635,26 +633,26 @@ Error autojit::RemoteEPC::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
                                       ExecutorAddr TagAddr,
                                       ArrayRef<char> ArgBytes) {
   {
-    dbgs() << "RemoteEPC::sendMessage: opc = ";
+    DBG() << "RemoteEPC::sendMessage: opc = ";
     switch (OpC) {
     case SimpleRemoteEPCOpcode::Setup:
-      dbgs() << "Setup";
+      DBG() << "Setup";
       assert(!TagAddr && "Non-zero TagAddr for Setup?");
       break;
     case SimpleRemoteEPCOpcode::Hangup:
-      dbgs() << "Hangup";
+      DBG() << "Hangup";
       assert(SeqNo == 0 && "Non-zero SeqNo for Hangup?");
       assert(!TagAddr && "Non-zero TagAddr for Hangup?");
       break;
     case SimpleRemoteEPCOpcode::Result:
-      dbgs() << "Result";
+      DBG() << "Result";
       assert(!TagAddr && "Non-zero TagAddr for Result?");
       break;
     case SimpleRemoteEPCOpcode::CallWrapper:
-      dbgs() << "CallWrapper";
+      DBG() << "CallWrapper";
       break;
     }
-    dbgs() << ", seqno = " << SeqNo << ", tag-addr = " << TagAddr
+    DBG() << ", seqno = " << SeqNo << ", tag-addr = " << TagAddr
            << ", arg-buffer = " << formatv("{0:x}", ArgBytes.size())
            << " bytes\n";
   }
@@ -732,18 +730,18 @@ Error autojit::RemoteEPC::waitForSetup() {
   }
 
   {
-    dbgs() << "RemoteEPC received setup message:\n"
+    DBG() << "RemoteEPC received setup message:\n"
            << "  Triple: " << EI.TargetTriple << "\n"
            << "  Page size: " << EI.PageSize << "\n"
            << "  Bootstrap map" << (EI.BootstrapMap.empty() ? " empty" : ":")
            << "\n";
     for (const auto &KV : EI.BootstrapMap)
-      dbgs() << "    " << KV.first() << ": " << KV.second.size()
+      DBG() << "    " << KV.first() << ": " << KV.second.size()
              << "-byte SPS encoded buffer\n";
-    dbgs() << "  Bootstrap symbols"
+    DBG() << "  Bootstrap symbols"
            << (EI.BootstrapSymbols.empty() ? " empty" : ":") << "\n";
     for (const auto &KV : EI.BootstrapSymbols)
-      dbgs() << "    " << KV.first() << ": " << KV.second << "\n";
+      DBG() << "    " << KV.first() << ": " << KV.second << "\n";
   }
 
   // Initialize (base class) members
