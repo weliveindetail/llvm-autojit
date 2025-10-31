@@ -13,24 +13,29 @@ if(AUTOJIT_ENABLE_ORC_RUNTIME)
     set(orc_rt_path ${LLVM_BINARY_DIR}/lib/${clang_rt_libs}/linux/liborc_rt-x86_64.a)
   endif()
 
-  add_custom_command(
-    OUTPUT liborc_rt
-    COMMAND ${CMAKE_COMMAND} -E copy ${orc_rt_path} ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt
-    DEPENDS ${orc_rt_path}
-    COMMENT "Copy ${orc_rt_path} -> ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt"
-  )
-  add_custom_command(
-    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o
-    COMMAND objcopy --input binary --output elf64-x86-64 --binary-architecture i386 liborc_rt ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o
-    DEPENDS liborc_rt
-    COMMENT "Convert ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.a -> ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o"
-  )
-  add_custom_target(embed_orc_rt DEPENDS
-    ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt
-    ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o
-  )
+  if (orc_rt_path)
+    message(STATUS "Found: ${orc_rt_path}")
+    add_custom_command(
+      OUTPUT liborc_rt
+      COMMAND ${CMAKE_COMMAND} -E copy ${orc_rt_path} ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt
+      DEPENDS ${orc_rt_path}
+      COMMENT "Copy ${orc_rt_path} -> ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt"
+    )
+    add_custom_command(
+      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o
+      COMMAND objcopy --input binary --output elf64-x86-64 --binary-architecture i386 liborc_rt ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o
+      DEPENDS liborc_rt
+      COMMENT "Convert ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.a -> ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o"
+    )
+    add_custom_target(embed_orc_rt DEPENDS
+      ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt
+      ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o
+    )
 
-  set(orc_rt ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o)
+    set(orc_rt ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o)
+  else()
+    message(WARNING "liborc_rt not found")
+  endif()
 endif()
 
 llvm_map_components_to_libnames(llvm_libs
