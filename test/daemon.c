@@ -4,8 +4,8 @@
 // XFAIL: orc_rt
 
 // FIXME: We need --whole-archive for llvm_orc_registerJITLoaderGDBWrapper()
-// RUN: %clang_c -fpass-plugin=%autojit_plugin -c %s -o %t.o
-// RUN: %clang_c %t.o -L%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive -rdynamic -pthread -o %t.exe
+// RUN: %clang_c -fpass-plugin=%autojit_plugin %fsanitize -O0 -g -c %s -o %t.o
+// RUN: %clang_c %t.o %fsanitize -fuse-ld=lld -L%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive -rdynamic -pthread -o %t.exe
 // RUN: env AUTOJITD_FULL_SHUTDOWN=Off %t.exe 2>&1 | FileCheck %s
 // RUN: env AUTOJITD_FULL_SHUTDOWN=On %t.exe 2>&1 | FileCheck %s
 
@@ -32,11 +32,12 @@ int main(int argc, char *argv[]) {
   printf("AutoJIT Daemon Test\n");
 
   // These function calls will trigger daemon initialization and materialization
-  int sum = add(argc, 4);
-  int fact = factorial(sum);
+  int sum[2];
+  sum[argc + 20] = add(argc, 4);
+  int fact = factorial(sum[argc + 20]);
 
-  printf("add(%d, 4) = %d\n", argc, sum);
-  printf("factorial(%d) = %d\n", sum, fact);
+  printf("add(%d, 4) = %d\n", argc, sum[argc + 2]);
+  printf("factorial(%d) = %d\n", sum[argc + 2], fact);
   printf("Test completed successfully\n");
 
   return 0;

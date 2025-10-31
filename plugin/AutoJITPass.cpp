@@ -358,8 +358,8 @@ llvmGetPassPluginInfo() {
           .PluginVersion = "v0.1",
           .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
             // Register to run automatically at the end of the module pipeline
-            PB.registerPipelineStartEPCallback(
-                [](ModulePassManager &MPM, OptimizationLevel Level) {
+            PB.registerOptimizerLastEPCallback(
+                [](ModulePassManager &MPM, OptimizationLevel Level, ThinOrFullLTOPhase) {
                   MPM.addPass(AutoJITPass());
                   MPM.addPass(GlobalDCEPass());
                 });

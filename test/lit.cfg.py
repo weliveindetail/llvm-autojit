@@ -24,11 +24,16 @@ config.substitutions.append(('%autojit_runtime_dir', config.autojit_runtime_dir)
 config.substitutions.append(('%autojit_tools_dir', config.autojit_tools_dir))
 config.substitutions.append(('%arch', config.host_arch))
 
+if config.sanitize:
+    config.substitutions.append(('%fsanitize', f"-fsanitize={config.sanitize} -mllvm -sanitizer-early-opt-ep" ))
+else:
+    config.substitutions.append(('%fsanitize', ""))
+
 bin = Path(config.llvm_tools_dir)
 config.substitutions.append(('%clang_c', str(bin / 'clang')))
 config.substitutions.append(('%clang', str(bin / 'clang++')))
 config.substitutions.append(('%ar', str(bin / 'llvm-ar')))
-config.substitutions.append(('opt', str(bin / 'opt')))
+config.substitutions.append(('%opt', str(bin / 'opt')))
 config.substitutions.append(('FileCheck', str(bin / 'FileCheck')))
 
 config.environment['PATH'] = config.llvm_tools_dir + ":/usr/bin"
