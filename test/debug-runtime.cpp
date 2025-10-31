@@ -4,7 +4,7 @@
 // REQUIRES: llvm-debug
 
 // RUN: %clang %s -fpass-plugin=%autojit_plugin -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
-// RUN: %clang %s -fpass-plugin=%autojit_plugin -rdynamic -L%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive -o %t_remote.exe
+// RUN: %clang %s -fpass-plugin=%autojit_plugin -rdynamic -L%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive %fsanitize -o %t_remote.exe
 // RUN: env AUTOJIT_DEBUG=On %t_inprocess.exe 2>&1 | FileCheck %s
 // RUN: env AUTOJIT_DEBUG=On env AUTOJITD_FULL_SHUTDOWN=On %t_remote.exe 2>&1 | FileCheck %s
 //

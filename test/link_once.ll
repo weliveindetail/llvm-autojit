@@ -3,7 +3,7 @@
 ; RUN: clang -O0 -fpass-plugin=%autojit_plugin -Xclang -load -Xclang %autojit_plugin -mllvm -autojit-debug -c %s -o %t.o
 ; RUN: clang -O0 -fpass-plugin=%autojit_plugin -Xclang -load -Xclang %autojit_plugin -mllvm -autojit-debug -c %S/Inputs/link_once1.ll -o %t_link_once1.o
 ; RUN: clang -O0 -fpass-plugin=%autojit_plugin -Xclang -load -Xclang %autojit_plugin -mllvm -autojit-debug -c %S/Inputs/link_once2.ll -o %t_link_once2.o
-; RUN: clang %t.o %t_link_once1.o %t_link_once2.o -rdynamic -L%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive -o %t_remote.exe
+; RUN: clang %t.o %t_link_once1.o %t_link_once2.o -rdynamic -L%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive %fsanitize -o %t_remote.exe
 ; RUN: %t_remote.exe | FileCheck %s
 ;
 ; CHECK: link_once impl = 0x[[IMPL:[0-9a-f]+]]

@@ -64,6 +64,10 @@ set_target_properties(autojit-stub PROPERTIES
 target_link_libraries(autojit-stub PRIVATE pthread)
 target_compile_options(autojit-stub PRIVATE -Wno-cast-qual)
 
+if(AUTOJIT_SANITIZE)
+  target_compile_options(autojit-stub PRIVATE -fsanitize=${AUTOJIT_SANITIZE})
+endif()
+
 install(
   TARGETS autojit-stub
   ARCHIVE DESTINATION lib
@@ -90,6 +94,10 @@ endif()
 
 if(AUTOJIT_ENABLE_ORC_RUNTIME)
   add_dependencies(autojitd embed_orc_rt)
+endif()
+if(AUTOJIT_SANITIZE)
+  target_compile_options(autojitd PRIVATE -fsanitize=${AUTOJIT_SANITIZE})
+  target_link_options(autojitd PRIVATE -fsanitize=${AUTOJIT_SANITIZE})
 endif()
 
 install(
