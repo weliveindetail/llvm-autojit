@@ -201,7 +201,7 @@ static void count_sequence_number(uint64_t actual) {
     ERROR_LOG("Warning: Expected sequence number %lu but got: %lu\n", expected,
               actual);
     if (__llvm_autojit_debug) {
-      exit(1);
+      abort();
     }
   }
 }
@@ -1333,6 +1333,8 @@ static int message_loop_until(uint64_t stop_opcode, epc_message_t *stop_msg) {
       /* Sporadic daemon disconnect */
       ERROR_LOG("Daemon sent unexpected Hangup\n");
       free_epc_message(&msg);
+      close(g_daemon_fd);
+      g_daemon_fd = -1;
       return -1;
 
     } else {
@@ -1402,25 +1404,24 @@ static int shutdown_child_process(void) {
 }
 
 static void cleanup_daemon(void) {
-  if (g_daemon_fd < 0)
-    return;
+  if (g_daemon_fd >= 0) {
+    uint8_t full_shutdown_request = 0;
+    epc_message_t hangup = {.opcode = OPCODE_HANGUP,
+                            .seqno = 0,
+                            .tag_addr = 0,
+                            .arg_bytes = &full_shutdown_request,
+                            .arg_size = 1};
 
-  uint8_t full_shutdown_request = 0;
-  epc_message_t hangup = {.opcode = OPCODE_HANGUP,
-                          .seqno = 0,
-                          .tag_addr = 0,
-                          .arg_bytes = &full_shutdown_request,
-                          .arg_size = 1};
-
-  /* Run full OrcJIT shutdown only if requested explicitly */
-  if (checkenv("AUTOJITD_FULL_SHUTDOWN")) {
-    DEBUG_LOG("Request full synchronous shutdown from daemon\n");
-    full_shutdown_request = 1;
-    send_epc_message(&hangup);
-    clean_shutdown();
-  } else {
-    DEBUG_LOG("Send asynchronous hangup to daemon\n");
-    send_epc_message(&hangup);
+    /* Run full OrcJIT shutdown only if requested explicitly */
+    if (checkenv("AUTOJITD_FULL_SHUTDOWN")) {
+      DEBUG_LOG("Request full synchronous shutdown from daemon\n");
+      full_shutdown_request = 1;
+      send_epc_message(&hangup);
+      clean_shutdown();
+    } else {
+      DEBUG_LOG("Send asynchronous hangup to daemon\n");
+      send_epc_message(&hangup);
+    }
   }
 
   /* If the daemon runs in a child process, make sure it did shut down */
@@ -1432,8 +1433,10 @@ static void cleanup_daemon(void) {
     g_daemon_child_pid = -1;
   }
 
-  close(g_daemon_fd);
-  g_daemon_fd = -1;
+  if (g_daemon_fd >= 0) {
+    close(g_daemon_fd);
+    g_daemon_fd = -1;
+  }
 }
 
 /* Get the socket path for autojitd
@@ -1506,7 +1509,7 @@ static void initialize_daemon(void) {
     } else {
       ERROR_LOG("connecting to daemon failed: %s\n", strerror(errno));
     }
-    exit(1);
+    abort();
   }
 
   if (daemon_fd >= 0) {
@@ -1525,14 +1528,14 @@ static void initialize_daemon(void) {
     int fds[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) < 0) {
       ERROR_LOG("socketpair failed: %s\n", strerror(errno));
-      exit(1);
+      abort();
     }
 
     /* Fork daemon process */
     pid_t pid = fork();
     if (pid < 0) {
       ERROR_LOG("fork failed: %s\n", strerror(errno));
-      exit(1);
+      abort();
     }
 
     if (pid == 0) {
@@ -1571,7 +1574,7 @@ static void initialize_daemon(void) {
   if (send_setup_message() < 0) {
     ERROR_LOG("Failed to send Setup message to daemon\n");
     cleanup_daemon();
-    exit(1);
+    abort();
   }
 
   /* Message loop: process messages until we receive Setup message from daemon
@@ -1582,7 +1585,7 @@ static void initialize_daemon(void) {
   if (message_loop_until(OPCODE_SETUP, &setup_msg) < 0) {
     ERROR_LOG("Failed to receive Setup message from daemon\n");
     cleanup_daemon();
-    exit(1);
+    abort();
   }
 
   DEBUG_LOG("Received Setup message\n");
@@ -1592,7 +1595,7 @@ static void initialize_daemon(void) {
     ERROR_LOG("Failed to parse Setup message\n");
     free_epc_message(&setup_msg);
     cleanup_daemon();
-    exit(1);
+    abort();
   }
 
   free_epc_message(&setup_msg);
@@ -1708,7 +1711,7 @@ void __llvm_autojit_register(const char *FilePath) {
       ERROR_LOG("autojit_rpc_register failed\n");
     }
     sps_buffer_free(&args);
-    exit(1);
+    abort();
   }
 
   sps_buffer_free(&args);
@@ -1722,7 +1725,7 @@ void __jit_debug_register_code(void);
 void __llvm_autojit_materialize(void **GuidInPtrOut) {
   if (!GuidInPtrOut || *GuidInPtrOut == NULL) {
     ERROR_LOG("invalid parameters\n");
-    exit(1);
+    abort();
   }
 
   /* Ensure daemon is initialized */
@@ -1747,7 +1750,7 @@ void __llvm_autojit_materialize(void **GuidInPtrOut) {
       ERROR_LOG("autojit_rpc_materialize failed\n");
     }
     sps_buffer_free(&args);
-    exit(1);
+    abort();
   }
 
   sps_buffer_free(&args);
@@ -1755,8 +1758,12 @@ void __llvm_autojit_materialize(void **GuidInPtrOut) {
   /* Decode result: SPSArgList<uint64_t> */
   if (result_size != 8) {
     ERROR_LOG("Invalid result size: expected 8, got %zu\n", result_size);
+    for (size_t i = 0; i < result_size; i += 1) {
+      fprintf(stderr, "%02x ", *(result + i));
+    }
+    fprintf(stderr, "\n");
     free(result);
-    exit(1);
+    abort();
   }
 
   uint64_t func_addr;

@@ -419,6 +419,9 @@ autojit::RemoteEPC::~RemoteEPC() {
 #if !defined(NDEBUG)
   std::lock_guard<std::mutex> Lock(ServerStateMutex);
   assert(Disconnecting && "Destroyed without disconnection");
+
+  // Still unchecked if we never reached waitForDisconnect()
+  consumeError(std::move(DisconnectErr));
 #endif
 }
 
