@@ -1125,19 +1125,11 @@ static int send_setup_message(void) {
                    (uint64_t)(uintptr_t)stub_mem_deallocate_wrapper);
 
   /* EH-frame registration wrappers */
-  const char *register_ehframes = "llvm_orc_registerEHFrameAllocAction";
-  const char *deregister_ehframes = "llvm_orc_deregisterEHFrameAllocAction";
-
-#if LLVM_VERSION_MAJOR < 21
-  register_ehframes = "llvm_orc_registerEHFrameSectionWrapper";
-  deregister_ehframes = "llvm_orc_deregisterEHFrameSectionWrapper";
-#endif
-
-  sps_write_string(&setup_data, register_ehframes);
+  sps_write_string(&setup_data, "llvm_orc_registerEHFrameAllocAction");
   sps_write_uint64(&setup_data,
                    (uint64_t)(uintptr_t)llvm_orc_registerEHFrameAllocAction);
 
-  sps_write_string(&setup_data, deregister_ehframes);
+  sps_write_string(&setup_data, "llvm_orc_deregisterEHFrameAllocAction");
   sps_write_uint64(&setup_data,
                    (uint64_t)(uintptr_t)llvm_orc_deregisterEHFrameAllocAction);
 

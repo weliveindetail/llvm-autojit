@@ -708,6 +708,30 @@ MSVCPError autojit::RemoteEPCExecutorInfo::deserialize(
   return Error::success();
 }
 
+static StringMap<ExecutorAddr> patchSymbolNames(StringMap<ExecutorAddr> Map) {
+  auto RenameEntry = [&Map](StringRef From, StringRef To) {
+    auto It = Map.find(From);
+    if (It != Map.end()) {
+      Map.try_emplace(To, It->second);
+      Map.erase(It);
+    }
+  };
+
+#if LLVM_VERSION_MAJOR < 21
+  RenameEntry("llvm_orc_registerEHFrameAllocAction",
+              "llvm_orc_registerEHFrameSectionWrapper");
+  RenameEntry("llvm_orc_deregisterEHFrameAllocAction",
+              "llvm_orc_deregisterEHFrameSectionWrapper");
+#else
+  RenameEntry("llvm_orc_registerEHFrameSectionWrapper",
+              "llvm_orc_registerEHFrameAllocAction");
+  RenameEntry("llvm_orc_deregisterEHFrameSectionWrapper",
+              "llvm_orc_deregisterEHFrameAllocAction");
+#endif
+
+  return Map;
+}
+
 Error autojit::RemoteEPC::waitForSetup() {
   std::promise<MSVCPError> EIP;
   RemoteEPCExecutorInfo EI;
@@ -748,7 +772,7 @@ Error autojit::RemoteEPC::waitForSetup() {
   this->TargetTriple = Triple(EI.TargetTriple);
   this->PageSize = EI.PageSize;
   this->BootstrapMap = std::move(EI.BootstrapMap);
-  this->BootstrapSymbols = std::move(EI.BootstrapSymbols);
+  this->BootstrapSymbols = patchSymbolNames(std::move(EI.BootstrapSymbols));
   this->HaveSupportedCxxStdlib = EI.hasSupportedCxxStdlib();
 
   // Get dispatch symbols for RPC calls back to the stub
