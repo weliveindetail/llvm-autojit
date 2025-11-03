@@ -641,11 +641,8 @@ static ssize_t stub_dylib_lookup_wrapper(const char *ArgData, size_t ArgSize,
        * ExecutorSymbolDef: (ExecutorAddr=0, JITSymbolFlags=(0, 0))
        */
       sps_write_uint64(Result, 0);
-      uint8_t flag_byte = 0;
-      memcpy(Result->data + Result->size, &flag_byte, 1);
-      Result->size += 1;
-      memcpy(Result->data + Result->size, &flag_byte, 1);
-      Result->size += 1;
+      sps_write_uint8(Result, 0);
+      sps_write_uint8(Result, 0);
     } else {
       DEBUG_LOG("    Found at: 0x%lx\n", (uint64_t)(uintptr_t)sym_addr);
       /* Write ExecutorSymbolDef: (ExecutorAddr address, JITSymbolFlags flags)
@@ -653,13 +650,10 @@ static ssize_t stub_dylib_lookup_wrapper(const char *ArgData, size_t ArgSize,
        * Both are typically uint8_t, so we write them as 1-byte values
        */
       sps_write_uint64(Result, (uint64_t)(uintptr_t)sym_addr);
-      /* Flags: Exported */
-      uint8_t flag_byte = 1 << 4;
-      memcpy(Result->data + Result->size, &flag_byte, 1);
-      Result->size += 1;
-      /* TargetFlags: TargetFlagsType = 0, written as uint8_t */
-      memcpy(Result->data + Result->size, &flag_byte, 1);
-      Result->size += 1;
+      /* Exported symbol flag and empty target flag */
+      uint8_t flag_exported = 1 << 4;
+      sps_write_uint8(Result, flag_exported);
+      sps_write_uint8(Result, 0);
     }
   }
 
