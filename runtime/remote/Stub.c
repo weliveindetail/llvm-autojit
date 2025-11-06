@@ -1356,6 +1356,16 @@ static void to_lowercase(char *str) {
     *str = tolower(*str);
 }
 
+int check_range_min_max(uint64_t s, uint64_t e, uint64_t min, uint64_t max) {
+  if (s > e)
+    return 0;
+  if (e - s < min)
+    return 0;
+  if (e - s > max)
+    return 0;
+  return 1;
+}
+
 static int checkenv(const char *var) {
   char *envvar = getenv(var);
   if (!envvar)
@@ -1616,7 +1626,7 @@ extern void __register_frame(const void *);
 extern void __deregister_frame(const void *);
 
 /* Wrapper for registering EH frames - called by daemon via RPC
- * Args: SPSExecutorAddrRange (Start:uint64_t, Size:uint64_t)
+ * Args: SPSExecutorAddrRange (Start:uint64_t, End:uint64_t)
  * Returns: SPSError (bool HasError, optional error string)
  */
 static ssize_t llvm_orc_registerEHFrameAllocAction(const char *ArgData,
@@ -1625,16 +1635,21 @@ static ssize_t llvm_orc_registerEHFrameAllocAction(const char *ArgData,
   const uint8_t *ptr = (const uint8_t *)ArgData;
   const uint8_t *end = ptr + ArgSize;
 
-  /* Read ExecutorAddrRange: (Start, Size) */
-  uint64_t start_addr, size;
+  /* Read ExecutorAddrRange: (Start, End) */
+  uint64_t start_addr, end_addr;
   if (sps_read_uint64(&ptr, end, &start_addr) < 0 ||
-      sps_read_uint64(&ptr, end, &size) < 0) {
+      sps_read_uint64(&ptr, end, &end_addr) < 0) {
     DEBUG_LOG("llvm_orc_registerEHFrameAllocAction: failed to read args\n");
     return -1;
   }
 
-  DEBUG_LOG("Registering EH frame section: addr=0x%lx, size=%lu\n", start_addr,
-            size);
+  /* .eh_frame section size is between 8 bytes and 1 GB */
+  if (check_range_min_max(start_addr, end_addr, 8, 1 << 30) == 0) {
+    ERROR_LOG("Warning: bogus .eh_frame section "
+              "[0x%lx -- 0x%lx]\n", start_addr, end_addr);
+  }
+
+  DEBUG_LOG("Registering EH frame section at 0x%lx\n", start_addr);
 
   /* Call __register_frame with the start address
    * Note: libgcc expects a pointer to the start of the .eh_frame section.
@@ -1649,7 +1664,7 @@ static ssize_t llvm_orc_registerEHFrameAllocAction(const char *ArgData,
 }
 
 /* Wrapper for deregistering EH frames - called by daemon via RPC
- * Args: SPSExecutorAddrRange (Start:uint64_t, Size:uint64_t)
+ * Args: SPSExecutorAddrRange (Start:uint64_t, End:uint64_t)
  * Returns: SPSError (bool HasError, optional error string)
  */
 static ssize_t llvm_orc_deregisterEHFrameAllocAction(const char *ArgData,
@@ -1659,15 +1674,20 @@ static ssize_t llvm_orc_deregisterEHFrameAllocAction(const char *ArgData,
   const uint8_t *end = ptr + ArgSize;
 
   /* Read ExecutorAddrRange: (Start, Size) */
-  uint64_t start_addr, size;
+  uint64_t start_addr, end_addr;
   if (sps_read_uint64(&ptr, end, &start_addr) < 0 ||
-      sps_read_uint64(&ptr, end, &size) < 0) {
+      sps_read_uint64(&ptr, end, &end_addr) < 0) {
     DEBUG_LOG("llvm_orc_deregisterEHFrameAllocAction: failed to read args\n");
     return -1;
   }
 
-  DEBUG_LOG("Deregistering EH frame section: addr=0x%lx, size=%lu\n", start_addr,
-            size);
+  /* .eh_frame section size is between 8 bytes and 1 GB */
+  if (check_range_min_max(start_addr, end_addr, 8, 1 << 30) == 0) {
+    ERROR_LOG("Warning: bogus .eh_frame section "
+              "[0x%lx -- 0x%lx]\n", start_addr, end_addr);
+  }
+
+  DEBUG_LOG("Deregistering EH frame section at 0x%lx\n", start_addr);
 
   /* Call __deregister_frame with the start address */
   __deregister_frame((const void *)(uintptr_t)start_addr);

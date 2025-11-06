@@ -115,8 +115,7 @@ __attribute__((used)) ssize_t llvm_orc_registerJITLoaderGDBWrapper(
   int auto_register = *data;
 
   /* Debug object size is between 64 bytes and 1 GB */
-  if (start_addr > end_addr || end_addr - start_addr < 64  ||
-      end_addr - start_addr > (1 << 30)) {
+  if (check_range_min_max(start_addr, end_addr, 64, 1 << 30) == 0) {
     DEBUG_LOG("Skip adding bogus debug object to GDB JIT interface: "
               "[0x%lx -- 0x%lx]\n", start_addr, end_addr);
     return -1;
