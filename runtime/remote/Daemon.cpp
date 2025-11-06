@@ -260,8 +260,10 @@ int main(int argc, char *argv[]) {
   }
 
   // Standalone mode: multiple connections via Unix domain socket
-  LOG() << "Daemon process " << PID << " runs in standalone mode\n";
-  int ListenFd = AutoCleanupSocket::listen(getDaemonSocketPath(), PID);
+  std::string SocketPath = getDaemonSocketPath();
+  int ListenFd = AutoCleanupSocket::listen(SocketPath, PID);
+  LOG() << "Daemon process " << PID << " runs in standalone mode on socket: "
+        << SocketPath << "\n";
   while (true) {
     LOG() << "Waiting for connection...\n";
     fflush(stderr);
