@@ -21,6 +21,7 @@ using MemoryAccess = llvm::orc::MemoryAccess;
 using MemoryAccess = llvm::orc::ExecutorProcessControl::MemoryAccess;
 #endif
 
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -107,6 +108,7 @@ private:
   std::thread ListenerThread;
   int InFD, OutFD;
   std::atomic<bool> Disconnected{false};
+  std::atomic<bool> LoopFinished{false};
 };
 
 class RemoteEPC : public ExecutorProcessControl,
@@ -215,7 +217,7 @@ private:
   std::unique_ptr<jitlink::JITLinkMemoryManager> OwnedMemMgr;
   std::unique_ptr<MemoryAccess> OwnedMemAccess;
 
-  uint64_t NextSeqNo = 0;
+  std::atomic<uint64_t> NextSeqNo = 0;
   PendingCallWrapperResultsMap PendingCallWrapperResults;
 };
 
@@ -313,6 +315,12 @@ void autojit::Transport::disconnect() {
   Disconnected = true;
   bool CloseOutFD = InFD != OutFD;
 
+  shutdown(InFD, SHUT_RD);
+  if (CloseOutFD)
+    shutdown(InFD, SHUT_RD);
+
+  while (!LoopFinished) ;
+
   while (close(InFD) == -1)
     if (errno == EBADF)
       break;
@@ -369,7 +377,7 @@ int autojit::Transport::writeBytes(const char *Src, size_t Size) {
 }
 
 void autojit::Transport::listenLoop() {
-  while (true) {
+  while (!Disconnected) {
     // Read the header buffer
     char HeaderBuffer[FDMsgHeader::Size];
     {
@@ -428,6 +436,7 @@ void autojit::Transport::listenLoop() {
   }
 
   assert(Disconnected || static_cast<RemoteEPC *>(&C)->isQuickHangup());
+  LoopFinished = true;
 }
 
 ////////////////////////////////////////////////////////////////// RemoteEPC ///

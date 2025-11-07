@@ -32,7 +32,7 @@ using namespace llvm;
 using namespace llvm::orc;
 
 static llvm::ExitOnError ExitOnErr("[autojitd] ");
-static autojit::AutoJIT *Instance = nullptr;
+static std::atomic<autojit::AutoJIT *> Instance = nullptr;
 
 template <int NumDigits> static void hexstr(char *Buffer, uint64_t Val) {
   static const char HexDigits[] = "0123456789ABCDEF";
@@ -83,11 +83,12 @@ autojit_rpc_register(const char *ArgData, size_t ArgSize) {
     return outOfBandError("Failed to deserialize module path");
   DBG() << "autojit_rpc_register module: " << FilePath << "\n";
 
-  if (!Instance)
+  auto *Inst = Instance.load();
+  if (!Inst)
     return outOfBandError("JIT not initialized");
 
-  ThreadSafeModule TSM = Instance->loadModule(FilePath);
-  if (Error Err = Instance->submit(std::move(TSM))) {
+  ThreadSafeModule TSM = Inst->loadModule(FilePath);
+  if (Error Err = Inst->submit(std::move(TSM))) {
     std::string Message = toString(std::move(Err));
     return outOfBandError("Failed to load module from " + FilePath + ": " +
                           Message);
@@ -105,13 +106,14 @@ autojit_rpc_materialize(const char *ArgData, size_t ArgSize) {
   if (!shared::SPSArgList<uint64_t>::deserialize(IB, Guid))
     return outOfBandError("Failed to deserialize GUID");
 
-  if (!Instance)
+  auto *Inst = Instance.load();
+  if (!Inst)
     return outOfBandError("JIT not initialized");
 
   std::string Name = autojit::guidToFnName(Guid);
   DBG() << "Lookup function: " << Name << "\n";
 
-  uint64_t Addr = Instance->lookup(Name.c_str());
+  uint64_t Addr = Inst->lookup(Name.c_str());
   DBG() << "Materialized at address 0x" << format("%016" PRIx64, Addr) << "\n";
 
   size_t ResultSize = shared::SPSArgList<uint64_t>::size(Addr);
@@ -233,7 +235,7 @@ static int runSession(int InFD, int OutFD) {
        ExecutorAddr::fromPtr(autojit_rpc_materialize)},
   };
 
-  Instance = Session.launch(std::move(ES), std::move(RPCSymbols));
+  Instance.store(Session.launch(std::move(ES), std::move(RPCSymbols)));
 
   DBG() << "Connected: enter event loop\n";
   int ExitCode = Session.waitForDisconnect();
