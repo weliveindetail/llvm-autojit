@@ -1,41 +1,47 @@
-// Check that we can use multiple compile-units
+// Check that we mix and match regular compile-units with autojit ones
 //
-// RUN: %clang -fpass-plugin=%autojit_plugin -c %s -o %t.o
-// RUN: %clang -fpass-plugin=%autojit_plugin -c %S/Inputs/add.cpp -o %t_add.o
-// RUN: %clang -fpass-plugin=%autojit_plugin -c %S/Inputs/hello.cpp -o %t_hello.o
-// RUN: %clang -fpass-plugin=%autojit_plugin -c %S/Inputs/multiply.cpp -o %t_multiply.o
+// RUN: %clang -c %s -o %t_main_regular.o
+// RUN: %clang -c %s -o %t_main_autojit.o -fpass-plugin=%autojit_plugin
 //
-// RUN: %clang -o %t_1.exe %t_add.o %t_multiply.o %t_hello.o %t.o \
-// RUN:        -lautojit-runtime -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir
-// RUN: %t_1.exe 2>&1 | FileCheck %s
+// RUN: %clang -c %S/Inputs/cus_vector.cpp -o %t_vector_regular.o
+// RUN: %clang -c %S/Inputs/cus_vector.cpp -o %t_vector_autojit.o -fpass-plugin=%autojit_plugin
 //
-// RUN: %clang -o %t_2.exe %t_add.o %t_multiply.o %t_hello.o -fpass-plugin=%autojit_plugin %s \
-// RUN:        -lautojit-runtime -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir
-// RUN: %t_2.exe 2>&1 | FileCheck %s
+// RUN: %clang -c %S/Inputs/cus_string.cpp -o %t_string_regular.o
+// RUN: %clang -c %S/Inputs/cus_string.cpp -o %t_string_autojit.o -fpass-plugin=%autojit_plugin
+//
+// RUN: %clang -o %t_1.exe %t_main_regular.o %t_string_regular.o %t_vector_regular.o -lautojit-runtime -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir
+// RUN: %t_1.exe | FileCheck %s
+//
+// RUN: %clang -o %t_2.exe %t_main_regular.o %t_string_regular.o %t_vector_autojit.o -lautojit-runtime -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir
+// RUN: %t_2.exe | FileCheck %s
+//
+// RUN: %clang -o %t_3.exe %t_main_regular.o %t_string_autojit.o %t_vector_autojit.o -lautojit-runtime -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir
+// RUN: %t_3.exe | FileCheck %s
+//
+// RUN: %clang -o %t_4.exe %t_main_autojit.o %t_string_autojit.o %t_vector_autojit.o -lautojit-runtime -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir
+// RUN: %t_4.exe | FileCheck %s
+//
+// RUN: %clang -o %t_5.exe %t_main_autojit.o %t_string_autojit.o %t_vector_regular.o -lautojit-runtime -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir
+// RUN: %t_5.exe | FileCheck %s
+//
+// RUN: %clang -o %t_6.exe %t_main_autojit.o %t_string_regular.o %t_vector_regular.o -lautojit-runtime -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir
+// RUN: %t_6.exe | FileCheck %s
 
-// CHECK: AutoJIT Runtime Test
-// CHECK: Hello from AutoJIT!
-// CHECK: add(5, 3) = 8
-// CHECK: multiply(4, 6) = 24
 // CHECK: Test completed
 
 #include <iostream>
+#include <cstdint>
 
-// In separate translation units: they must register their lazy module at startup
-int add(int, int);
-int multiply(int, int);
-void hello();
+// All translation units register their lazy module at startup
+uint64_t next_fibbonacci();
+const char *format_fibonacci(uint64_t);
 
 int main() {
-    std::cout << "AutoJIT Runtime Test\n";
-
-    int Sum = add(5, 3);
-    int Product = multiply(4, 6);
-    hello();
-
-    std::cout << "add(5, 3) = " << Sum << "\n";
-    std::cout << "multiply(4, 6) = " << Product << "\n";
+    std::cout << format_fibonacci(next_fibbonacci()) << "\n";
+    std::cout << format_fibonacci(next_fibbonacci()) << "\n";
+    std::cout << format_fibonacci(next_fibbonacci()) << "\n";
+    std::cout << format_fibonacci(next_fibbonacci()) << "\n";
+    std::cout << format_fibonacci(next_fibbonacci()) << "\n";
     std::cout << "Test completed\n";
-
     return 0;
 }
