@@ -1531,8 +1531,7 @@ static void initialize_daemon(void) {
     const char *daemon_path = getenv("AUTOJIT_DAEMON_PATH");
     if (!daemon_path)
       daemon_path = "autojitd";
-    DEBUG_LOG("No daemon found, spawning autojitd in child-process: %s\n",
-              daemon_path);
+    DEBUG_LOG("Spawning autojitd in child-process: %s\n", daemon_path);
 
     /* Create socketpair for bidirectional communication */
     int fds[2];
@@ -1559,9 +1558,8 @@ static void initialize_daemon(void) {
         close(fds[0]);
 
       /* Run autojitd executable */
-      execl(daemon_path, "autojitd", "--stdio", NULL);
-      fprintf(stderr, "autojit-stub: failed to exec daemon '%s': %s\n",
-              daemon_path, strerror(errno));
+      execlp(daemon_path, "autojitd", "--stdio", NULL);
+      ERROR_LOG("Failed to exec daemon '%s': %s\n", daemon_path, strerror(errno));
       _exit(1);
     }
 
