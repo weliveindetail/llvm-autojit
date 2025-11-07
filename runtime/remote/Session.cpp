@@ -116,6 +116,11 @@ public:
   RemoteEPC(std::shared_ptr<SymbolStringPool> SSP,
             std::unique_ptr<TaskDispatcher> D)
       : ExecutorProcessControl(std::move(SSP), std::move(D)) {
+    // Callback result that can be decoded as void or ErrorSuccess
+    DummyResultValue = '\0';
+    DummyResult.Data.ValuePtr = &DummyResultValue;
+    DummyResult.Size = 1;
+
     this->DylibMgr = this;
   }
 
@@ -149,6 +154,10 @@ public:
     return Error::success();
   }
 
+  bool isQuickHangup() {
+    return Disconnecting && !FullShutdownRequested;
+  }
+
   void callWrapperAsync(ExecutorAddr WrapperFnAddr,
                         IncomingWFRHandler OnComplete,
                         ArrayRef<char> ArgBuffer) override;
@@ -174,7 +183,7 @@ public:
 private:
   Error handleSetup(uint64_t SeqNo, ExecutorAddr TagAddr,
                     SimpleRemoteEPCArgBytesVector ArgBytes);
-  void handleHangup(SimpleRemoteEPCArgBytesVector ArgBytes);
+  HandleMessageAction handleHangup(SimpleRemoteEPCArgBytesVector ArgBytes);
 
   Error handleResult(uint64_t SeqNo, ExecutorAddr TagAddr,
                      SimpleRemoteEPCArgBytesVector ArgBytes);
@@ -197,6 +206,8 @@ private:
   Error DisconnectErr = Error::success();
   bool Disconnecting = false;
   bool FullShutdownRequested = false;
+  shared::CWrapperFunctionResult DummyResult;
+  char DummyResultValue;
 
   SimpleRemoteEPCTransport *T;
   bool HaveSupportedCxxStdlib;
@@ -368,8 +379,12 @@ void autojit::Transport::listenLoop() {
               << "\n";
         continue;
       }
-      if (IsEOF)
+      if (IsEOF) {
+        if (!Disconnected) {
+          LOG() << "Unexpected disconnect\n";
+        }
         break;
+      }
     }
 
     // Decode header buffer
@@ -401,16 +416,18 @@ void autojit::Transport::listenLoop() {
       continue;
     }
 
-    if (Error Err =
-            C.handleMessage(OpC, SeqNo, TagAddr, ArgBytes).takeError()) {
-      LOG() << "Failed to handle message: " << toString(std::move(Err)) << "\n";
+    auto Status = C.handleMessage(OpC, SeqNo, TagAddr, ArgBytes);
+    if (!Status) {
+      LOG() << "Failed to handle message: " << toString(Status.takeError())
+            << "\n";
       continue;
     }
+
+    if (*Status == SimpleRemoteEPCTransportClient::EndSession)
+      break;
   }
 
-  if (!Disconnected) {
-    LOG() << "Unexpected disconnect\n";
-  }
+  assert(Disconnected || static_cast<RemoteEPC *>(&C)->isQuickHangup());
 }
 
 ////////////////////////////////////////////////////////////////// RemoteEPC ///
@@ -466,6 +483,14 @@ void autojit::RemoteEPC::lookupSymbolsAsync(ArrayRef<LookupRequest> Request,
 void autojit::RemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
                                           IncomingWFRHandler OnComplete,
                                           ArrayRef<char> ArgBuffer) {
+  {
+    std::unique_lock<std::mutex> Lock(ServerStateMutex);
+    if (isQuickHangup()) {
+      LOG() << "Warning: ignore RPC invocation after disconnect\n";
+      OnComplete(DummyResult); // Can be both, void or ErrorSuccess
+    }
+  }
+
   uint64_t SeqNo;
   {
     std::lock_guard<std::mutex> Lock(ServerStateMutex);
@@ -552,18 +577,18 @@ autojit::RemoteEPC::handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
     handleCallWrapper(SeqNo, TagAddr, std::move(ArgBytes));
     break;
   case SimpleRemoteEPCOpcode::Hangup:
-    handleHangup(std::move(ArgBytes));
-    return EndSession;
+    return handleHangup(std::move(ArgBytes));
   }
   return ContinueSession;
 }
 
-void autojit::RemoteEPC::handleHangup(SimpleRemoteEPCArgBytesVector ArgBytes) {
+SimpleRemoteEPCTransportClient::HandleMessageAction
+autojit::RemoteEPC::handleHangup(SimpleRemoteEPCArgBytesVector ArgBytes) {
   auto WFR =
       shared::WrapperFunctionResult::copyFrom(ArgBytes.data(), ArgBytes.size());
   if (const char *ErrMsg = WFR.getOutOfBandError()) {
     LOG() << "Hangup error: " << ErrMsg << "\n";
-    return;
+    return EndSession;
   }
 
   using SPSSerialize = shared::SPSArgList<bool>;
@@ -575,6 +600,11 @@ void autojit::RemoteEPC::handleHangup(SimpleRemoteEPCArgBytesVector ArgBytes) {
   std::unique_lock<std::mutex> Lock(ServerStateMutex);
   Disconnecting = true;
   DisconnectCV.notify_all();
+
+  if (!FullShutdownRequested)
+    return EndSession;
+
+  return ContinueSession;
 }
 
 int autojit::RemoteEPC::waitForDisconnect() {
@@ -658,12 +688,6 @@ Error autojit::RemoteEPC::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
     DBG() << ", seqno = " << SeqNo << ", tag-addr = " << TagAddr
            << ", arg-buffer = " << formatv("{0:x}", ArgBytes.size())
            << " bytes\n";
-  }
-
-  std::unique_lock<std::mutex> Lock(ServerStateMutex);
-  if (Disconnecting && !FullShutdownRequested) {
-    LOG() << "Warning: ignore RPC invocation after disconnect\n";
-    return Error::success();
   }
 
   if (OpC == SimpleRemoteEPCOpcode::CallWrapper && TagAddr.getValue() == 0) {

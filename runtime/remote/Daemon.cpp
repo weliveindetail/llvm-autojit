@@ -256,7 +256,9 @@ int main(int argc, char *argv[]) {
   if (StdioMode) {
     // Single connection via stdin/stdout (typically as child process)
     DBG() << "Daemon process " << PID << " runs in stdio mode\n";
-    return runSession(STDIN_FILENO, STDOUT_FILENO);
+    int ExitCode = runSession(STDIN_FILENO, STDOUT_FILENO);
+    DBG() << "Daemon process " << PID << " exit code " << ExitCode << "\n";
+    return ExitCode;
   }
 
   // Standalone mode: multiple connections via Unix domain socket
@@ -286,8 +288,10 @@ int main(int argc, char *argv[]) {
     PID = getpid();
     LOG() << "Accepted connection on fd " << ClientFd << " in sub-process "
           << PID << "\n";
-    exit(runSession(ClientFd, ClientFd));
+    int ExitCode = runSession(ClientFd, ClientFd);
+    DBG() << "Daemon process " << PID << " exit code " << ExitCode << "\n";
+    exit(ExitCode);
   }
 
-  llvm_unreachable("Daemon can only terminate through signal");
+  llvm_unreachable("Daemon driver can only terminate through signal");
 }
