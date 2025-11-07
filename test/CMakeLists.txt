@@ -4,7 +4,7 @@ llvm_canonicalize_cmake_booleans(
   BUILD_SHARED_LIBS
 )
 
-set(LLVM_LIT_ARGS "-vv --no-progress-bar")
+set(LLVM_LIT_ARGS "-vv --no-progress-bar --workers 1 ")
 
 if(AUTOJIT_BUILD_EXTERNAL)
   find_program(clang_exec

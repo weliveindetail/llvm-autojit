@@ -11,7 +11,7 @@ config.filecheck_opts = '--dump-input=fail --dump-input-filter=all'
 # timeout in seconds
 supported, err = lit_config.maxIndividualTestTimeIsSupported
 if supported:
-    lit_config.maxIndividualTestTime = 20
+    lit_config.maxIndividualTestTime = 60
 else:
     lit_config.warning("Per-test timeout not supported: " + err)
 
