@@ -5,7 +5,7 @@ cd /workspace
 cmake -GNinja -Bbuild -Sllvm-autojit \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=/workspace/install \
-      -DAUTOJIT_ENABLE_ORC_RUNTIME=On
+      -DAUTOJIT_EMBED_ORC_RUNTIME=On
 ninja -C build install-autojit-bench
 
 export AUTOJITD_FORCE_SPAWN=On

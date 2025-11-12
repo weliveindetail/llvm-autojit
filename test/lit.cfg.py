@@ -98,7 +98,8 @@ if hasattr(config, 'enable_plugins') and config.enable_plugins:
 if config.build_type == "Debug":
     config.available_features.add('llvm-debug')
 
-if config.enable_orc_rt == "On":
+# We could provide a way to load it from disk instead
+if config.orc_rt_embedded == "On":
     config.available_features.add('orc-rt')
 
 def check_output(cmd, libname: str) -> bool:

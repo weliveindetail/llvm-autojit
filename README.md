@@ -25,7 +25,7 @@ Ubuntu 22.04 (x86_64):
         -DLLVM_USE_LINKER=lld \
         -DLLVM_EXTERNAL_PROJECTS=llvm-autojit \
         -DLLVM_EXTERNAL_LLVM_AUTOJIT_SOURCE_DIR=$(pwd)/llvm-autojit \
-        -DAUTOJIT_ENABLE_ORC_RUNTIME=On \
+        -DAUTOJIT_EMBED_ORC_RUNTIME=On \
         -DAUTOJIT_ENABLE_TPDE=On
 
 > ninja -C runtimes/runtimes-bins compiler-rt/lib/orc/all

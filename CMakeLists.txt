@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS NO)
 cmake_policy(SET CMP0057 NEW)
 
 option(AUTOJIT_ENABLE_TPDE "Build the autojit-runtime with TPDE as codegen backend" OFF)
-option(AUTOJIT_ENABLE_ORC_RUNTIME "Enable orc-runtime support in the autojit-runtime" OFF)
+option(AUTOJIT_EMBED_ORC_RUNTIME "Embed orc-runtime binaries into the autojit-runtime" OFF)
 
 # Add any other reasonable sanitizers to the list
 set(AUTOJIT_SANITIZE_LIST "address" "address,undefined" "thread")

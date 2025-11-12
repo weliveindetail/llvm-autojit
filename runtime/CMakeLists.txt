@@ -2,7 +2,7 @@ if(AUTOJIT_ENABLE_TPDE)
   set(tpde_libs tpde_llvm)
 endif()
 
-if(AUTOJIT_ENABLE_ORC_RUNTIME)
+if(AUTOJIT_EMBED_ORC_RUNTIME)
   set(clang_rt_libs clang/${LLVM_VERSION_MAJOR}/lib)
   if (AUTOJIT_BUILD_UNIFIED)
     # Build runtime: ninja -C runtimes/runtimes-bins orc_rt-x86_64
@@ -92,7 +92,7 @@ if(NOT LLVM_ENABLE_RTTI)
   target_compile_options(autojitd PRIVATE -fno-rtti -fno-exceptions)
 endif()
 
-if(AUTOJIT_ENABLE_ORC_RUNTIME)
+if(AUTOJIT_EMBED_ORC_RUNTIME)
   add_dependencies(autojitd embed_orc_rt)
 endif()
 if(AUTOJIT_SANITIZE)
@@ -130,7 +130,7 @@ if(NOT LLVM_ENABLE_RTTI)
   target_compile_options(autojit-so PRIVATE -fno-rtti -fno-exceptions)
 endif()
 
-if(AUTOJIT_ENABLE_ORC_RUNTIME)
+if(AUTOJIT_EMBED_ORC_RUNTIME)
   add_dependencies(autojit-so embed_orc_rt)
 endif()
 

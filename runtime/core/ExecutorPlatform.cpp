@@ -63,7 +63,7 @@ static Error installDebugSupport(ObjectLinkingLayer *JITLinkLayer) {
 }
 
 static std::unique_ptr<MemoryBuffer> getEmbeddedOrcRuntime() {
-#if defined(AUTOJIT_ENABLE_ORC_RUNTIME)
+#if defined(AUTOJIT_EMBED_ORC_RUNTIME)
   const char *OrcRtStart =
       reinterpret_cast<const char *>(_binary_liborc_rt_start);
   const char *OrcRtEnd = reinterpret_cast<const char *>(_binary_liborc_rt_end);
@@ -78,7 +78,7 @@ static std::unique_ptr<MemoryBuffer> getEmbeddedOrcRuntime() {
   return MemoryBuffer::getMemBuffer(OrcRuntimeData, "orc_rt", false);
 #else
   return nullptr;
-#endif // AUTOJIT_ENABLE_ORC_RUNTIME
+#endif // AUTOJIT_EMBED_ORC_RUNTIME
 }
 
 Expected<JITDylibSP> autojit::ExecutorPlatform::operator()(LLJIT &J) {
