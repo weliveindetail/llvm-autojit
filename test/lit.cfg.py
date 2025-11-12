@@ -2,6 +2,7 @@ import os
 import lit.formats
 import psutil
 import subprocess
+import textwrap
 from pathlib import Path
 
 config.name = 'AutoJIT'
@@ -120,6 +121,10 @@ except subprocess.CalledProcessError as ex:
 
 print('Environment:')
 for name in config.environment:
-    if name in config.environment:
-        print(f"  export {name}=\"{config.environment[name]}\"")
+    print(f"  export {name}=\"{config.environment[name]}\"")
+print('')
+
+print('Features:')
+features = ', '.join(config.available_features)
+print(' ', '\n  '.join(textwrap.wrap(features, width=78)))
 print('')
