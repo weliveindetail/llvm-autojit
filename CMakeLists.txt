@@ -3,10 +3,23 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS NO)
 
+# Support IN_LIST operator in if clause
+cmake_policy(SET CMP0057 NEW)
+
 option(AUTOJIT_ENABLE_TPDE "Build the autojit-runtime with TPDE as codegen backend" OFF)
 option(AUTOJIT_ENABLE_ORC_RUNTIME "Enable orc-runtime support in the autojit-runtime" OFF)
 
+# Add any other reasonable sanitizers to the list
+set(AUTOJIT_SANITIZE_LIST "address" "address,undefined" "thread")
 set(AUTOJIT_SANITIZE "" CACHE STRING "Build static runtime with the specified sanitizer")
+
+if(NOT AUTOJIT_SANITIZE STREQUAL "")
+  if(NOT "${AUTOJIT_SANITIZE}" IN_LIST AUTOJIT_SANITIZE_LIST)
+    string(REPLACE ";" "', '" AUTOJIT_SANITIZE_CSV "${AUTOJIT_SANITIZE_LIST}")
+    message(WARNING "Unrecognized value '${AUTOJIT_SANITIZE}' for AUTOJIT_SANITIZE, "
+                    "expected empty or one of: '${AUTOJIT_SANITIZE_CSV}'")
+  endif()
+endif()
 
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/AutoJITConfig.h.in
