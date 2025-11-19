@@ -1,6 +1,8 @@
 #!/bin/bash
 set -eo pipefail
 
+export CCACHE_DISABLE=1
+
 # Default to shlib build
 export AUTOJIT_LINK_STATIC_RUNTIME=Off
 export AUTOJIT_BUILD_DIR=build_autojit_shlib
