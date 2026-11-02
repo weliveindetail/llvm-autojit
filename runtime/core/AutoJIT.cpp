@@ -334,6 +334,11 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t ImportsHash,
     DBG() << "Import " << ImportNames[I] << " as " << Name << " at 0x"
           << format("%016" PRIx64, ImportAddrs[I]) << "\n";
     Decl->setName(Name);
+    // JITed code is far away from the static code, so it must not access
+    // imports PC-relative. The visibility of the declaration has no meaning
+    // for the JIT, but hidden and protected symbols must be dso_local.
+    Decl->setVisibility(GlobalValue::DefaultVisibility);
+    Decl->setDSOLocal(false);
     // Undefined weak symbols resolve to null
     if (ImportAddrs[I] == 0)
       continue;
