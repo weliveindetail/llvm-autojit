@@ -15,4 +15,4 @@ else
 fi
 
 touch $outfile
-ninjatracing/ninjatracing FileCheck/build_regular/.ninja_log > $outfile
+ninjatracing FileCheck/build_regular/.ninja_log > $outfile
