@@ -21,7 +21,7 @@ target triple = "x86_64-pc-linux-gnu"
 ; CHECK:   call ptr @__llvm_autojit_materialize(ptr @__llvm_autojit_ptr__Z3addii, i64 -6721289519639444558)
 ; CHECK:   br
 ;
-; CHECK:   tail call i32
+; CHECK:   tail call noundef i32 %impl_ptr(i32 noundef %0, i32 noundef %1)
 ; CHECK:   ret i32
 ;
 define noundef i32 @_Z3addii(i32 noundef %0, i32 noundef %1) noinline optnone uwtable {
