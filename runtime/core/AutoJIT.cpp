@@ -387,6 +387,9 @@ protected:
   }
 
   void compileObject(Module &M, SmallVectorImpl<char> &Buffer) {
+    // Different threads may materialize different modules at the same time,
+    // but we share the TargetMachine.
+    std::lock_guard<std::mutex> Lock(CompileMutex);
     if (M.getDataLayout().isDefault())
       M.setDataLayout(TM->createDataLayout());
     MCContext *Ctx;
@@ -401,6 +404,7 @@ protected:
 
   JITTargetMachineBuilder JTMB;
   std::unique_ptr<TargetMachine> TM;
+  std::mutex CompileMutex;
 };
 
 class CachingCompiler : public BasicCompiler {
@@ -447,6 +451,7 @@ public:
   }
 
   Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
+    std::lock_guard<std::mutex> Lock(CompileMutex);
     auto &B = Buffers.emplace_back();
     if (!Compiler->compile_to_elf(M, *B)) {
       errs() << "TPDE Failed to compile IR file: " << M.getName() << "\n";
@@ -459,6 +464,7 @@ public:
 private:
   std::unique_ptr<tpde_llvm::LLVMCompiler> Compiler;
   std::vector<std::unique_ptr<std::vector<uint8_t>>> Buffers;
+  std::mutex CompileMutex;
 };
 #endif
 
