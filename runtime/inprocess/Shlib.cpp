@@ -25,8 +25,8 @@ static std::string hexstr(uint64_t Val) {
   return Result;
 }
 
-extern "C" void __llvm_autojit_materialize(void **GuidInPtrOut) {
-  if (!GuidInPtrOut || *GuidInPtrOut == nullptr) {
+extern "C" void *__llvm_autojit_materialize(void **Slot, uint64_t Guid) {
+  if (!Slot) {
     LOG() << "Invalid parameters\n";
     exit(1);
   }
@@ -35,7 +35,6 @@ extern "C" void __llvm_autojit_materialize(void **GuidInPtrOut) {
   static thread_local auto &JIT = autojit::AutoJIT::get(ModulesRegistered_);
   assert(ModulesRegistered_.empty() && "Modules on first access");
 
-  uint64_t Guid = reinterpret_cast<uintptr_t>(*GuidInPtrOut);
   std::string Symbol = autojit::guidToFnName(Guid);
 
   uint64_t Addr = JIT.lookup(Symbol.c_str());
@@ -43,7 +42,9 @@ extern "C" void __llvm_autojit_materialize(void **GuidInPtrOut) {
         << "\n";
 
   // Patch the pointer that is checked by the function frame in static code
-  *GuidInPtrOut = reinterpret_cast<void *>(Addr);
+  void *Fn = reinterpret_cast<void *>(Addr);
+  __atomic_store_n(Slot, Fn, __ATOMIC_RELEASE);
+  return Fn;
 }
 
 extern "C" void __llvm_autojit_register2(const char *FilePath,

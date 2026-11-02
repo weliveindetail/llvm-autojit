@@ -5,7 +5,7 @@
 // CHECK-NOT: @__llvm_autojit_ptr__Z3subi = internal global ptr null
 // CHECK-NOT: @__llvm_autojit_lazy_file = private unnamed_addr constant
 // CHECK-NOT: declare void @__llvm_autojit_register2(ptr, ptr)
-// CHECK-NOT: declare void @__llvm_autojit_materialize(ptr)
+// CHECK-NOT: declare ptr @__llvm_autojit_materialize(ptr, i64)
 // CHECK-NOT: define internal void @_GLOBAL__sub_I_skip.cpp_llvm_autojit_init()
 
 unsigned int RandomNumbers[] = {
