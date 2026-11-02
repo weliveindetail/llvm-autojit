@@ -1,15 +1,17 @@
 #pragma once
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /// AutoJIT runtime function to materialize a user function that the plugin
-/// outlined at compile-time. The incoming value for the sole parameter points
-/// to the GUID that was selected for the function at compile-time. The outgoing
-/// value is the address of the finalized function in memory.
+/// outlined at compile-time. Guid was selected for the function at
+/// compile-time. Returns the address of the finalized function in memory and
+/// stores it to Slot. Slot only ever holds null or the final address.
 ///
-void __llvm_autojit_materialize(void **GuidInPtrOut);
+void *__llvm_autojit_materialize(void **Slot, uint64_t Guid);
 
 /// AutoJIT runtime function to register a module with user functions. The
 /// plugin injects a self-registration initializer into each module that calls

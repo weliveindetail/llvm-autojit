@@ -1755,8 +1755,8 @@ void __llvm_autojit_register2(const char *FilePath, const void *ImportTable) {
 void __jit_debug_register_code(void);
 #endif
 
-void __llvm_autojit_materialize(void **GuidInPtrOut) {
-  if (!GuidInPtrOut || *GuidInPtrOut == NULL) {
+void *__llvm_autojit_materialize(void **Slot, uint64_t guid) {
+  if (!Slot) {
     ERROR_LOG("invalid parameters\n");
     abort();
   }
@@ -1764,7 +1764,6 @@ void __llvm_autojit_materialize(void **GuidInPtrOut) {
   /* Ensure daemon is initialized */
   pthread_once(&g_init_once, initialize_daemon);
 
-  uint64_t guid = (uint64_t)(uintptr_t)(*GuidInPtrOut);
   DEBUG_LOG("Requesting function: __autojit_fn_%lu\n", guid);
 
   /* Encode arguments: SPSArgList<uint64_t> */
@@ -1813,5 +1812,7 @@ void __llvm_autojit_materialize(void **GuidInPtrOut) {
 #endif
 
   /* Update pointer with returned address */
-  *GuidInPtrOut = (void *)(uintptr_t)func_addr;
+  void *fn = (void *)(uintptr_t)func_addr;
+  __atomic_store_n(Slot, fn, __ATOMIC_RELEASE);
+  return fn;
 }

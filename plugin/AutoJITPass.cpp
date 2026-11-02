@@ -159,7 +159,8 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     // All further changes only affect static code
     Type *VoidTy = Type::getVoidTy(Context);
     PointerType *FnPtrTy = PointerType::get(Context, 0);
-    FunctionType *MaterializeFnTy = FunctionType::get(VoidTy, {FnPtrTy}, false);
+    FunctionType *MaterializeFnTy = FunctionType::get(
+        FnPtrTy, {FnPtrTy, Type::getInt64Ty(Context)}, false);
     FunctionCallee MaterializeFn =
         M.getOrInsertFunction("__llvm_autojit_materialize", MaterializeFnTy);
 
@@ -347,7 +348,6 @@ private:
     Module *M = F->getParent();
     LLVMContext &Context = M->getContext();
     PointerType *FnPtrTy = PointerType::get(Context, 0);
-    PointerType *FnPtrPtrTy = PointerType::get(Context, 0);
 
     GlobalVariable *FnPtr =
         new GlobalVariable(*M, FnPtrTy, false, GlobalValue::InternalLinkage,
@@ -359,7 +359,12 @@ private:
     BasicBlock *EntryBB = BasicBlock::Create(Context, "entry", F);
     IRBuilder<> Builder(EntryBB);
 
-    Value *ExistingFnPtr = Builder.CreateLoad(FnPtrTy, FnPtr, "existing_ptr");
+    // The slot holds either null or the final address. The runtime stores it
+    // with release semantics once the function is materialized.
+    LoadInst *ExistingFnPtr = Builder.CreateAlignedLoad(
+        FnPtrTy, FnPtr, M->getDataLayout().getPointerABIAlignment(0),
+        "existing_ptr");
+    ExistingFnPtr->setAtomic(AtomicOrdering::Acquire);
     Value *IsNull = Builder.CreateICmpEQ(ExistingFnPtr,
                                          ConstantPointerNull::get(FnPtrTy));
 
@@ -368,15 +373,11 @@ private:
     BasicBlock *CallBB = BasicBlock::Create(Context, "call", F);
     Builder.CreateCondBr(IsNull, MaterializeBB, CallBB);
 
-    // Materialize block calls runtime: GUID in, ptr out
+    // Materialize block calls the runtime, which also fills the slot
     Builder.SetInsertPoint(MaterializeBB);
-    Value *V64 = ConstantInt::get(Type::getInt64Ty(Context), FnGUID);
-    Value *VPtr = Builder.CreateIntToPtr(V64, FnPtrTy);
-    Builder.CreateStore(VPtr, FnPtr);
-    Value *FnPtrAddr = Builder.CreateBitCast(FnPtr, FnPtrPtrTy);
-    Builder.CreateCall(MaterializeFn, {FnPtrAddr});
+    Value *Guid = ConstantInt::get(Type::getInt64Ty(Context), FnGUID);
     Value *MaterializedPtr =
-        Builder.CreateLoad(FnPtrTy, FnPtr, "materialized_ptr");
+        Builder.CreateCall(MaterializeFn, {FnPtr, Guid}, "materialized_ptr");
     Builder.CreateBr(CallBB);
 
     // Call block calls actual function through ptr and returns

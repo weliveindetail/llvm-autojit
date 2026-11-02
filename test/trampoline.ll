@@ -13,13 +13,12 @@ target triple = "x86_64-pc-linux-gnu"
 ; Functions are reduced to static frames that call into the runtime
 ; CHECK: define {{.*}} i32 @_Z3addii{{.*}}
 ;
-; CHECK:   load ptr, ptr @__llvm_autojit_ptr_
+; CHECK:   load atomic ptr, ptr @__llvm_autojit_ptr__Z3addii acquire
 ; CHECK:   icmp eq ptr %{{.*}}, null
 ; CHECK:   br
 ;
-; CHECK:   store {{.*}} -6721289519639444558 to {{.*}} @__llvm_autojit_ptr__Z3addii
-; CHECK:   call void @__llvm_autojit_materialize
-; CHECK:   load ptr, ptr @__llvm_autojit_ptr_
+; CHECK-NOT: store
+; CHECK:   call ptr @__llvm_autojit_materialize(ptr @__llvm_autojit_ptr__Z3addii, i64 -6721289519639444558)
 ; CHECK:   br
 ;
 ; CHECK:   tail call i32
@@ -37,7 +36,7 @@ define noundef i32 @_Z3addii(i32 noundef %0, i32 noundef %1) noinline optnone uw
 }
 
 ; Declarations of relevant runtime functions exist
-; CHECK: declare void @__llvm_autojit_materialize(ptr)
+; CHECK: declare ptr @__llvm_autojit_materialize(ptr, i64)
 ; CHECK: declare void @__llvm_autojit_register2(ptr, ptr)
 
 !llvm.module.flags = !{!0, !1}
