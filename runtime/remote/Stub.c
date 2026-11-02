@@ -1738,7 +1738,9 @@ void __llvm_autojit_register(const char *FilePath) {
   DEBUG_LOG("Module registered successfully\n");
 }
 
+#if AUTOJIT_STUB_DEBUG_SUPPORT
 void __jit_debug_register_code(void);
+#endif
 
 void __llvm_autojit_materialize(void **GuidInPtrOut) {
   if (!GuidInPtrOut || *GuidInPtrOut == NULL) {
@@ -1791,9 +1793,11 @@ void __llvm_autojit_materialize(void **GuidInPtrOut) {
   DEBUG_LOG("Materialized __autojit_fn_%lu at address 0x%016lx\n", guid,
             func_addr);
 
+#if AUTOJIT_STUB_DEBUG_SUPPORT
   if (__sync_lock_test_and_set(&__llvm_autojit_debug_register, 0)) {
     __jit_debug_register_code();
   }
+#endif
 
   /* Update pointer with returned address */
   *GuidInPtrOut = (void *)(uintptr_t)func_addr;

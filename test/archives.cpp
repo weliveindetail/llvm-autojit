@@ -11,7 +11,7 @@
 // RUN: %clang %t.o -Wl,--whole-archive %t.a -Wl,--no-whole-archive -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
 // RUN: %t_inprocess.exe 2>&1 | FileCheck %s
 //
-// RUN: %clang %t.o -Wl,--whole-archive %t.a -Wl,--no-whole-archive -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -Wl,--whole-archive -lautojit_static-%arch -Wl,--no-whole-archive %fsanitize -o %t_remote.exe
+// RUN: %clang %t.o -Wl,--whole-archive %t.a -Wl,--no-whole-archive -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
 // RUN: %t_remote.exe 2>&1 | FileCheck %s
 
 // CHECK-NOT: JIT session error
