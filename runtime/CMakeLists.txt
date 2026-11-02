@@ -155,7 +155,16 @@ set_target_properties(autojit-so PROPERTIES
 )
 
 target_link_libraries(autojit-so PRIVATE ${llvm_libs} ${tpde_libs})
+
+# The runtime must not call into lazy code of the executable, because it would
+# re-enter materialization. The executable exports its own definitions of
+# libstdc++ symbols (e.g. template instantiations of std::string) and they
+# interpose the ones from libstdc++.so. So we link a private copy of the C++
+# standard library and resolve all references within the runtime. The unwinder
+# must stay shared: we register EH frames of JITed code with the process.
 target_link_options(autojit-so PRIVATE
+  -static-libstdc++
+  -Wl,--exclude-libs,ALL
   -Wl,-z,defs
   -Wl,-Bsymbolic
   -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.txt
