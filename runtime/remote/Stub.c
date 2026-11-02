@@ -1162,9 +1162,28 @@ static int send_setup_message(void) {
  * ============================================================================
  */
 
+static int call_wrapper_function_locked(uint64_t fn_addr,
+                                        const uint8_t *data, size_t args_size,
+                                        uint8_t **result, size_t *result_size);
+
+/* Threads must not interleave calls: each one waits for its own Result
+ * message. Recursive, because the daemon can send nested CallWrapper messages
+ * that we handle on the waiting thread. */
+static pthread_mutex_t g_rpc_mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+
 static int call_wrapper_function(uint64_t fn_addr, const uint8_t *data,
                                  size_t args_size, uint8_t **result,
                                  size_t *result_size) {
+  pthread_mutex_lock(&g_rpc_mutex);
+  int ec = call_wrapper_function_locked(fn_addr, data, args_size, result,
+                                        result_size);
+  pthread_mutex_unlock(&g_rpc_mutex);
+  return ec;
+}
+
+static int call_wrapper_function_locked(uint64_t fn_addr,
+                                        const uint8_t *data, size_t args_size,
+                                        uint8_t **result, size_t *result_size) {
   /* Send CallWrapper message */
   epc_message_t call_msg = {.opcode = OPCODE_CALLWRAPPER,
                             .seqno = next_sequence_number(),
