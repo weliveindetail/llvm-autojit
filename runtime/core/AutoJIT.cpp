@@ -502,6 +502,11 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B, bool HaveOrcRuntimeDeps) {
 #endif
   }
 
+  // LLJIT enables this by default with a custom EPC. Then it clones each
+  // module into a new context before it compiles it. We don't need that: each
+  // of our modules has its own context and we never split them.
+  B.setSupportConcurrentCompilation(false);
+
   auto JTMB = ExitOnErr(JITTargetMachineBuilder::detectHost());
   JTMB.getOptions().EmulatedTLS = false;
   B.setJITTargetMachineBuilder(JTMB);
