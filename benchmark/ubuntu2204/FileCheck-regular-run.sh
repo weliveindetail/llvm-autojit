@@ -9,7 +9,7 @@ prefixes=(
 )
 
 for prefix in "${prefixes[@]}"; do
-  FileCheck/build_autojit/bin/FileCheck \
+  FileCheck/build_regular/bin/FileCheck \
     --input-file=inputs/same.txt \
     --check-prefix="$prefix" \
     inputs/same.txt

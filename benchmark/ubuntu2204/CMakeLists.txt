@@ -2,6 +2,13 @@
 file(GLOB shell_scripts "${CMAKE_CURRENT_SOURCE_DIR}/*.sh")
 file(GLOB python_scripts "${CMAKE_CURRENT_SOURCE_DIR}/*.py")
 
+# Compiler and linker for sample projects: just-built or the ones we built against
+if(AUTOJIT_BUILD_UNIFIED)
+  set(AUTOJIT_BENCH_TOOLS_DIR ${CMAKE_INSTALL_PREFIX}/bin)
+else()
+  set(AUTOJIT_BENCH_TOOLS_DIR ${LLVM_TOOLS_BINARY_DIR})
+endif()
+
 # Configure and add scripts that end in *.sh.in
 file(GLOB shell_script_templates "${CMAKE_CURRENT_SOURCE_DIR}/*.sh.in")
 foreach(template_file ${shell_script_templates})

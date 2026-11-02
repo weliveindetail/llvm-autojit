@@ -3,9 +3,9 @@
 rm -rf FileCheck/build_regular
 
 echo "Building regular binary.."
-CC="@CMAKE_INSTALL_PREFIX@/bin/clang" CXX="@CMAKE_INSTALL_PREFIX@/bin/clang++" cmake -GNinja \
+CC="@AUTOJIT_BENCH_TOOLS_DIR@/clang" CXX="@AUTOJIT_BENCH_TOOLS_DIR@/clang++" cmake -GNinja \
     -S "llvm-project/llvm" \
     -B "FileCheck/build_regular" \
     -DCMAKE_BUILD_TYPE=Debug \
-    -DLLVM_ENABLE_LIBCXX=On \
+    -DLLVM_ENABLE_LIBCXX=Off \
     -DLLVM_USE_LINKER=lld
