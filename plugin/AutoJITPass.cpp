@@ -389,7 +389,20 @@ private:
     for (Argument &Arg : F->args())
       Args.push_back(&Arg);
     CallInst *Call = Builder.CreateCall(F->getFunctionType(), ImplPtr, Args);
-    Call->setTailCall(true);
+
+    // Forward arguments exactly as we received them, e.g. structs passed
+    // byval must be passed byval again.
+    AttributeList Attrs = F->getAttributes();
+    SmallVector<AttributeSet, 8> ParamAttrs;
+    for (unsigned I = 0; I < F->arg_size(); I += 1)
+      ParamAttrs.push_back(Attrs.getParamAttrs(I));
+    Call->setAttributes(AttributeList::get(Context, AttributeSet(),
+                                           Attrs.getRetAttrs(), ParamAttrs));
+    Call->setCallingConv(F->getCallingConv());
+
+    // Variadic arguments can only be forwarded with a guaranteed tail call
+    Call->setTailCallKind(F->isVarArg() ? CallInst::TCK_MustTail
+                                        : CallInst::TCK_Tail);
     if (F->getReturnType()->isVoidTy()) {
       Builder.CreateRetVoid();
     } else {
