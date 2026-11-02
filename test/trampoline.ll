@@ -38,7 +38,7 @@ define noundef i32 @_Z3addii(i32 noundef %0, i32 noundef %1) noinline optnone uw
 
 ; Declarations of relevant runtime functions exist
 ; CHECK: declare void @__llvm_autojit_materialize(ptr)
-; CHECK: declare void @__llvm_autojit_register(ptr)
+; CHECK: declare void @__llvm_autojit_register2(ptr, ptr)
 
 !llvm.module.flags = !{!0, !1}
 !llvm.ident = !{!2}

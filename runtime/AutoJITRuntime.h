@@ -13,9 +13,10 @@ void __llvm_autojit_materialize(void **GuidInPtrOut);
 
 /// AutoJIT runtime function to register a module with user functions. The
 /// plugin injects a self-registration initializer into each module that calls
-///  this function at load-time.
+/// this function at load-time. ImportTable points to the module's table of
+/// imported symbols (see common/ImportTable.h).
 ///
-void __llvm_autojit_register(const char *FilePath);
+void __llvm_autojit_register2(const char *FilePath, const void *ImportTable);
 
 #ifdef __cplusplus
 }

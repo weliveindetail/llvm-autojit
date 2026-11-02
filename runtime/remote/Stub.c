@@ -1,3 +1,4 @@
+#include "common/ImportTable.h"
 #include "runtime/remote/Stub.h"
 #include "runtime/remote/StubSPS.h"
 
@@ -1700,21 +1701,33 @@ static ssize_t llvm_orc_deregisterEHFrameAllocAction(const char *ArgData,
  * ============================================================================
  */
 
-void __llvm_autojit_register(const char *FilePath) {
+void __llvm_autojit_register2(const char *FilePath, const void *ImportTable) {
   if (!FilePath) {
     ERROR_LOG("invalid FilePath parameter\n");
     return;
+  }
+  const autojit_import_table_t *imports =
+      (const autojit_import_table_t *)ImportTable;
+  if (!imports || imports->version != AUTOJIT_IMPORT_TABLE_VERSION) {
+    ERROR_LOG("unsupported import table in module %s\n", FilePath);
+    abort();
   }
 
   /* Ensure daemon is initialized */
   pthread_once(&g_init_once, initialize_daemon);
 
-  DEBUG_LOG("Registering module: %s\n", FilePath);
+  DEBUG_LOG("Registering module: %s (%u imports)\n", FilePath,
+            imports->num_entries);
 
-  /* Encode arguments: SPSArgList<SPSString> */
+  /* Encode arguments:
+   * SPSArgList<SPSString, uint64_t, SPSSequence<uint64_t>> */
   sps_buffer_t args;
-  sps_buffer_init(&args, 256);
+  sps_buffer_init(&args, 256 + 8 * (size_t)imports->num_entries);
   sps_write_string(&args, FilePath);
+  sps_write_uint64(&args, imports->hash);
+  sps_write_uint64(&args, imports->num_entries);
+  for (uint32_t i = 0; i < imports->num_entries; i += 1)
+    sps_write_uint64(&args, autojit_import_address(imports, i));
   DEBUG_LOG("Encoded %zu bytes for RPC call\n", args.size);
 
   /* Call RPC function */

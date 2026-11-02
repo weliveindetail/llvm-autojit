@@ -78,17 +78,21 @@ autojit_rpc_register(const char *ArgData, size_t ArgSize) {
   DBG() << "autojit_rpc_register: " << blobToHex(ArgData, ArgSize) << "\n";
 
   std::string FilePath;
+  uint64_t ImportsHash;
+  std::vector<uint64_t> ImportAddrs;
   shared::SPSInputBuffer IB(ArgData, ArgSize);
-  if (!shared::SPSArgList<shared::SPSString>::deserialize(IB, FilePath))
-    return outOfBandError("Failed to deserialize module path");
-  DBG() << "autojit_rpc_register module: " << FilePath << "\n";
+  if (!shared::SPSArgList<shared::SPSString, uint64_t,
+                          shared::SPSSequence<uint64_t>>::
+          deserialize(IB, FilePath, ImportsHash, ImportAddrs))
+    return outOfBandError("Failed to deserialize module registration");
+  DBG() << "autojit_rpc_register module: " << FilePath << " ("
+        << ImportAddrs.size() << " imports)\n";
 
   auto *Inst = Instance.load();
   if (!Inst)
     return outOfBandError("JIT not initialized");
 
-  ThreadSafeModule TSM = Inst->loadModule(FilePath);
-  if (Error Err = Inst->submit(std::move(TSM))) {
+  if (Error Err = Inst->addModule(FilePath, ImportsHash, ImportAddrs)) {
     std::string Message = toString(std::move(Err));
     return outOfBandError("Failed to load module from " + FilePath + ": " +
                           Message);

@@ -10,7 +10,7 @@ LLVM_ATTRIBUTE_USED void linkComponents() {
   LOG() << (void *)&llvm_orc_registerJITLoaderGDBWrapper
         << (void *)&llvm_orc_registerJITLoaderGDBAllocAction;
 }
-static std::vector<std::string> ModulesRegistered_;
+static std::vector<autojit::ModuleRegistration> ModulesRegistered_;
 
 static std::string hexstr(uint64_t Val) {
   static constexpr int NumDigits = sizeof(Val) * 2;
@@ -46,10 +46,16 @@ extern "C" void __llvm_autojit_materialize(void **GuidInPtrOut) {
   *GuidInPtrOut = reinterpret_cast<void *>(Addr);
 }
 
-extern "C" void __llvm_autojit_register(const char *FilePath) {
+extern "C" void __llvm_autojit_register2(const char *FilePath,
+                                         const void *ImportTable) {
   if (!FilePath || strlen(FilePath) == 0) {
     LOG() << "Ignore empty module path\n";
     return;
+  }
+  auto *Imports = static_cast<const autojit_import_table_t *>(ImportTable);
+  if (!Imports || Imports->version != AUTOJIT_IMPORT_TABLE_VERSION) {
+    LOG() << "Unsupported import table in module " << FilePath << "\n";
+    exit(1);
   }
 
   static std::mutex Registration;
@@ -57,5 +63,7 @@ extern "C" void __llvm_autojit_register(const char *FilePath) {
 
   autojit::initializeDebugLog();
   DBG() << "Registering module " << FilePath << "\n";
-  ModulesRegistered_.emplace_back(FilePath);
+  // Paths and tables live in the static objects, so we don't copy them. We
+  // only decode the tables once we load the modules.
+  ModulesRegistered_.push_back({FilePath, Imports});
 }

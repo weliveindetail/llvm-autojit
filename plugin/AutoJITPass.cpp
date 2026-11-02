@@ -22,6 +22,9 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
+#include "common/ImportTable.h"
+#include "common/Imports.h"
+
 #if defined(AUTOJIT_ENABLE_TPDE)
 #include "TPDEBackends.h"
 #endif
@@ -63,7 +66,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       saveModule(M, FileStem + "_incoming" + FileExt);
     }
 
-    if (M.getNamedValue("__llvm_autojit_register") ||
+    if (M.getNamedValue("__llvm_autojit_register2") ||
         M.getNamedValue("__llvm_autojit_materialize")) {
       errs() << "autojit-plugin: Skipping module " << M.getName() << " (uses reserved __llvm_autojit names)\n";
       return PreservedAnalyses::all();
@@ -81,7 +84,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     for (Function &F : M) {
       if (F.isDeclaration())
         continue;
-      if (isStaticInit(F))
+      if (autojit::isStaticInit(F))
         continue;
       if (F.hasLocalLinkage()) {
         continue;
@@ -135,6 +138,16 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       }
     }
 
+    // Collect the symbols that lazy code imports from static code. We must do
+    // this on the same IR that we save: the runtime repeats it on the loaded
+    // module and matches the entries in our import table by index.
+    SmallVector<GlobalValue *, 32> Imports;
+    uint64_t ImportsHash = 0;
+    autojit::forEachImport(M, [&](GlobalValue &GV) {
+      Imports.push_back(&GV);
+      ImportsHash = autojit::hashImportName(ImportsHash, GV.getName());
+    });
+
     // Save module for function importing at runtime
     M.setModuleIdentifier(FileStem);
     std::string FilePath = saveModule(M, FileStem + FileExt);
@@ -187,9 +200,10 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
 
     BasicBlock *InitBB = BasicBlock::Create(Context, "entry", InitFn);
     IRBuilder<> InitBuilder(InitBB);
-    FunctionType *RegisterFnTy = FunctionType::get(VoidTy, {FnPtrTy}, false);
+    FunctionType *RegisterFnTy =
+        FunctionType::get(VoidTy, {FnPtrTy, FnPtrTy}, false);
     FunctionCallee RegisterFn =
-        M.getOrInsertFunction("__llvm_autojit_register", RegisterFnTy);
+        M.getOrInsertFunction("__llvm_autojit_register2", RegisterFnTy);
 
     Constant *FilePathConstant =
         ConstantDataArray::getString(Context, FilePath);
@@ -200,7 +214,8 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     Value *FilePathPtr = InitBuilder.CreateConstGEP2_32(
         FilePathGV->getValueType(), FilePathGV, 0, 0);
 
-    InitBuilder.CreateCall(RegisterFn, {FilePathPtr});
+    GlobalVariable *ImportTable = emitImportTable(M, Imports, ImportsHash);
+    InitBuilder.CreateCall(RegisterFn, {FilePathPtr, ImportTable});
     InitBuilder.CreateRetVoid();
 
     // Use runtime library priority so that all modules are registered before
@@ -220,15 +235,6 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
   }
 
 private:
-  static bool isStaticInit(const Function &F) {
-    StringRef FuncName = F.getName();
-    if (FuncName.starts_with("_GLOBAL__sub_"))
-      return true;
-    if (FuncName.starts_with("__cxx_global_var_init"))
-      return true;
-    return false;
-  }
-
   std::string getModuleGUID(const Module &M) {
     // Get the original source file path from the module
     std::string SourcePath = M.getSourceFileName();
@@ -273,6 +279,64 @@ private:
     }
 
     return FilePath;
+  }
+
+  // Emit the import table (see common/ImportTable.h). Each entry is a 32-bit
+  // offset from the entry to its target. For symbols that might not be local
+  // to the linked image, we point to a GOT-equivalent slot that the backend
+  // folds into a GOT reference. This adds no dynamic relocations for symbols in
+  // the image and it shares GOT entries with regular code.
+  static GlobalVariable *emitImportTable(Module &M,
+                                         ArrayRef<GlobalValue *> Imports,
+                                         uint64_t Hash) {
+    LLVMContext &Ctx = M.getContext();
+    Type *I32Ty = Type::getInt32Ty(Ctx);
+    Type *I64Ty = Type::getInt64Ty(Ctx);
+    PointerType *PtrTy = PointerType::get(Ctx, 0);
+    unsigned NumEntries = Imports.size();
+    ArrayType *EntriesTy = ArrayType::get(I32Ty, NumEntries);
+    ArrayType *IndirectTy =
+        ArrayType::get(Type::getInt8Ty(Ctx), (NumEntries + 7) / 8);
+    StructType *TableTy =
+        StructType::get(Ctx, {I32Ty, I32Ty, I64Ty, EntriesTy, IndirectTy});
+
+    auto *Table = new GlobalVariable(M, TableTy, true,
+                                     GlobalValue::PrivateLinkage, nullptr,
+                                     "__llvm_autojit_imports");
+    Table->setAlignment(Align(8));
+
+    SmallVector<Constant *, 32> Entries;
+    Entries.reserve(NumEntries);
+    SmallVector<uint8_t, 8> Indirect((NumEntries + 7) / 8, 0);
+    Constant *Zero = ConstantInt::get(I32Ty, 0);
+    Constant *EntriesIdx = ConstantInt::get(I32Ty, 3);
+    for (unsigned I = 0; I < NumEntries; I += 1) {
+      GlobalValue *GV = Imports[I];
+      Constant *Target = GV;
+      if (!GV->isDSOLocal() || GV->hasExternalWeakLinkage()) {
+        auto *Slot = new GlobalVariable(M, PtrTy, true,
+                                        GlobalValue::PrivateLinkage, GV,
+                                        "__llvm_autojit_got");
+        Slot->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+        Target = Slot;
+        Indirect[I / 8] |= 1 << (I % 8);
+      }
+      Constant *Idx[] = {Zero, EntriesIdx, ConstantInt::get(I32Ty, I)};
+      Constant *Place =
+          ConstantExpr::getInBoundsGetElementPtr(TableTy, Table, Idx);
+      Constant *Offset =
+          ConstantExpr::getSub(ConstantExpr::getPtrToInt(Target, I64Ty),
+                               ConstantExpr::getPtrToInt(Place, I64Ty));
+      Entries.push_back(ConstantExpr::getTrunc(Offset, I32Ty));
+    }
+
+    Table->setInitializer(ConstantStruct::get(
+        TableTy, {ConstantInt::get(I32Ty, AUTOJIT_IMPORT_TABLE_VERSION),
+                  ConstantInt::get(I32Ty, NumEntries),
+                  ConstantInt::get(I64Ty, Hash),
+                  ConstantArray::get(EntriesTy, Entries),
+                  ConstantDataArray::get(Ctx, Indirect)}));
+    return Table;
   }
 
   void lazifyFn(Function *F, GlobalValue::GUID FnGUID, FunctionCallee MaterializeFn) {
