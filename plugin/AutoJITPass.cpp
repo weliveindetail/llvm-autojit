@@ -152,6 +152,10 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     M.setModuleIdentifier(FileStem);
     std::string FilePath = saveModule(M, FileStem + FileExt);
 
+    // The runtime caches the compiled lazy module. It must not reuse it with
+    // the new lazy module.
+    sys::fs::remove(FileStem + ".o");
+
     // All further changes only affect static code
     Type *VoidTy = Type::getVoidTy(Context);
     PointerType *FnPtrTy = PointerType::get(Context, 0);
