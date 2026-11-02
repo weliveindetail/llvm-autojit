@@ -206,7 +206,11 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     // Use runtime library priority so that all modules are registered before
     // we run the first user function.
     appendToGlobalCtors(M, InitFn, 100);
-    appendToUsed(M, InitFn);
+
+    // Add all at once: each call rebuilds the entire llvm.used array
+    SmallVector<GlobalValue *, 16> Used(LazifyFns.begin(), LazifyFns.end());
+    Used.push_back(InitFn);
+    appendToUsed(M, Used);
 
     if (LLVM_UNLIKELY(AutoJITDebug)) {
       saveModule(M, FileStem + "_static" + FileExt);
@@ -282,7 +286,6 @@ private:
                            ConstantPointerNull::get(FnPtrTy),
                            "__llvm_autojit_ptr_" + F->getName());
     F->dropAllReferences();
-    appendToUsed(*M, F);
 
     // Replace body with patchable trampoline
     BasicBlock *EntryBB = BasicBlock::Create(Context, "entry", F);
