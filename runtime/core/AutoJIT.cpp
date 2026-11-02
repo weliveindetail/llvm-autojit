@@ -1,5 +1,7 @@
 #include "runtime/AutoJITRuntime.h"
 
+#include "common/Imports.h"
+
 #include "runtime/core/AutoJIT.h"
 #include "runtime/core/ExecutorPlatform.h"
 
@@ -148,26 +150,10 @@ static GlobalValue::GUID getFunctionGUID(Twine ModName, Function *F) {
   return MD5Hash(UniqueName);
 }
 
-static bool isStaticInit(const Function &F) {
-  StringRef FuncName = F.getName();
-  if (FuncName.starts_with("_GLOBAL__sub_"))
-    return true;
-  if (FuncName.starts_with("__cxx_global_var_init"))
-    return true;
-  return false;
-}
-
-static sys::DynamicLibrary dlopenHostProcess() {
-  std::string ErrMsg;
-  auto Exe = sys::DynamicLibrary::getPermanentLibrary(nullptr, &ErrMsg);
-  if (!Exe.isValid()) {
-    LOG() << "Failed to dlopen main executable: " << ErrMsg << "\n";
-    exit(1);
-  }
-  return Exe;
-}
-
-ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
+Expected<ThreadSafeModule>
+autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t ImportsHash,
+                             ArrayRef<uint64_t> ImportAddrs,
+                             SymbolMap &Imports) const {
   auto Buffer = MemoryBuffer::getFile(FilePath);
   if (!Buffer) {
     LOG() << "Failed to read IR file: " << FilePath << "\n";
@@ -175,8 +161,9 @@ ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
   }
 
   // Check if it's a bitcode file by extension
-  std::unique_ptr<Module> M;
+  // The module must be destroyed before its context on early returns
   auto Context = std::make_unique<LLVMContext>();
+  std::unique_ptr<Module> M;
   if (FilePath.ends_with(".bc")) {
     // Parsing as bitcode
     auto ModuleOrError =
@@ -206,12 +193,28 @@ ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
     exit(1);
   }
 
+  // Match the import table from the static object. The plugin collected the
+  // imports on the same IR that we loaded.
+  SmallVector<std::string, 32> ImportNames;
+  uint64_t Hash = 0;
+  forEachImport(*M, [&](GlobalValue &GV) {
+    ImportNames.push_back(GV.getName().str());
+    Hash = hashImportName(Hash, GV.getName());
+  });
+  if (ImportNames.size() != ImportAddrs.size() || Hash != ImportsHash)
+    return createStringError(
+        inconvertibleErrorCode(),
+        "Lazy module " + FilePath + " doesn't match the import table of " +
+            "its static object (" + Twine(ImportNames.size()) + " vs. " +
+            Twine(ImportAddrs.size()) + " imports). Was it overwritten by " +
+            "another build?");
+
   std::unordered_set<Function *> DropFunctions;
 
   for (Function &F : *M) {
     if (F.isDeclaration())
       continue;
-    if (isStaticInit(F)) {
+    if (autojit::isStaticInit(F)) {
       DBG() << "Drop " << F.getName() << " (static init)\n";
       DropFunctions.insert(&F);
       F.dropAllReferences();
@@ -227,8 +230,7 @@ ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
         // Optional definition for cross-module optimization
         DBG() << "Remove optional definition " << F.getName()
               << " (available-externally linkage)\n";
-        DropFunctions.insert(&F);
-        F.dropAllReferences();
+        F.deleteBody();
         continue;
       }
     }
@@ -248,7 +250,8 @@ ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
     // lookup the symbol in the host process, which has the static function
     // frame with a trampoline into our JITed definition. This keeps function
     // pointers stable.
-    DBG() << "Import " << OriginalName << " as " << ImplName << "\n";
+    DBG() << "Rename lazy definition " << OriginalName << " to " << ImplName
+          << "\n";
     Function *ProxyDecl = Function::Create(
         F.getFunctionType(), Function::ExternalLinkage, OriginalName, *M);
     F.replaceAllUsesWith(ProxyDecl);
@@ -269,16 +272,6 @@ ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
       DBG() << "Keep definiton for " << GV.getName()
             << " (local copy of unnamed_addr)\n";
       continue;
-    }
-    if (GV.hasWeakLinkage() || GV.hasLinkOnceLinkage()) {
-      if (!haveHostSymbol(GV.getName())) {
-        DBG() << "Keep definiton for " << GV.getName() << " ("
-              << toString(GV.getLinkage())
-              << " linkage and no host process symbol)\n";
-        continue;
-      }
-      DBG() << "Matched host process symbol for " << GV.getName() << " ("
-            << toString(GV.getLinkage()) << " linkage)\n";
     }
     DBG() << "Turn into declaration " << GV.getName() << "\n";
     GV.dropAllReferences();
@@ -327,6 +320,28 @@ ThreadSafeModule autojit::AutoJIT::loadModule(StringRef FilePath) const {
   for (GlobalAlias *GA : DropAliases) {
     GA->replaceAllUsesWith(GA->getAliasee());
     GA->eraseFromParent();
+  }
+
+  // Imports get module-unique names. They resolve to the addresses from the
+  // import table, never to other definitions with the same name.
+  std::string ImportPrefix = "__autojit_imp_" + getModuleGUID(SourcePath) + "_";
+  for (size_t I = 0; I < ImportNames.size(); I += 1) {
+    GlobalValue *Decl = M->getNamedValue(ImportNames[I]);
+    if (!Decl)
+      continue;
+    assert(Decl->isDeclaration() && "Imports must be declarations");
+    std::string Name = ImportPrefix + std::to_string(I);
+    DBG() << "Import " << ImportNames[I] << " as " << Name << " at 0x"
+          << format("%016" PRIx64, ImportAddrs[I]) << "\n";
+    Decl->setName(Name);
+    // Undefined weak symbols resolve to null
+    if (ImportAddrs[I] == 0)
+      continue;
+    JITSymbolFlags Flags = JITSymbolFlags::Exported;
+    if (isa<Function>(Decl))
+      Flags |= JITSymbolFlags::Callable;
+    Imports[JIT_->mangleAndIntern(Name)] = {ExecutorAddr(ImportAddrs[I]),
+                                           Flags};
   }
 
   bool DebugInfoBroken;
@@ -448,7 +463,7 @@ autojit::AutoJIT::~AutoJIT() {
     LOG() << toString(std::move(Err));
 }
 
-autojit::AutoJIT::AutoJIT() : HostProcess_(dlopenHostProcess()) {
+autojit::AutoJIT::AutoJIT() {
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
@@ -488,6 +503,19 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B, bool HaveOrcRuntimeDeps) {
 
   JIT_ = ExitOnErr(B.create());
 
+  // Host symbols come from import tables. Search them before the process
+  // symbols, so we don't query dlsym for them.
+  HostImports_ = &JIT_->getExecutionSession().createBareJITDylib("<Imports>");
+  JITDylib &Main = JIT_->getMainJITDylib();
+  JITDylibSearchOrder LinkOrder;
+  Main.withLinkOrderDo(
+      [&](const JITDylibSearchOrder &Order) { LinkOrder = Order; });
+  auto Pos = LinkOrder.begin();
+  if (Pos != LinkOrder.end() && Pos->first == &Main)
+    ++Pos;
+  LinkOrder.insert(Pos, {HostImports_, JITDylibLookupFlags::MatchAllSymbols});
+  Main.setLinkOrder(std::move(LinkOrder), false);
+
 #if !defined(NDEBUG)
   JIT_->getIRTransformLayer().setTransform(
       [](ThreadSafeModule TSM,
@@ -507,7 +535,8 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B, bool HaveOrcRuntimeDeps) {
   return Error::success();
 }
 
-autojit::AutoJIT &autojit::AutoJIT::get(std::vector<std::string> &NewModules) {
+autojit::AutoJIT &
+autojit::AutoJIT::get(std::vector<ModuleRegistration> &NewModules) {
   static std::mutex Setup;
   static std::mutex Register;
   static ManagedStatic<std::unique_ptr<autojit::AutoJIT>> Instance;
@@ -531,9 +560,12 @@ autojit::AutoJIT &autojit::AutoJIT::get(std::vector<std::string> &NewModules) {
     // happen a few times at startup, but it's cheaper than the additional
     // locking on every get.
     std::lock_guard<std::mutex> Lock(Register);
-    for (const std::string &Path : NewModules) {
-      ThreadSafeModule TSM = Instance->get()->loadModule(Path);
-      ExitOnErr(Instance->get()->submit(std::move(TSM)));
+    for (const ModuleRegistration &R : NewModules) {
+      SmallVector<uint64_t, 32> Addrs;
+      Addrs.reserve(R.Imports->num_entries);
+      for (uint32_t I = 0; I < R.Imports->num_entries; I += 1)
+        Addrs.push_back(autojit_import_address(R.Imports, I));
+      ExitOnErr(Instance->get()->addModule(R.FilePath, R.Imports->hash, Addrs));
     }
     NewModules.clear();
   }
@@ -541,19 +573,16 @@ autojit::AutoJIT &autojit::AutoJIT::get(std::vector<std::string> &NewModules) {
   return **Instance;
 }
 
-llvm::Error autojit::AutoJIT::submit(llvm::orc::ThreadSafeModule Module) {
-  return JIT_->addIRModule(std::move(Module));
-}
-
-bool autojit::AutoJIT::haveHostSymbol(StringRef Name) const {
-  std::string Tmp(Name.data(), Name.size());
-  if (HostSymbolsCache_.contains(Tmp))
-    return true;
-  if (HostProcess_.getAddressOfSymbol(Tmp.c_str())) {
-    HostSymbolsCache_.insert(std::move(Tmp));
-    return true;
-  }
-  return false;
+llvm::Error autojit::AutoJIT::addModule(StringRef FilePath, uint64_t ImportsHash,
+                                       ArrayRef<uint64_t> ImportAddrs) {
+  SymbolMap Imports;
+  auto TSM = loadModule(FilePath, ImportsHash, ImportAddrs, Imports);
+  if (!TSM)
+    return TSM.takeError();
+  if (!Imports.empty())
+    if (Error Err = HostImports_->define(absoluteSymbols(std::move(Imports))))
+      return Err;
+  return JIT_->addIRModule(std::move(*TSM));
 }
 
 uint64_t autojit::AutoJIT::lookup(const char *Symbol) {

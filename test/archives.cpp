@@ -1,5 +1,6 @@
-// Check that we can use archives
-// TODO: Get away without `-Wl,--whole-archive`?
+// Check that we can use archives. The definitions in the archive are only
+// referenced from lazy code. The import table in the static object keeps the
+// references, so the linker extracts them anyway.
 //
 // RUN: %clang -fpass-plugin=%autojit_plugin -c %s -o %t.o
 // RUN: %clang -fpass-plugin=%autojit_plugin -c %S/Inputs/add.cpp -o %t_add.o
@@ -8,10 +9,14 @@
 // RUN: rm -f %t.a
 // RUN: %ar cq %t.a %t_add.o %t_multiply.o %t_hello.o
 //
-// RUN: %clang %t.o -Wl,--whole-archive %t.a -Wl,--no-whole-archive -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
+// RUN: %clang %t.o %t.a -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
 // RUN: %t_inprocess.exe 2>&1 | FileCheck %s
 //
-// RUN: %clang %t.o -Wl,--whole-archive %t.a -Wl,--no-whole-archive -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
+// Imports don't depend on dynamic symbols
+// RUN: %clang %t.o %t.a -Wl,--gc-sections -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess_gc.exe
+// RUN: %t_inprocess_gc.exe 2>&1 | FileCheck %s
+//
+// RUN: %clang %t.o %t.a -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
 // RUN: %t_remote.exe 2>&1 | FileCheck %s
 
 // CHECK-NOT: JIT session error
