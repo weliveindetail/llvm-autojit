@@ -53,26 +53,61 @@ llvm_map_components_to_libnames(llvm_libs
   TargetParser
 )
 
-# Static stub library: pure C, no LLVM deps
-add_library(autojit-stub STATIC remote/Stub.c remote/StubDebug.c remote/StubSPS.c)
-set_target_properties(autojit-stub PROPERTIES
-  OUTPUT_NAME "autojit_static-${CMAKE_SYSTEM_PROCESSOR}"
-  ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
-  C_STANDARD 11
+# Static stub: pure C, no LLVM deps
+#
+# Each variant is a single relocatable object, so it's linked as a whole. The
+# daemon looks up symbols by name in the stub process, which aren't referenced
+# statically. The library itself is an implicit linker script that adds the
+# object to the link.
+set(autojit_stub_outputs)
+
+function(add_autojit_stub name)
+  cmake_parse_arguments(ARG "" "" "SOURCES;DEFINES" ${ARGN})
+  set(lib_name ${name}-${CMAKE_SYSTEM_PROCESSOR})
+  set(obj_file ${CMAKE_BINARY_DIR}/lib/${lib_name}.o)
+  set(script_file ${CMAKE_BINARY_DIR}/lib/lib${lib_name}.a)
+
+  add_library(${name}-objs OBJECT ${ARG_SOURCES})
+  set_target_properties(${name}-objs PROPERTIES C_STANDARD 11)
+  target_compile_definitions(${name}-objs PRIVATE ${ARG_DEFINES})
+  target_compile_options(${name}-objs PRIVATE -Wno-cast-qual)
+  if(AUTOJIT_SANITIZE)
+    target_compile_options(${name}-objs PRIVATE -fsanitize=${AUTOJIT_SANITIZE})
+  endif()
+
+  add_custom_command(
+    OUTPUT ${obj_file}
+    COMMAND ${CMAKE_C_COMPILER} -r -nostdlib $<TARGET_OBJECTS:${name}-objs> -o ${obj_file}
+    DEPENDS $<TARGET_OBJECTS:${name}-objs>
+    COMMAND_EXPAND_LISTS
+    COMMENT "Linking relocatable object ${lib_name}.o"
+  )
+  file(WRITE ${script_file}
+    "/* Implicit linker script: link the AutoJIT stub object as a whole */\n"
+    "INPUT(${lib_name}.o)\n"
+  )
+
+  install(
+    FILES ${obj_file} ${script_file}
+    DESTINATION lib
+    COMPONENT autojit-stub
+  )
+  set(autojit_stub_outputs ${autojit_stub_outputs} ${obj_file} PARENT_SCOPE)
+endfunction()
+
+# Default stub without debugger support
+add_autojit_stub(autojit_static
+  SOURCES remote/Stub.c remote/StubSPS.c
+  DEFINES AUTOJIT_STUB_DEBUG_SUPPORT=0
 )
 
-target_link_libraries(autojit-stub PRIVATE pthread)
-target_compile_options(autojit-stub PRIVATE -Wno-cast-qual)
-
-if(AUTOJIT_SANITIZE)
-  target_compile_options(autojit-stub PRIVATE -fsanitize=${AUTOJIT_SANITIZE})
-endif()
-
-install(
-  TARGETS autojit-stub
-  ARCHIVE DESTINATION lib
-  COMPONENT autojit-stub
+# Stub with support for the GDB JIT interface
+add_autojit_stub(autojit_static_debug
+  SOURCES remote/Stub.c remote/StubDebug.c remote/StubSPS.c
+  DEFINES AUTOJIT_STUB_DEBUG_SUPPORT=1
 )
+
+add_custom_target(autojit-stub ALL DEPENDS ${autojit_stub_outputs})
 
 # Daemon executable
 add_executable(autojitd
