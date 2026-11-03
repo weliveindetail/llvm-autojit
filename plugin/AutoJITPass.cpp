@@ -1,3 +1,4 @@
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Transforms/IPO/GlobalDCE.h"
 #include "llvm/IR/Attributes.h"
@@ -41,6 +42,13 @@ using namespace llvm;
 static cl::opt<bool> AutoJITDebug(
     "autojit-debug", cl::init(false), cl::Hidden,
     cl::desc("Enable AutoJIT debug mode - output .ll files instead of .bc"));
+
+static cl::opt<bool> AutoJITStaticLibFuncs(
+    "autojit-static-libfuncs", cl::init(true), cl::Hidden,
+    cl::desc("Keep definitions of library functions like malloc or memcpy in "
+             "static code. The C library and the runtime might call them, so "
+             "they must not be lazy. Also set via AUTOJIT_STATIC_LIBFUNCS "
+             "environment variable."));
 
 static cl::opt<std::string> AutoJITDir(
     "autojit-dir", cl::init("/tmp"), cl::Hidden,
@@ -171,6 +179,8 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     }
 
     // Find functions that need trampolines
+    FunctionAnalysisManager &FAM =
+        MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
     SmallVector<Function *, 16> LazifyFns;
     for (Function &F : M) {
       if (F.isDeclaration())
@@ -182,6 +192,13 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       }
       if (F.hasAvailableExternallyLinkage())
         continue;
+      if (AutoJITStaticLibFuncs && isLibFunc(F, FAM)) {
+        if (LLVM_UNLIKELY(AutoJITDebug)) {
+          errs() << "autojit-plugin: Keep library function " << F.getName()
+                 << " in static code\n";
+        }
+        continue;
+      }
 
       LazifyFns.push_back(&F);
     }
@@ -239,6 +256,16 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
   }
 
 private:
+  // The executable exports its definitions of library functions, because the
+  // C library defines them as well. They interpose the ones in the C library,
+  // so the C library and our runtime call them. Symbols interpose by name, so
+  // we don't check the prototype.
+  static bool isLibFunc(Function &F, FunctionAnalysisManager &FAM) {
+    LibFunc Func;
+    return FAM.getResult<TargetLibraryAnalysis>(F).getLibFunc(F.getName(),
+                                                              Func);
+  }
+
   // The runtime loads lazy modules from their absolute path and caches their
   // compiled objects next to them.
   static const std::string &getOutputDir() {
@@ -467,6 +494,12 @@ llvmGetPassPluginInfo() {
     std::transform(Val.begin(), Val.end(), Val.begin(), ::tolower);
     if (Val == "1" || Val == "on" || Val == "true" || Val == "yes")
       AutoJITDebug = true;
+  }
+  if (const char *Var = std::getenv("AUTOJIT_STATIC_LIBFUNCS")) {
+    std::string Val{Var};
+    std::transform(Val.begin(), Val.end(), Val.begin(), ::tolower);
+    if (Val == "0" || Val == "off" || Val == "false" || Val == "no")
+      AutoJITStaticLibFuncs = false;
   }
   if (const char *Var = std::getenv("AUTOJIT_DIR"))
     if (*Var)
