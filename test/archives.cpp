@@ -29,7 +29,7 @@
 
 #include <iostream>
 
-// In separate translation units: they must register their lazy module at startup
+// In separate translation units: their lazy modules are loaded on demand
 int add(int, int);
 int multiply(int, int);
 void hello();

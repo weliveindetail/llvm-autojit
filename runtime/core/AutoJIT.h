@@ -1,8 +1,9 @@
 #pragma once
 
 #include "AutoJITConfig.h"
-#include "common/ImportTable.h"
+#include "common/LazyModule.h"
 
+#include <llvm/ADT/DenseSet.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/IR/GlobalValue.h>
@@ -11,6 +12,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_set>
 
@@ -30,17 +32,13 @@ namespace autojit {
 
 void initializeDebugLog();
 
-struct ModuleRegistration {
-  const char *FilePath;
-  const autojit_import_table_t *Imports;
-};
 
 class AutoJIT {
 public:
   AutoJIT();
   ~AutoJIT();
 
-  static AutoJIT &get(std::vector<ModuleRegistration> &NewModules);
+  static AutoJIT &get();
   llvm::Error initialize(llvm::orc::LLJITBuilder &B, bool HaveOrcRuntimeDeps);
   uint64_t lookup(const char *Symbol);
 
@@ -48,6 +46,10 @@ public:
   /// the addresses from the import table in the module's static object.
   llvm::Error addModule(llvm::StringRef FilePath, uint64_t ImportsHash,
                         llvm::ArrayRef<uint64_t> ImportAddrs);
+
+  /// Add the lazy module that belongs to the given descriptor from a static
+  /// object of the host process, unless we added it before.
+  llvm::Error ensureModule(const autojit_lazy_module_t *Module);
 
 private:
   llvm::Expected<llvm::orc::ThreadSafeModule>
@@ -57,6 +59,8 @@ private:
 
   std::unique_ptr<llvm::orc::LLJIT> JIT_;
   llvm::orc::JITDylib *HostImports_ = nullptr;
+  std::mutex ModulesMutex_;
+  llvm::DenseSet<const autojit_lazy_module_t *> Modules_;
 };
 
 std::string guidToFnName(llvm::GlobalValue::GUID Guid);

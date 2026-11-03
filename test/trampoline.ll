@@ -4,11 +4,11 @@
 source_filename = "/workspace/llvm-autojit/test/trampoline.cpp"
 target triple = "x86_64-pc-linux-gnu"
 
+; Descriptor of the lazy module with its path
+; CHECK: @__llvm_autojit_module = private constant { i32, i32, i64, [0 x i32], [0 x i8], [49 x i8] } { i32 2, i32 0, i64 0, {{.*}}, [49 x i8] c"/tmp/autojit_e897fd8886de1380cf0e7d06010251b0.bc\00" }
+
 ; Pointer to lazy function materialization
 ; CHECK: @__llvm_autojit_ptr__Z3addii = internal global ptr null
-
-; Path to lazy module
-; CHECK: @__llvm_autojit_lazy_file = private unnamed_addr constant [49 x i8] c"/tmp/autojit_e897fd8886de1380cf0e7d06010251b0.bc\00"
 
 ; Functions are reduced to static frames that call into the runtime
 ; CHECK: define {{.*}} i32 @_Z3addii{{.*}}
@@ -18,7 +18,7 @@ target triple = "x86_64-pc-linux-gnu"
 ; CHECK:   br
 ;
 ; CHECK-NOT: store
-; CHECK:   call ptr @__llvm_autojit_materialize(ptr @__llvm_autojit_ptr__Z3addii, i64 -6721289519639444558)
+; CHECK:   call ptr @__llvm_autojit_materialize(ptr @__llvm_autojit_ptr__Z3addii, i64 -6721289519639444558, ptr @__llvm_autojit_module)
 ; CHECK:   br
 ;
 ; CHECK:   tail call noundef i32 %impl_ptr(i32 noundef %0, i32 noundef %1)
@@ -36,8 +36,10 @@ define noundef i32 @_Z3addii(i32 noundef %0, i32 noundef %1) noinline optnone uw
 }
 
 ; Declarations of relevant runtime functions exist
-; CHECK: declare ptr @__llvm_autojit_materialize(ptr, i64)
-; CHECK: declare void @__llvm_autojit_register2(ptr, ptr)
+; CHECK: declare ptr @__llvm_autojit_materialize(ptr, i64, ptr)
+
+; Modules are loaded on demand, there is no registration at startup
+; CHECK-NOT: @llvm.global_ctors
 
 !llvm.module.flags = !{!0, !1}
 !llvm.ident = !{!2}
