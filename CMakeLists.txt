@@ -53,6 +53,8 @@ endif()
 if(AUTOJIT_ENABLE_TPDE)
   add_compile_options(-Wno-unused-parameter)
   set(TPDE_LINK_LLVM_STATIC On)
+  # TPDE gets linked into the shared autojit-runtime
+  set(CMAKE_POSITION_INDEPENDENT_CODE On)
   add_subdirectory(deps/tpde)
 endif()
 
