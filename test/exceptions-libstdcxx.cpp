@@ -1,10 +1,15 @@
-// TODO: double-check with orc-rt and libcxx
+// Exceptions thrown and caught in JITed code. The runtime registers EH frames
+// with the unwinder of the program, which is libgcc for libstdc++ here.
 // REQUIRES: libstdcxx
-
-// RUN: %clang -fexceptions -frtti -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -stdlib=libstdc++ -o %t.exe %s
-
-// RUN: %t.exe
-// RUN: %t.exe catch-me-if-you-can | FileCheck %s
+//
+// RUN: %clang -fexceptions -frtti -fpass-plugin=%autojit_plugin -stdlib=libstdc++ -c %s -o %t.o
+// RUN: %clang -stdlib=libstdc++ %t.o -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
+// RUN: %t_inprocess.exe
+// RUN: %t_inprocess.exe catch-me-if-you-can | FileCheck %s
+//
+// RUN: %clang -stdlib=libstdc++ %t.o -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
+// RUN: %t_remote.exe
+// RUN: %t_remote.exe catch-me-if-you-can | FileCheck %s
 
 // CHECK: catch-me-if-you-can
 

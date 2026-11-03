@@ -9,3 +9,5 @@
 // CHECK-NOT: NEEDED{{.*}}libc++
 // CHECK-NOT: NEEDED{{.*}}libz.so
 // CHECK-NOT: NEEDED{{.*}}libzstd
+// CHECK-NOT: NEEDED{{.*}}libgcc_s
+// CHECK-NOT: NEEDED{{.*}}libunwind

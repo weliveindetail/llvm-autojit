@@ -2,6 +2,7 @@ import os
 import lit.formats
 import psutil
 import subprocess
+import tempfile
 import textwrap
 from pathlib import Path
 
@@ -105,21 +106,19 @@ if config.build_type == "Debug":
 if config.orc_rt_embedded == "On":
     config.available_features.add('orc-rt')
 
-def check_output(cmd, libname: str) -> bool:
-    o = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
-    for l in o.splitlines():
-        if libname in l:
-            return True
-    return False
+# The runtime works with both C++ standard libraries. Check which ones we can
+# build programs with.
+def can_link_cxx(stdlib: str) -> bool:
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "test.cpp"
+        src.write_text("#include <string>\nint main() { return std::string().size(); }\n")
+        cmd = [str(bin / 'clang++'), f"-stdlib={stdlib}", str(src), "-o", str(Path(tmp) / "test")]
+        return subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
-try:
-    runtime = Path(config.autojit_runtime_dir) / "libautojit-runtime.so"
-    if check_output(["ldd", str(runtime)], "libc++.so"):
-        config.available_features.add('libcxx')
-    else:
-        config.available_features.add('libstdcxx')
-except subprocess.CalledProcessError as ex:
-    print(f"Failed to run ldd on {str(runtime)}: {ex}")
+if can_link_cxx("libc++"):
+    config.available_features.add('libcxx')
+if can_link_cxx("libstdc++"):
+    config.available_features.add('libstdcxx')
 
 print('Environment:')
 for name in config.environment:
