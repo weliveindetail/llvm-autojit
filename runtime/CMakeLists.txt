@@ -38,6 +38,36 @@ if(AUTOJIT_EMBED_ORC_RUNTIME)
   endif()
 endif()
 
+# The runtime must not resolve symbols from shared libraries that programs
+# might define themselves, e.g. a program that builds its own zlib with autojit.
+# The executable would export its lazy definitions and they would interpose the
+# ones from the shared library. LLVM's compression support pulls in zlib and
+# zstd, so we link them statically and hide their symbols (--exclude-libs).
+option(AUTOJIT_STATIC_COMPRESSION_LIBS
+       "Link zlib and zstd statically into the runtime, if available" ON)
+if(AUTOJIT_STATIC_COMPRESSION_LIBS)
+  foreach(entry IN ITEMS "ZLIB::ZLIB=libz.a" "zstd::libzstd_shared=libzstd.a")
+    string(REPLACE "=" ";" entry "${entry}")
+    list(GET entry 0 imported_target)
+    list(GET entry 1 archive_name)
+    if(TARGET ${imported_target})
+      find_library(static_lib_${archive_name} NAMES ${archive_name})
+      if(static_lib_${archive_name})
+        message(STATUS "Link ${imported_target} statically: ${static_lib_${archive_name}}")
+        get_target_property(configs ${imported_target} IMPORTED_CONFIGURATIONS)
+        set_target_properties(${imported_target} PROPERTIES
+          IMPORTED_LOCATION "${static_lib_${archive_name}}")
+        foreach(config IN LISTS configs)
+          set_target_properties(${imported_target} PROPERTIES
+            IMPORTED_LOCATION_${config} "${static_lib_${archive_name}}")
+        endforeach()
+      else()
+        message(WARNING "${archive_name} not found, runtime links ${imported_target} dynamically")
+      endif()
+    endif()
+  endforeach()
+endif()
+
 llvm_map_components_to_libnames(llvm_libs
   BitReader
   BitstreamReader
