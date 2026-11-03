@@ -10,6 +10,7 @@
 #include <llvm/ADT/StringExtras.h>
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/ExecutionEngine/ObjectCache.h>
+#include <llvm/ExecutionEngine/Orc/CompileUtils.h>
 #include <llvm/ExecutionEngine/Orc/Core.h>
 #include <llvm/ExecutionEngine/Orc/IRTransformLayer.h>
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
@@ -432,83 +433,30 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
   return ThreadSafeModule(std::move(M), std::move(Context));
 }
 
-class BasicCompiler : public IRCompileLayer::IRCompiler {
+// Writes compiled lazy modules to the object cache. AutoJIT::addModule() checks
+// for cached objects before it loads the IR, so we never read here.
+class autojit::ObjectCacheWriter : public ObjectCache {
 public:
-  BasicCompiler(JITTargetMachineBuilder JTMB)
-      : IRCompiler(options(JTMB)), JTMB(std::move(JTMB)) {
-    TM = ExitOnErr(this->JTMB.createTargetMachine());
-  }
-
-  Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
-    SmallVector<char, 0> Buffer;
-    compileObject(M, Buffer);
-
-    constexpr bool RequiresNullTerminator = false;
-    return std::make_unique<SmallVectorMemoryBuffer>(std::move(Buffer), getObjFileName(M.getModuleIdentifier()),
-                                                     RequiresNullTerminator);
-  }
-
-protected:
-  IRSymbolMapper::ManglingOptions options(const JITTargetMachineBuilder &JTMB) {
-    return irManglingOptionsFromTargetOptions(JTMB.getOptions());
-  }
-
-  std::string getObjFileName(std::string Name) {
-    if (Name.ends_with(".ll") || Name.ends_with(".bc"))
-      Name = Name.substr(0, Name.size() - 3);
-    return Name + ".o";
-  }
-
-  void compileObject(Module &M, SmallVectorImpl<char> &Buffer) {
-    // Different threads may materialize different modules at the same time,
-    // but we share the TargetMachine.
-    std::lock_guard<std::mutex> Lock(CompileMutex);
-    if (M.getDataLayout().isDefault())
-      M.setDataLayout(TM->createDataLayout());
-    MCContext *Ctx;
-    legacy::PassManager PM;
-    raw_svector_ostream ObjStream(Buffer);
-    if (TM->addPassesToEmitMC(PM, Ctx, ObjStream)) {
-      LOG() << "Target does not support JIT MC emission\n";
-      exit(1);
+  void notifyObjectCompiled(const Module *M, MemoryBufferRef Obj) override {
+    // Other processes might load the cached object concurrently, so we write
+    // it atomically. Cached objects live next to their lazy modules.
+    std::string ObjName = M->getModuleIdentifier() + ".o";
+    if (!sys::path::filename(ObjName).starts_with("autojit_"))
+      return;
+    SmallString<128> TmpName;
+    int FD;
+    if (sys::fs::createUniqueFile(ObjName + ".tmp%%%%%%", FD, TmpName))
+      return;
+    {
+      raw_fd_ostream OS(FD, /*shouldClose=*/true);
+      OS << Obj.getBuffer();
     }
-    PM.run(M);
+    if (sys::fs::rename(TmpName, ObjName))
+      sys::fs::remove(TmpName);
   }
 
-  JITTargetMachineBuilder JTMB;
-  std::unique_ptr<TargetMachine> TM;
-  std::mutex CompileMutex;
-};
-
-class CachingCompiler : public BasicCompiler {
-public:
-  CachingCompiler(JITTargetMachineBuilder JTMB)
-      : BasicCompiler(std::move(JTMB)) {}
-
-  Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
-    constexpr bool RequiresNullTerm = false;
-    SmallVector<char, 0> Buffer;
-    compileObject(M, Buffer);
-
-    // AutoJIT::addModule() loads the cached object next time. Other processes
-    // might do that concurrently, so we write it atomically. Cached objects
-    // live next to their lazy modules.
-    std::string ObjName = getObjFileName(M.getModuleIdentifier());
-    if (sys::path::filename(ObjName).starts_with("autojit_")) {
-      SmallString<128> TmpName;
-      int FD;
-      if (!sys::fs::createUniqueFile(ObjName + ".tmp%%%%%%", FD, TmpName)) {
-        {
-          raw_fd_ostream OS(FD, /*shouldClose=*/true);
-          OS.write(Buffer.data(), Buffer.size());
-        }
-        if (sys::fs::rename(TmpName, ObjName))
-          sys::fs::remove(TmpName);
-      }
-    }
-
-    return std::make_unique<SmallVectorMemoryBuffer>(std::move(Buffer), ObjName,
-                                                     RequiresNullTerm);
+  std::unique_ptr<MemoryBuffer> getObject(const Module *M) override {
+    return nullptr;
   }
 };
 
@@ -558,12 +506,14 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B, bool HaveOrcRuntimeDeps) {
   B.setPlatformSetUp(
       autojit::ExecutorPlatform(g_autojit_debug, HaveOrcRuntimeDeps));
 
+  // Threads that materialize different modules compile them concurrently.
+  // The compiler creates a TargetMachine for each module.
+  if (UseObjectCache_)
+    CacheWriter_ = std::make_unique<ObjectCacheWriter>();
   B.CreateCompileFunction = [&](JITTargetMachineBuilder JTMB)
       -> Expected<std::unique_ptr<IRCompileLayer::IRCompiler>> {
-    if (LLVM_UNLIKELY(!UseObjectCache_)) {
-      return std::make_unique<BasicCompiler>(std::move(JTMB));
-    }
-    return std::make_unique<CachingCompiler>(std::move(JTMB));
+    return std::make_unique<ConcurrentIRCompiler>(std::move(JTMB),
+                                                  CacheWriter_.get());
   };
 
   if (isEnvVarSet("AUTOJIT_USE_TPDE")) {
