@@ -71,9 +71,11 @@ if is_set('AUTOJIT_DEBUG'):
 # Check for existing autojitd daemon process
 daemon_running = False
 daemon_bin = Path(config.autojit_tools_dir) / 'autojitd'
-for proc in psutil.process_iter(['name', 'exe']):
+for proc in psutil.process_iter(['name', 'exe', 'cmdline']):
     try:
-        if 'autojitd' in proc.info['name'] and not proc.info['exe'] is None:
+        # Daemons with --stdio were spawned by and serve another process
+        if 'autojitd' in proc.info['name'] and not proc.info['exe'] is None \
+                and '--stdio' not in (proc.info['cmdline'] or []):
             daemon_bin = Path(proc.info['exe'])
             daemon_running = True
     except (psutil.NoSuchProcess, psutil.AccessDenied):
