@@ -1,6 +1,7 @@
 import os
 import lit.formats
 import psutil
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -99,12 +100,24 @@ config.available_features.add('shell')
 if hasattr(config, 'enable_plugins') and config.enable_plugins:
     config.available_features.add('plugins')
 
-if config.build_type == "Debug":
-    config.available_features.add('llvm-debug')
-
 # We could provide a way to load it from disk instead
 if config.orc_rt_embedded == "On":
     config.available_features.add('orc-rt')
+
+# Debugger tests need GDB and permission to launch programs under it, which
+# might be prohibited in CI (e.g. ptrace in containers)
+def can_run_gdb(gdb: str) -> bool:
+    try:
+        o = subprocess.run([gdb, '-batch', '-nx', '-ex', 'run', '--args', 'true'],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return o.returncode == 0 and 'exited normally' in o.stdout
+
+gdb = shutil.which('gdb')
+if gdb and can_run_gdb(gdb):
+    config.available_features.add('gdb')
+    config.substitutions.append(('%gdb', f"{gdb} -batch -nx -iex 'set debuginfod enabled off'"))
 
 # The runtime works with both C++ standard libraries. Check which ones we can
 # build programs with.
