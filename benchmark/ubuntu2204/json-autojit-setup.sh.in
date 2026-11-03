@@ -10,9 +10,9 @@ CFLAGS="-fpass-plugin=@CMAKE_INSTALL_PREFIX@/lib/autojit.so"
 
 if [ "$AUTOJIT_LINK_STATIC_RUNTIME" = "On" ]; then
   # FIXME: Make arch generic, right now it's specific for Intel
-  LDFLAGS="-L@CMAKE_INSTALL_PREFIX@/lib -lautojit_static-x86_64 -rdynamic"
+  LDFLAGS="-L@CMAKE_INSTALL_PREFIX@/lib -lautojit_static-x86_64"
 else
-  LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime -rdynamic"
+  LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime"
 fi
 
 if [ "@AUTOJIT_BUILD_UNIFIED@" = "On" ]; then

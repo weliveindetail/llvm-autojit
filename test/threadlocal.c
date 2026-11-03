@@ -1,4 +1,4 @@
-// RUN: %clang -fpass-plugin=%autojit_plugin -xc %s -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -rdynamic -o %t.exe 2>&1 | FileCheck %s
+// RUN: %clang -fpass-plugin=%autojit_plugin -xc %s -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t.exe 2>&1 | FileCheck %s
 // RUN: %t.exe
 
 // CHECK: Skipping module {{.*}} (thread-local storage not yet supported)

@@ -41,22 +41,20 @@ int main(void) {
 }
 ```
 
-Install a llvm-autojit release along with [clang release 21](https://weliveindetail.github.io/blog/post/2021/05/28/debian-llvm-quick-install.html) and compile a debug version with the following commands. They load the plugin `autojit.so` in the compiler (absolute path is required) and pass the runtime `libautojit-runtime.so` as a shared library to the linker. We need to add `/usr/local/lib` as shared library search path and specify `-rdynamic` for the runtime to resolve dynamic symbols from the executable.
+Install a llvm-autojit release along with [clang release 21](https://weliveindetail.github.io/blog/post/2021/05/28/debian-llvm-quick-install.html) and compile a debug version with the following commands. They load the plugin `autojit.so` in the compiler (absolute path is required) and pass the runtime `libautojit-runtime.so` as a shared library to the linker. We need to add `/usr/local/lib` as shared library search path.
 ```
 > clang-21 -O0 -g -fpass-plugin=/usr/local/lib/autojit.so -o hello.o -c hello.c
-> clang-21 -Wl,-rpath=/usr/local/lib -lautojit-runtime -rdynamic -o hello_c_shlib hello.o
+> clang-21 -Wl,-rpath=/usr/local/lib -lautojit-runtime -o hello_c_shlib hello.o
 ./hello_c_shlib
-[autojit-runtime] Loading module from cache /tmp/autojit_2045016cb90d1e65d71c2407a2570927.o (source: hello.c)
 Hello C
 ```
 
-A shared library is a simple, but not always a practical way to provide our runtime. That's why we have another option: We can statically link a RPC stub that forwards all compile requests to `autojitd`. The stub is a single object file and `libautojit_static-x86_64.a` is a linker script that adds it to the link, so it works at any position on the link line. Link `autojit_static_debug-x86_64` instead to add support for the GDB JIT interface.
+A shared library is a simple, but not always a practical way to provide our runtime. That's why we have another option: We can statically link a RPC stub that forwards all compile requests to `autojitd`. The stub is a single object file and `libautojit_static-x86_64.a` is a linker script that adds it to the link, so it works at any position on the link line. Link `autojit_static_debug-x86_64` instead to add support for the GDB JIT interface. It requires `-rdynamic` for now, because `autojitd` looks up the registration function by name.
 ```
 > clang-21 -O0 -g -fpass-plugin=/usr/local/lib/autojit.so -o hello.o -c hello.c
-> clang-21 hello.o -lautojit_static-x86-64 -rdynamic -o hello_c_autojitd
+> clang-21 hello.o -lautojit_static-x86-64 -o hello_c_autojitd
 > ./hello_c_autojitd
 [autojit-runtime] Cannot install orc-runtime: missing C++ stdlib
-[autojit-runtime] Loading module from cache /tmp/autojit_2045016cb90d1e65d71c2407a2570927.o (source: hello.c)
 Hello C
 [autojit-runtime] Warning: ignore RPC invocation after disconnect
 ```
@@ -89,10 +87,8 @@ Compile and link in one step, then run the example:
 > rustc -Z llvm-plugins="/usr/local/lib/autojit.so" \
         -L /usr/local/lib -lautojit-runtime
         -C link-arg=-Wl,-rpath,/usr/local/lib
-        -C link-arg=-rdynamic
         -o hello_rust_shlib hello.rs
 > ./hello_rust_shlib
-[autojit-runtime] Loading module from cache /tmp/autojit_3c6eb49c3a3854d19574caf91dc7a72b.o (source: hello.984f8e64244731dd-cgu.0)
 Hello World!
 ```
 
@@ -100,11 +96,9 @@ And here again, the shared library approach works, but might not be the best sol
 ```
 > rustc -Z llvm-plugins="/usr/local/lib/autojit.so" \
         -L /usr/local/lib -lautojit_static-x86_64
-        -C link-arg=-rdynamic
         -o hello_rust_autojitd hello.rs
 ./hello_rust_autojitd
 [autojit-runtime] Cannot install orc-runtime: missing C++ stdlib
-[autojit-runtime] Loading module from cache /tmp/autojit_3c6eb49c3a3854d19574caf91dc7a72b.o (source: hello.984f8e64244731dd-cgu.0)
 Hello World!
 [autojit-runtime] Warning: ignore RPC invocation after disconnect
 ```

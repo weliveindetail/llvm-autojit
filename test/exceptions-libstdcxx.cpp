@@ -1,7 +1,7 @@
 // TODO: double-check with orc-rt and libcxx
 // REQUIRES: libstdcxx
 
-// RUN: %clang -fexceptions -frtti -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -rdynamic -stdlib=libstdc++ -o %t.exe %s
+// RUN: %clang -fexceptions -frtti -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -stdlib=libstdc++ -o %t.exe %s
 
 // RUN: %t.exe
 // RUN: %t.exe catch-me-if-you-can | FileCheck %s
