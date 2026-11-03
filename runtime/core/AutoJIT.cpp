@@ -433,28 +433,44 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
   return ThreadSafeModule(std::move(M), std::move(Context));
 }
 
-// Writes compiled lazy modules to the object cache. AutoJIT::addModule() checks
-// for cached objects before it loads the IR, so we never read here.
+// Writes compiled lazy modules to the object cache
 class autojit::ObjectCacheWriter : public ObjectCache {
 public:
   void notifyObjectCompiled(const Module *M, MemoryBufferRef Obj) override {
-    // Other processes might load the cached object concurrently, so we write
-    // it atomically. Cached objects live next to their lazy modules.
+    // Cached objects live next to their lazy modules
     std::string ObjName = M->getModuleIdentifier() + ".o";
+    // We don't want to cache arbitrary LLJIT artifacts
     if (!sys::path::filename(ObjName).starts_with("autojit_"))
       return;
+    // The cache is best-effort
+    auto Skip = [&](StringRef What, std::error_code EC) {
+      DBG() << "Failed to cache " << ObjName << " (" << What
+            << "): " << EC.message() << "\n";
+    };
     SmallString<128> TmpName;
     int FD;
-    if (sys::fs::createUniqueFile(ObjName + ".tmp%%%%%%", FD, TmpName))
-      return;
-    {
-      raw_fd_ostream OS(FD, /*shouldClose=*/true);
-      OS << Obj.getBuffer();
-    }
-    if (sys::fs::rename(TmpName, ObjName))
+    if (auto EC =
+            sys::fs::createUniqueFile(ObjName + ".tmp%%%%%%", FD, TmpName))
+      return Skip("create", EC);
+    raw_fd_ostream OS(FD, /*shouldClose=*/true);
+    OS << Obj.getBuffer();
+    OS.close();
+    // Avoid report_fatal_error() in the destructor
+    if (OS.has_error()) {
+      std::error_code EC = OS.error();
+      OS.clear_error();
       sys::fs::remove(TmpName);
+      return Skip("write", EC);
+    }
+    // The cache is multi-thread/process, so we publish atomically. Losing a
+    // race to a concurrent writer is fine: their object is equivalent.
+    if (auto EC = sys::fs::rename(TmpName, ObjName)) {
+      sys::fs::remove(TmpName);
+      return Skip("rename", EC);
+    }
   }
 
+  // Cached objects are checked in addModule() before we load the IR
   std::unique_ptr<MemoryBuffer> getObject(const Module *M) override {
     return nullptr;
   }
