@@ -61,6 +61,11 @@ Hello C
 
 In this case the stub spawned `autojitd` in a child process. Alternatively, it can run as a complete separate process in the background and handle all compile requests system-wide.
 
+The plugin writes the lazy part of each translation unit to `/tmp` by default and the runtime caches compiled code next to it. Set `AUTOJIT_DIR` at compile-time to use another directory, e.g. one in your build tree. Then everything that belongs to the build is in one place and goes away with it:
+```
+> AUTOJIT_DIR=build/autojit clang-21 -O0 -g -fpass-plugin=/usr/local/lib/autojit.so -o hello.o -c hello.c
+```
+
 ## Basic Rust example
 
 LLVM plugins are not yet enabled in Rust release versions, but we can use a nightly version. The current plugin releases are tested with Rust nightly 1.91. Other versions may work as well. Please find more details in the [Dockerfile for our CI image](https://github.com/weliveindetail/llvm-autojit/blob/main/benchmark/ubuntu2204/llvm21/Dockerfile).

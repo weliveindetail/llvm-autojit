@@ -473,10 +473,10 @@ public:
     compileObject(M, Buffer);
 
     // AutoJIT::addModule() loads the cached object next time. Other processes
-    // might do that concurrently, so we write it atomically.
-    const char *CacheFileStem = "/tmp/autojit_";
+    // might do that concurrently, so we write it atomically. Cached objects
+    // live next to their lazy modules.
     std::string ObjName = getObjFileName(M.getModuleIdentifier());
-    if (StringRef(ObjName).starts_with(CacheFileStem)) {
+    if (sys::path::filename(ObjName).starts_with("autojit_")) {
       SmallString<128> TmpName;
       int FD;
       if (!sys::fs::createUniqueFile(ObjName + ".tmp%%%%%%", FD, TmpName)) {
