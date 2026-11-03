@@ -18,6 +18,10 @@ fi
 for mode in shlib static; do
   if [ $mode = static ]; then
     export AUTOJIT_BUILD_DIR=build_autojit_static AUTOJIT_LINK_STATIC_RUNTIME=On
+    # The build runs tools like llvm-tblgen that need the daemon. Spawn ours,
+    # not one from PATH.
+    export AUTOJITD_FORCE_SPAWN=On
+    export AUTOJIT_DAEMON_PATH=@CMAKE_INSTALL_PREFIX@/bin/autojitd
   else
     export AUTOJIT_BUILD_DIR=build_autojit AUTOJIT_LINK_STATIC_RUNTIME=Off
   fi
