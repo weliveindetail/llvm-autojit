@@ -1876,10 +1876,11 @@ void *__llvm_autojit_materialize(void **Slot, uint64_t guid,
 
   DEBUG_LOG("Requesting function: __autojit_fn_%lu\n", guid);
 
-  /* Encode arguments: SPSArgList<uint64_t> */
+  /* Encode arguments: SPSArgList<uint64_t, uint64_t> */
   sps_buffer_t args;
-  sps_buffer_init(&args, 8);
+  sps_buffer_init(&args, 16);
   sps_write_uint64(&args, guid);
+  sps_write_uint64(&args, module->hash);
 
   /* Call RPC function */
   uint8_t *result;

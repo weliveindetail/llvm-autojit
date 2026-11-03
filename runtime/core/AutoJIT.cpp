@@ -203,7 +203,7 @@ private:
 };
 
 // Bump this whenever changes in the runtime affect the compiled objects
-static constexpr unsigned CacheVersion = 1;
+static constexpr unsigned CacheVersion = 2;
 
 static std::string getCacheStem(StringRef FilePath, uint64_t Hash) {
   StringRef Stem = FilePath;
@@ -312,11 +312,17 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
     }
 
     // Rename our JITed definition, so we can find it from the trampoline ID in
-    // the static function frame.
+    // the static function frame. Linkonce functions exist in many modules.
+    // The name is unique for this module, so ORC never discards our copy and
+    // the compiled object is the same, no matter which modules we loaded
+    // before. We need that for the object cache.
     std::string OriginalName = F.getName().str();
     GlobalValue::GUID G = getFunctionGUID(SourcePath, &F);
-    std::string ImplName = autojit::guidToFnName(G);
+    std::string ImplName = autojit::guidToFnName(G, Hash);
     F.setName(ImplName);
+    F.setLinkage(GlobalValue::ExternalLinkage);
+    F.setVisibility(GlobalValue::DefaultVisibility);
+    F.setComdat(nullptr);
 
     // Inject a declaration for the original name. The JIT will see it and
     // lookup the symbol in the host process, which has the static function
@@ -338,8 +344,15 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
 
   for (GlobalVariable &GV : M->globals()) {
     if (GV.hasAtLeastLocalUnnamedAddr()) {
+      // A private copy for this module, for the same reason as above. The
+      // address of unnamed_addr variables is insignificant.
       DBG() << "Keep definiton for " << GV.getName()
             << " (local copy of unnamed_addr)\n";
+      if (!GV.isDeclaration() && !GV.hasLocalLinkage()) {
+        GV.setLinkage(GlobalValue::InternalLinkage);
+        GV.setVisibility(GlobalValue::DefaultVisibility);
+        GV.setComdat(nullptr);
+      }
       continue;
     }
     DBG() << "Turn into declaration " << GV.getName() << "\n";
@@ -747,8 +760,11 @@ uint64_t autojit::AutoJIT::lookup(const char *Symbol) {
   return Fn->getValue();
 }
 
-std::string autojit::guidToFnName(GlobalValue::GUID Guid) {
+std::string autojit::guidToFnName(GlobalValue::GUID Guid,
+                                  uint64_t ModuleHash) {
   std::string Buffer;
-  raw_string_ostream(Buffer) << "__autojit_fn_" << Guid;
+  raw_string_ostream(Buffer)
+      << "__autojit_fn_" << Guid << "_"
+      << utohexstr(ModuleHash, /*LowerCase=*/true, /*Width=*/16);
   return Buffer;
 }
