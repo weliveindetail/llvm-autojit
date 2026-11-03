@@ -5,7 +5,7 @@ source_filename = "/workspace/llvm-autojit/test/trampoline.cpp"
 target triple = "x86_64-pc-linux-gnu"
 
 ; Descriptor of the lazy module with its path
-; CHECK: @__llvm_autojit_module = private constant { i32, i32, i64, [0 x i32], [0 x i8], [49 x i8] } { i32 2, i32 0, i64 0, {{.*}}, [49 x i8] c"/tmp/autojit_e897fd8886de1380cf0e7d06010251b0.bc\00" }
+; CHECK: @__llvm_autojit_module = private constant { i32, i32, i64, [0 x i32], [0 x i8], [49 x i8] } { i32 2, i32 0, i64 {{-?[0-9]+}}, {{.*}}, [49 x i8] c"/tmp/autojit_e897fd8886de1380cf0e7d06010251b0.bc\00" }
 
 ; Pointer to lazy function materialization
 ; CHECK: @__llvm_autojit_ptr__Z3addii = internal global ptr null

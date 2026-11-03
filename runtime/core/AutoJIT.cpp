@@ -6,6 +6,7 @@
 #include "runtime/core/ExecutorPlatform.h"
 
 #include <llvm/ADT/SmallSet.h>
+#include <llvm/ADT/StringExtras.h>
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/ExecutionEngine/ObjectCache.h>
 #include <llvm/ExecutionEngine/Orc/Core.h>
@@ -30,6 +31,7 @@
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Support/xxhash.h>
 
 #if LLVM_VERSION_MAJOR >= 21
 #include <llvm/ExecutionEngine/Orc/SelfExecutorProcessControl.h>
@@ -150,15 +152,38 @@ static GlobalValue::GUID getFunctionGUID(Twine ModName, Function *F) {
   return MD5Hash(UniqueName);
 }
 
+// Bump this whenever changes in the runtime affect the compiled objects
+static constexpr unsigned CacheVersion = 1;
+
+static std::string getCacheStem(StringRef FilePath, uint64_t Hash) {
+  StringRef Stem = FilePath;
+  if (Stem.ends_with(".ll") || Stem.ends_with(".bc"))
+    Stem = Stem.drop_back(3);
+  std::string HashStr = utohexstr(Hash, /*LowerCase=*/true, /*Width=*/16);
+  return (Stem + "_" + HashStr + "_r" + Twine(CacheVersion)).str();
+}
+
+// Imports get module-unique names. They resolve to the addresses from the
+// import table, never to other definitions with the same name.
+static std::string getImportName(uint64_t Hash, size_t Index) {
+  std::string HashStr = utohexstr(Hash, /*LowerCase=*/true, /*Width=*/16);
+  return ("__autojit_imp_" + HashStr + "_" + Twine(Index)).str();
+}
+
 Expected<ThreadSafeModule>
-autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t ImportsHash,
-                             ArrayRef<uint64_t> ImportAddrs,
-                             SymbolMap &Imports) const {
+autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
+                             size_t NumImports, StringRef CacheStem) const {
   auto Buffer = MemoryBuffer::getFile(FilePath);
   if (!Buffer) {
     LOG() << "Failed to read IR file: " << FilePath << "\n";
     exit(1);
   }
+  StringRef Contents = (*Buffer)->getBuffer();
+  if (xxh3_64bits(Contents) != Hash)
+    return createStringError(
+        inconvertibleErrorCode(),
+        "Lazy module " + FilePath + " doesn't match the import table of " +
+            "its static object. Was it overwritten by another build?");
 
   // Check if it's a bitcode file by extension
   // The module must be destroyed before its context on early returns
@@ -196,18 +221,15 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t ImportsHash,
   // Match the import table from the static object. The plugin collected the
   // imports on the same IR that we loaded.
   SmallVector<std::string, 32> ImportNames;
-  uint64_t Hash = 0;
   forEachImport(*M, [&](GlobalValue &GV) {
     ImportNames.push_back(GV.getName().str());
-    Hash = hashImportName(Hash, GV.getName());
   });
-  if (ImportNames.size() != ImportAddrs.size() || Hash != ImportsHash)
-    return createStringError(
-        inconvertibleErrorCode(),
-        "Lazy module " + FilePath + " doesn't match the import table of " +
-            "its static object (" + Twine(ImportNames.size()) + " vs. " +
-            Twine(ImportAddrs.size()) + " imports). Was it overwritten by " +
-            "another build?");
+  if (ImportNames.size() != NumImports)
+    return createStringError(inconvertibleErrorCode(),
+                             "Lazy module " + FilePath + " has " +
+                                 Twine(ImportNames.size()) +
+                                 " imports, but its import table has " +
+                                 Twine(NumImports));
 
   std::unordered_set<Function *> DropFunctions;
 
@@ -322,32 +344,23 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t ImportsHash,
     GA->eraseFromParent();
   }
 
-  // Imports get module-unique names. They resolve to the addresses from the
-  // import table, never to other definitions with the same name.
-  std::string ImportPrefix = "__autojit_imp_" + getModuleGUID(SourcePath) + "_";
   for (size_t I = 0; I < ImportNames.size(); I += 1) {
     GlobalValue *Decl = M->getNamedValue(ImportNames[I]);
     if (!Decl)
       continue;
     assert(Decl->isDeclaration() && "Imports must be declarations");
-    std::string Name = ImportPrefix + std::to_string(I);
-    DBG() << "Import " << ImportNames[I] << " as " << Name << " at 0x"
-          << format("%016" PRIx64, ImportAddrs[I]) << "\n";
+    std::string Name = getImportName(Hash, I);
+    DBG() << "Import " << ImportNames[I] << " as " << Name << "\n";
     Decl->setName(Name);
     // JITed code is far away from the static code, so it must not access
     // imports PC-relative. The visibility of the declaration has no meaning
     // for the JIT, but hidden and protected symbols must be dso_local.
     Decl->setVisibility(GlobalValue::DefaultVisibility);
     Decl->setDSOLocal(false);
-    // Undefined weak symbols resolve to null
-    if (ImportAddrs[I] == 0)
-      continue;
-    JITSymbolFlags Flags = JITSymbolFlags::Exported;
-    if (isa<Function>(Decl))
-      Flags |= JITSymbolFlags::Callable;
-    Imports[JIT_->mangleAndIntern(Name)] = {ExecutorAddr(ImportAddrs[I]),
-                                           Flags};
   }
+
+  // The compiler caches the object under this name
+  M->setModuleIdentifier(CacheStem);
 
   bool DebugInfoBroken;
   if (verifyModule(*M, &dbgs(), &DebugInfoBroken)) {
@@ -413,26 +426,25 @@ public:
       : BasicCompiler(std::move(JTMB)) {}
 
   Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
-    constexpr bool IsText = false;
     constexpr bool RequiresNullTerm = false;
-
-    // TODO: verify with input hash
-    const char *CacheFileStem = "/tmp/autojit_";
-    std::string ObjName = getObjFileName(M.getModuleIdentifier());
-    if (ObjName.starts_with(CacheFileStem))
-      if (auto Obj = MemoryBuffer::getFile(ObjName, IsText, RequiresNullTerm)) {
-        LOG() << "Loading module from cache " << ObjName
-              << " (source: " << M.getSourceFileName() << ")\n";
-        return std::move(*Obj);
-      }
-
     SmallVector<char, 0> Buffer;
     compileObject(M, Buffer);
 
-    if (ObjName.starts_with(CacheFileStem)) {
-      std::error_code EC;
-      raw_fd_ostream OS(ObjName, EC, sys::fs::OF_None);
-      OS.write(Buffer.data(), Buffer.size());
+    // AutoJIT::addModule() loads the cached object next time. Other processes
+    // might do that concurrently, so we write it atomically.
+    const char *CacheFileStem = "/tmp/autojit_";
+    std::string ObjName = getObjFileName(M.getModuleIdentifier());
+    if (StringRef(ObjName).starts_with(CacheFileStem)) {
+      SmallString<128> TmpName;
+      int FD;
+      if (!sys::fs::createUniqueFile(ObjName + ".tmp%%%%%%", FD, TmpName)) {
+        {
+          raw_fd_ostream OS(FD, /*shouldClose=*/true);
+          OS.write(Buffer.data(), Buffer.size());
+        }
+        if (sys::fs::rename(TmpName, ObjName))
+          sys::fs::remove(TmpName);
+      }
     }
 
     return std::make_unique<SmallVectorMemoryBuffer>(std::move(Buffer), ObjName,
@@ -482,12 +494,13 @@ autojit::AutoJIT::AutoJIT() {
 }
 
 Error autojit::AutoJIT::initialize(LLJITBuilder &B, bool HaveOrcRuntimeDeps) {
+  UseObjectCache_ = !isEnvVarSet("AUTOJIT_DISABLE_OBJECT_CACHE");
   B.setPlatformSetUp(
       autojit::ExecutorPlatform(g_autojit_debug, HaveOrcRuntimeDeps));
 
   B.CreateCompileFunction = [&](JITTargetMachineBuilder JTMB)
       -> Expected<std::unique_ptr<IRCompileLayer::IRCompiler>> {
-    if (LLVM_UNLIKELY(isEnvVarSet("AUTOJIT_DISABLE_OBJECT_CACHE"))) {
+    if (LLVM_UNLIKELY(!UseObjectCache_)) {
       return std::make_unique<BasicCompiler>(std::move(JTMB));
     }
     return std::make_unique<CachingCompiler>(std::move(JTMB));
@@ -594,15 +607,36 @@ autojit::AutoJIT::ensureModule(const autojit_lazy_module_t *Module) {
   return Error::success();
 }
 
-llvm::Error autojit::AutoJIT::addModule(StringRef FilePath, uint64_t ImportsHash,
+llvm::Error autojit::AutoJIT::addModule(StringRef FilePath, uint64_t Hash,
                                        ArrayRef<uint64_t> ImportAddrs) {
   SymbolMap Imports;
-  auto TSM = loadModule(FilePath, ImportsHash, ImportAddrs, Imports);
-  if (!TSM)
-    return TSM.takeError();
+  for (size_t I = 0; I < ImportAddrs.size(); I += 1) {
+    // Undefined weak symbols resolve to null
+    if (ImportAddrs[I] == 0)
+      continue;
+    Imports[JIT_->mangleAndIntern(getImportName(Hash, I))] = {
+        ExecutorAddr(ImportAddrs[I]), JITSymbolFlags::Exported};
+  }
   if (!Imports.empty())
     if (Error Err = HostImports_->define(absoluteSymbols(std::move(Imports))))
       return Err;
+
+  // Cached objects are named after the contents of the lazy module. We don't
+  // need the IR then: imports are named by index.
+  std::string CacheStem = getCacheStem(FilePath, Hash);
+  if (UseObjectCache_) {
+    constexpr bool IsText = false;
+    constexpr bool RequiresNullTerm = false;
+    std::string ObjName = CacheStem + ".o";
+    if (auto Obj = MemoryBuffer::getFile(ObjName, IsText, RequiresNullTerm)) {
+      DBG() << "Loading module from cache " << ObjName << "\n";
+      return JIT_->addObjectFile(std::move(*Obj));
+    }
+  }
+
+  auto TSM = loadModule(FilePath, Hash, ImportAddrs.size(), CacheStem);
+  if (!TSM)
+    return TSM.takeError();
   return JIT_->addIRModule(std::move(*TSM));
 }
 

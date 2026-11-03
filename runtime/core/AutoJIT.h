@@ -42,9 +42,10 @@ public:
   llvm::Error initialize(llvm::orc::LLJITBuilder &B, bool HaveOrcRuntimeDeps);
   uint64_t lookup(const char *Symbol);
 
-  /// Load the lazy module from FilePath and add it to the JIT. ImportAddrs are
-  /// the addresses from the import table in the module's static object.
-  llvm::Error addModule(llvm::StringRef FilePath, uint64_t ImportsHash,
+  /// Add the lazy module from FilePath to the JIT. Hash is the hash of its
+  /// contents, ImportAddrs are the addresses from the import table in the
+  /// module's static object. Uses the cached object if there is one.
+  llvm::Error addModule(llvm::StringRef FilePath, uint64_t Hash,
                         llvm::ArrayRef<uint64_t> ImportAddrs);
 
   /// Add the lazy module that belongs to the given descriptor from a static
@@ -53,11 +54,11 @@ public:
 
 private:
   llvm::Expected<llvm::orc::ThreadSafeModule>
-  loadModule(llvm::StringRef FilePath, uint64_t ImportsHash,
-             llvm::ArrayRef<uint64_t> ImportAddrs,
-             llvm::orc::SymbolMap &Imports) const;
+  loadModule(llvm::StringRef FilePath, uint64_t Hash, size_t NumImports,
+             llvm::StringRef CacheStem) const;
 
   std::unique_ptr<llvm::orc::LLJIT> JIT_;
+  bool UseObjectCache_ = true;
   llvm::orc::JITDylib *HostImports_ = nullptr;
   std::mutex ModulesMutex_;
   llvm::DenseSet<const autojit_lazy_module_t *> Modules_;
