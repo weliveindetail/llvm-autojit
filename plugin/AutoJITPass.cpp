@@ -16,6 +16,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/CodeGen.h"
 #include "llvm/Support/MD5.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
@@ -231,6 +232,54 @@ private:
   // that the backend folds into a GOT reference. This adds no dynamic
   // relocations for symbols in the image and it shares GOT entries with
   // regular code.
+  // Whether the linker might place GV more than 2GB away from the import
+  // table, so a 32-bit offset can't reach it. This depends on the code model
+  // of the static object. We don't have a TargetMachine here, so we mirror
+  // TargetMachine::isLargeGlobalValue(). GOT slots stay in reach, because the
+  // linker only places large sections far away.
+  static bool mayBeOutOfRange(const Module &M, const GlobalValue &GV) {
+    std::optional<CodeModel::Model> CM = M.getCodeModel();
+    if (CM == CodeModel::Large)
+      return true;
+    const Triple &TT = M.getTargetTriple();
+    if (TT.getArch() != Triple::x86_64 || !TT.isOSBinFormatELF())
+      return false;
+
+    auto InSection = [](const GlobalObject &GO, StringRef Prefix) {
+      StringRef Name = GO.getSection();
+      return Name.consume_front(Prefix) && (Name.empty() || Name[0] == '.');
+    };
+
+    const GlobalObject *GO = GV.getAliaseeObject();
+    if (!GO)
+      return true;
+    auto *Var = dyn_cast<GlobalVariable>(GO);
+    if (!Var)
+      return GO->hasSection() && InSection(*GO, ".ltext");
+    if (Var->isThreadLocal())
+      return false;
+    if (std::optional<CodeModel::Model> VarCM = Var->getCodeModel())
+      return *VarCM == CodeModel::Large;
+    if (Var->hasSection())
+      return InSection(*Var, ".lbss") || InSection(*Var, ".ldata") ||
+             InSection(*Var, ".lrodata");
+    if (CM != CodeModel::Medium)
+      return false;
+    if (!Var->getValueType()->isSized())
+      return true;
+    // Linker-defined symbols can point anywhere in the binary
+    StringRef Name = Var->getName();
+    if (Var->isDeclaration() &&
+        (Name == "__ehdr_start" || Name.starts_with("__start_") ||
+         Name.starts_with("__stop_")))
+      return true;
+    // Read-only data with relocations stays small, but treating it as large
+    // only costs us a GOT entry.
+    uint64_t Size =
+        M.getDataLayout().getTypeAllocSize(Var->getValueType()).getFixedValue();
+    return Size == 0 || Size > M.getLargeDataThreshold().value_or(65536);
+  }
+
   static GlobalVariable *emitLazyModule(Module &M,
                                         ArrayRef<GlobalValue *> Imports,
                                         uint64_t Hash, StringRef FilePath) {
@@ -259,7 +308,8 @@ private:
     for (unsigned I = 0; I < NumEntries; I += 1) {
       GlobalValue *GV = Imports[I];
       Constant *Target = GV;
-      if (!GV->isDSOLocal() || GV->hasExternalWeakLinkage()) {
+      if (!GV->isDSOLocal() || GV->hasExternalWeakLinkage() ||
+          mayBeOutOfRange(M, *GV)) {
         auto *Slot = new GlobalVariable(M, PtrTy, true,
                                         GlobalValue::PrivateLinkage, GV,
                                         "__llvm_autojit_got");
