@@ -20,7 +20,6 @@ fi
 
 echo "Test bzip2 with autojit"
 rm -rf bzip2
-rm -f /tmp/autojit_*
 mkdir bzip2
 
 ./bzip2-autojit-setup.sh 2>&1 | tee bzip2/test-autojit-setup.log

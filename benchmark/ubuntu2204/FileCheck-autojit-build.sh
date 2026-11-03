@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# Keep lazy modules in the build tree, /tmp is shared with all other builds
+export AUTOJIT_DIR="$(pwd)/FileCheck/build_autojit/autojit"
+
 echo "Building autojit binary.."
 ninja -j8 -C FileCheck/build_autojit FileCheck
 

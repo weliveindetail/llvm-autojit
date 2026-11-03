@@ -2,8 +2,11 @@
 set -xeuo pipefail
 
 echo "Test hello-rs with autojit"
-rm -f /tmp/autojit_*
 rm -f hello
+
+# Keep lazy modules in the build tree, /tmp is shared with all other builds
+export AUTOJIT_DIR="$(pwd)/hello-rs-autojit"
+rm -rf "$AUTOJIT_DIR"
 
 export AUTOJIT_DEBUG=On
 
