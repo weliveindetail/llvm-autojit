@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -e
+
+# Build dir lld/build_autojit by default. Link the static stub instead of the
+# shared runtime with AUTOJIT_LINK_STATIC_RUNTIME=On.
+AUTOJIT_BUILD_DIR="${AUTOJIT_BUILD_DIR:-build_autojit}"
+rm -rf lld/$AUTOJIT_BUILD_DIR
+
+# Keep lazy modules in the build tree, /tmp is shared with all other builds
+export AUTOJIT_DIR="$(pwd)/lld/$AUTOJIT_BUILD_DIR/autojit"
+
+CFLAGS="-fpass-plugin=@CMAKE_INSTALL_PREFIX@/lib/autojit.so"
+if [ "$AUTOJIT_LINK_STATIC_RUNTIME" = "On" ]; then
+  # FIXME: Make arch generic, right now it's specific for Intel
+  LDFLAGS="-L@CMAKE_INSTALL_PREFIX@/lib -lautojit_static-x86_64"
+else
+  LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime"
+fi
+
+echo "Configuring autojit lld.."
+CC="@AUTOJIT_BENCH_TOOLS_DIR@/clang" CXX="@AUTOJIT_BENCH_TOOLS_DIR@/clang++" cmake -GNinja \
+    -S "llvm-project/llvm" \
+    -B "lld/$AUTOJIT_BUILD_DIR" \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DLLVM_ENABLE_PROJECTS=lld \
+    -DLLVM_TARGETS_TO_BUILD=X86 \
+    -DLLVM_ENABLE_LIBCXX=Off \
+    -DLLVM_USE_LINKER=lld \
+    -DCMAKE_C_FLAGS="$CFLAGS" \
+    -DCMAKE_CXX_FLAGS="$CFLAGS" \
+    -DCMAKE_EXE_LINKER_FLAGS="$LDFLAGS" \
+    -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS"
