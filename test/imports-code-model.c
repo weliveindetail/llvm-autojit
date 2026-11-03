@@ -1,4 +1,6 @@
 // Check that the import table reaches large data with the medium code model.
+// REQUIRES: x86_64
+//
 // The linker places After more than 2GB away from the import table, which a
 // 32-bit offset can't reach. Huge is in .lbss and doesn't need memory.
 //

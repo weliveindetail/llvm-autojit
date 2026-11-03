@@ -405,7 +405,11 @@ private:
         auto *Slot = new GlobalVariable(M, PtrTy, true,
                                         GlobalValue::PrivateLinkage, GV,
                                         "__llvm_autojit_got");
-        Slot->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+        // On AArch64, the backend would fold it into R_AARCH64_GOTPCREL32,
+        // which GNU ld doesn't support (as of 2.42). Without unnamed_addr,
+        // the slot stays in .data.rel.ro and the loader fills it.
+        if (!TT.isAArch64())
+          Slot->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
         Target = Slot;
         Indirect[I / 8] |= 1 << (I % 8);
       }
