@@ -1020,8 +1020,14 @@ static int send_setup_message(void) {
   sps_buffer_t setup_data;
   sps_buffer_init(&setup_data, 2048);
 
-  /* Get target triple - for now use a simple default */
+  /* Target triple of the executor process */
+#if defined(__x86_64__) && defined(__linux__)
   const char *triple = "x86_64-unknown-linux-gnu";
+#elif defined(__aarch64__) && defined(__linux__)
+  const char *triple = "aarch64-unknown-linux-gnu";
+#else
+#error "Unsupported target for the autojit stub"
+#endif
   sps_write_string(&setup_data, triple);
 
   /* Get page size */
