@@ -133,19 +133,6 @@ static StringRef toString(GlobalVariable::UnnamedAddr UA) {
 }
 #endif
 
-static std::string getModuleGUID(const std::string &SourcePath) {
-  // Generate MD5 hash of the source path
-  MD5 Hasher;
-  Hasher.update(SourcePath);
-  MD5::MD5Result Hash;
-  Hasher.final(Hash);
-
-  // Convert to hex string
-  SmallString<32> Result;
-  MD5::stringifyResult(Hash, Result);
-  return Result.str().str();
-}
-
 static GlobalValue::GUID getFunctionGUID(Twine ModName, Function *F) {
   if (F->hasLinkOnceLinkage())
     return MD5Hash(F->getName());
@@ -343,9 +330,6 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
   for (Function *F : DropFunctions) {
     F->removeFromParent();
   }
-
-  // Local definitions get exposed and must not collide
-  std::string UniquePostfix = "_autojit_module_" + getModuleGUID(SourcePath);
 
   for (GlobalVariable &GV : M->globals()) {
     if (GV.hasAtLeastLocalUnnamedAddr()) {
