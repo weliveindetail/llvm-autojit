@@ -130,6 +130,30 @@ if gdb and can_run_gdb(gdb):
     config.available_features.add('gdb')
     config.substitutions.append(('%gdb', f"{gdb} -batch -nx -iex 'set debuginfod enabled off'"))
 
+# Same for LLDB. Prefer the one that matches our LLVM version. Debuginfod is
+# off like for GDB: with DEBUGINFOD_URLS set, LLDB may download symbols for
+# system libraries and stall for tens of seconds. Source listings at stops are
+# off, because they would echo CHECK lines into the output.
+lldb_init = ("-O 'settings clear plugin.symbol-locator.debuginfod.server-urls'"
+             " -O 'settings set plugin.jit-loader.gdb.enable on'"
+             " -O 'settings set stop-line-count-before 0'"
+             " -O 'settings set stop-line-count-after 0'")
+
+def can_run_lldb(lldb: str) -> bool:
+    try:
+        o = subprocess.run([lldb, '-b', '-x', '-O',
+                            'settings clear plugin.symbol-locator.debuginfod.server-urls',
+                            '-o', 'run', '--', 'true'],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return o.returncode == 0 and 'exited with status = 0' in o.stdout
+
+lldb = shutil.which('lldb', path=config.llvm_tools_dir) or shutil.which('lldb')
+if lldb and can_run_lldb(lldb):
+    config.available_features.add('lldb')
+    config.substitutions.append(('%lldb', f"{lldb} -b -x {lldb_init}"))
+
 # The runtime works with both C++ standard libraries. Check which ones we can
 # build programs with.
 def can_link_cxx(stdlib: str) -> bool:
