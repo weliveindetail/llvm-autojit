@@ -311,12 +311,8 @@ private:
     return FilePath;
   }
 
-  // Emit the lazy module descriptor (see common/LazyModule.h). Each import
-  // entry is a 32-bit offset from the entry to its target. For symbols that
-  // might not be local to the linked image, we point to a GOT-equivalent slot
-  // that the backend folds into a GOT reference. This adds no dynamic
-  // relocations for symbols in the image and it shares GOT entries with
-  // regular code.
+  // Emit the descriptor that trampolines pass to the runtime. See
+  // common/LazyModule.h for the layout.
   static GlobalVariable *emitLazyModule(Module &M,
                                         ArrayRef<GlobalValue *> Imports,
                                         uint64_t Hash, StringRef FilePath) {
@@ -324,6 +320,8 @@ private:
     Type *I32Ty = Type::getInt32Ty(Ctx);
     Type *I64Ty = Type::getInt64Ty(Ctx);
     PointerType *PtrTy = PointerType::get(Ctx, 0);
+    // Header, import entries, bitmap of indirect entries and the path inline,
+    // so the descriptor has no relocations that the loader would process
     unsigned NumEntries = Imports.size();
     ArrayType *EntriesTy = ArrayType::get(I32Ty, NumEntries);
     ArrayType *IndirectTy =
@@ -332,6 +330,7 @@ private:
     StructType *TableTy = StructType::get(
         Ctx, {I32Ty, I32Ty, I64Ty, EntriesTy, IndirectTy, Path->getType()});
 
+    // Entries refer to their own address, so create the global first
     auto *Table = new GlobalVariable(M, TableTy, true,
                                      GlobalValue::PrivateLinkage, nullptr,
                                      "__llvm_autojit_module");
@@ -350,6 +349,9 @@ private:
     for (unsigned I = 0; I < NumEntries; I += 1) {
       GlobalValue *GV = Imports[I];
       Constant *Target = GV;
+      // Symbols that might be outside the linked image or out of range for a
+      // 32-bit offset go through a GOT-equivalent slot. The backend folds it
+      // into a reference to the symbol's GOT entry, which regular code shares.
       if (!GV->isDSOLocal() || GV->hasExternalWeakLinkage() ||
           mayBeOutOfRange(*GV, TT, CM, LargeDataThreshold)) {
         auto *Slot = new GlobalVariable(M, PtrTy, true,
@@ -359,6 +361,8 @@ private:
         Target = Slot;
         Indirect[I / 8] |= 1 << (I % 8);
       }
+      // Offset from the entry to its target: a static relocation that the
+      // linker resolves, since both are in the same image
       Constant *Idx[] = {Zero, EntriesIdx, ConstantInt::get(I32Ty, I)};
       Constant *Place =
           ConstantExpr::getInBoundsGetElementPtr(TableTy, Table, Idx);
