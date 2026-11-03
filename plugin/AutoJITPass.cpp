@@ -19,6 +19,7 @@
 #include "llvm/Support/MD5.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/xxhash.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
@@ -141,23 +142,16 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     // this on the same IR that we save: the runtime repeats it on the loaded
     // module and matches the entries in our import table by index.
     SmallVector<GlobalValue *, 32> Imports;
-    uint64_t ImportsHash = 0;
-    autojit::forEachImport(M, [&](GlobalValue &GV) {
-      Imports.push_back(&GV);
-      ImportsHash = autojit::hashImportName(ImportsHash, GV.getName());
-    });
+    autojit::forEachImport(M, [&](GlobalValue &GV) { Imports.push_back(&GV); });
 
     // Save module for function importing at runtime
     M.setModuleIdentifier(FileStem);
-    std::string FilePath = saveModule(M, FileStem + FileExt);
-
-    // The runtime caches the compiled lazy module. It must not reuse it with
-    // the new lazy module.
-    sys::fs::remove(FileStem + ".o");
+    uint64_t Hash;
+    std::string FilePath = saveModule(M, FileStem + FileExt, &Hash);
 
     // All further changes only affect static code
     GlobalVariable *LazyModule =
-        emitLazyModule(M, Imports, ImportsHash, FilePath);
+        emitLazyModule(M, Imports, Hash, FilePath);
     FunctionType *MaterializeFnTy = FunctionType::get(
         PtrTy, {PtrTy, Type::getInt64Ty(Context), PtrTy}, false);
     FunctionCallee MaterializeFn =
@@ -226,10 +220,26 @@ private:
     return Result.str().str();
   }
 
-  std::string saveModule(const Module &M, Twine Path) {
+  std::string saveModule(const Module &M, Twine Path,
+                         uint64_t *Hash = nullptr) {
     std::string FilePath = Path.str();
 
-    // Save to temporary file
+    SmallVector<char, 0> Buffer;
+    raw_svector_ostream BufferOS(Buffer);
+    if (LLVM_UNLIKELY(AutoJITDebug)) {
+      // Output LLVM IR as text
+      M.print(BufferOS, nullptr);
+      errs() << "autojit-plugin: " << FilePath << " (source: " << M.getName()
+             << ")\n";
+    } else {
+      // Output bitcode
+      WriteBitcodeToFile(M, BufferOS);
+    }
+
+    // The runtime identifies the contents of the file by this hash
+    if (Hash)
+      *Hash = xxh3_64bits(arrayRefFromStringRef(BufferOS.str()));
+
     std::error_code EC;
     raw_fd_ostream OS(FilePath, EC, sys::fs::OF_None);
     if (EC) {
@@ -237,17 +247,7 @@ private:
              << " module: " << EC.message() << "\n";
       exit(1);
     }
-
-    if (LLVM_UNLIKELY(AutoJITDebug)) {
-      // Output LLVM IR as text
-      M.print(OS, nullptr);
-      errs() << "autojit-plugin: " << FilePath << " (source: " << M.getName()
-             << ")\n";
-    } else {
-      // Output bitcode
-      WriteBitcodeToFile(M, OS);
-    }
-
+    OS << BufferOS.str();
     return FilePath;
   }
 

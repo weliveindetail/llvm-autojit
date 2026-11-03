@@ -1,10 +1,8 @@
 #pragma once
 
-#include "llvm/ADT/StableHashing.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Support/xxhash.h"
 
 namespace autojit {
 
@@ -56,10 +54,6 @@ void forEachImport(llvm::Module &M, CallbackT Callback) {
       continue;
     Callback(static_cast<GlobalValue &>(GV));
   }
-}
-
-inline uint64_t hashImportName(uint64_t Hash, llvm::StringRef Name) {
-  return llvm::stable_hash_combine(Hash, llvm::xxh3_64bits(Name));
 }
 
 } // namespace autojit

@@ -33,7 +33,7 @@ extern "C" {
 typedef struct {
   uint32_t version;
   uint32_t num_imports;
-  /* Hash of the import names in order, to detect stale lazy modules */
+  /* Hash of the lazy module file contents, to detect stale lazy modules */
   uint64_t hash;
 } autojit_lazy_module_t;
 
