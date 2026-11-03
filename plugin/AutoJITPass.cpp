@@ -63,6 +63,91 @@ static std::string guidToFnName(GlobalValue::GUID Guid) {
   return OS.str();
 }
 
+// Copy of TargetMachine::isLargeGlobalValue() from LLVM 21, because pass
+// plugins have no access to the TargetMachine. Keep it in sync. The code model
+// and large data threshold come from the module flags here. One deviation: we
+// can't classify sections without TargetLoweringObjectFile, so read-only data
+// with relocations counts as large, if it exceeds the threshold.
+static bool isLargeGlobalValue(const GlobalValue &GVal, const Triple &TT,
+                               std::optional<CodeModel::Model> CM,
+                               uint64_t LargeDataThreshold) {
+  if (TT.getArch() != Triple::x86_64)
+    return false;
+
+  // Remaining logic below is ELF-specific. For other object file formats where
+  // the large code model is mostly used for JIT compilation, just look at the
+  // code model.
+  if (!TT.isOSBinFormatELF())
+    return CM == CodeModel::Large;
+
+  auto *GO = GVal.getAliaseeObject();
+
+  // Be conservative if we can't find an underlying GlobalObject.
+  if (!GO)
+    return true;
+
+  auto *GV = dyn_cast<GlobalVariable>(GO);
+
+  auto IsPrefix = [](StringRef Name, StringRef Prefix) {
+    return Name.consume_front(Prefix) && (Name.empty() || Name[0] == '.');
+  };
+
+  // Functions/GlobalIFuncs are only large under the large code model.
+  if (!GV) {
+    if (GO->hasSection())
+      return IsPrefix(GO->getSection(), ".ltext");
+    return CM == CodeModel::Large;
+  }
+
+  if (GV->isThreadLocal())
+    return false;
+
+  // An explicit code model on the variable decides about its section.
+  if (auto VarCM = GV->getCodeModel()) {
+    if (*VarCM == CodeModel::Small)
+      return false;
+    if (*VarCM == CodeModel::Large)
+      return true;
+  }
+
+  // Globals in explicit sections are small, except for the standard large
+  // sections.
+  if (GV->hasSection()) {
+    StringRef Name = GV->getSection();
+    return IsPrefix(Name, ".lbss") || IsPrefix(Name, ".ldata") ||
+           IsPrefix(Name, ".lrodata");
+  }
+
+  // Respect large data threshold for medium and large code models.
+  if (CM == CodeModel::Medium || CM == CodeModel::Large) {
+    if (!GV->getValueType()->isSized())
+      return true;
+    // Linker defined start/stop symbols can point to arbitrary points in the
+    // binary, so treat them as large.
+    if (GV->isDeclaration() && (GV->getName() == "__ehdr_start" ||
+                                GV->getName().starts_with("__start_") ||
+                                GV->getName().starts_with("__stop_")))
+      return true;
+    const DataLayout &DL = GV->getDataLayout();
+    uint64_t Size = DL.getTypeAllocSize(GV->getValueType());
+    return Size == 0 || Size > LargeDataThreshold;
+  }
+
+  return false;
+}
+
+// Whether a 32-bit PC-relative reference from regular data in the same object
+// might not reach GV after linking. The linker places large sections far away,
+// so references to them might be out of range. With the large code model, we
+// don't rely on any distances.
+static bool mayBeOutOfRange(const GlobalValue &GV, const Triple &TT,
+                            std::optional<CodeModel::Model> CM,
+                            uint64_t LargeDataThreshold) {
+  if (CM == CodeModel::Large)
+    return true;
+  return isLargeGlobalValue(GV, TT, CM, LargeDataThreshold);
+}
+
 struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
     std::string GUID = getModuleGUID(M);
@@ -232,54 +317,6 @@ private:
   // that the backend folds into a GOT reference. This adds no dynamic
   // relocations for symbols in the image and it shares GOT entries with
   // regular code.
-  // Whether the linker might place GV more than 2GB away from the import
-  // table, so a 32-bit offset can't reach it. This depends on the code model
-  // of the static object. We don't have a TargetMachine here, so we mirror
-  // TargetMachine::isLargeGlobalValue(). GOT slots stay in reach, because the
-  // linker only places large sections far away.
-  static bool mayBeOutOfRange(const Module &M, const GlobalValue &GV) {
-    std::optional<CodeModel::Model> CM = M.getCodeModel();
-    if (CM == CodeModel::Large)
-      return true;
-    const Triple &TT = M.getTargetTriple();
-    if (TT.getArch() != Triple::x86_64 || !TT.isOSBinFormatELF())
-      return false;
-
-    auto InSection = [](const GlobalObject &GO, StringRef Prefix) {
-      StringRef Name = GO.getSection();
-      return Name.consume_front(Prefix) && (Name.empty() || Name[0] == '.');
-    };
-
-    const GlobalObject *GO = GV.getAliaseeObject();
-    if (!GO)
-      return true;
-    auto *Var = dyn_cast<GlobalVariable>(GO);
-    if (!Var)
-      return GO->hasSection() && InSection(*GO, ".ltext");
-    if (Var->isThreadLocal())
-      return false;
-    if (std::optional<CodeModel::Model> VarCM = Var->getCodeModel())
-      return *VarCM == CodeModel::Large;
-    if (Var->hasSection())
-      return InSection(*Var, ".lbss") || InSection(*Var, ".ldata") ||
-             InSection(*Var, ".lrodata");
-    if (CM != CodeModel::Medium)
-      return false;
-    if (!Var->getValueType()->isSized())
-      return true;
-    // Linker-defined symbols can point anywhere in the binary
-    StringRef Name = Var->getName();
-    if (Var->isDeclaration() &&
-        (Name == "__ehdr_start" || Name.starts_with("__start_") ||
-         Name.starts_with("__stop_")))
-      return true;
-    // Read-only data with relocations stays small, but treating it as large
-    // only costs us a GOT entry.
-    uint64_t Size =
-        M.getDataLayout().getTypeAllocSize(Var->getValueType()).getFixedValue();
-    return Size == 0 || Size > M.getLargeDataThreshold().value_or(65536);
-  }
-
   static GlobalVariable *emitLazyModule(Module &M,
                                         ArrayRef<GlobalValue *> Imports,
                                         uint64_t Hash, StringRef FilePath) {
@@ -303,13 +340,18 @@ private:
     SmallVector<Constant *, 32> Entries;
     Entries.reserve(NumEntries);
     SmallVector<uint8_t, 8> Indirect((NumEntries + 7) / 8, 0);
+    // Module flags are expensive to look up, so we do it once
+    const Triple &TT = M.getTargetTriple();
+    std::optional<CodeModel::Model> CM = M.getCodeModel();
+    uint64_t LargeDataThreshold = M.getLargeDataThreshold().value_or(0);
+
     Constant *Zero = ConstantInt::get(I32Ty, 0);
     Constant *EntriesIdx = ConstantInt::get(I32Ty, 3);
     for (unsigned I = 0; I < NumEntries; I += 1) {
       GlobalValue *GV = Imports[I];
       Constant *Target = GV;
       if (!GV->isDSOLocal() || GV->hasExternalWeakLinkage() ||
-          mayBeOutOfRange(M, *GV)) {
+          mayBeOutOfRange(*GV, TT, CM, LargeDataThreshold)) {
         auto *Slot = new GlobalVariable(M, PtrTy, true,
                                         GlobalValue::PrivateLinkage, GV,
                                         "__llvm_autojit_got");
