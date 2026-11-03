@@ -221,6 +221,16 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     SmallVector<GlobalValue *, 32> Imports;
     autojit::forEachImport(M, [&](GlobalValue &GV) { Imports.push_back(&GV); });
 
+    // Lazy modules get their own copies of unnamed_addr variables, so they
+    // aren't imports. Static code might not use them anymore, but other
+    // objects might still refer to them, e.g. linkonce vtables. They must
+    // stay in the static object.
+    SmallVector<GlobalValue *, 8> KeepVars;
+    for (GlobalVariable &GV : M.globals())
+      if (!GV.isDeclaration() && !GV.hasLocalLinkage() &&
+          GV.hasAtLeastLocalUnnamedAddr() && autojit::hasLiveUses(GV))
+        KeepVars.push_back(&GV);
+
     // Save module for function importing at runtime
     M.setModuleIdentifier(FileStem);
     uint64_t Hash;
@@ -247,6 +257,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     // Add all at once: each call rebuilds the entire llvm.used array
     SmallVector<GlobalValue *, 16> Used(LazifyFns.begin(), LazifyFns.end());
     appendToUsed(M, Used);
+    appendToCompilerUsed(M, KeepVars);
 
     if (LLVM_UNLIKELY(AutoJITDebug)) {
       saveModule(M, FileStem + "_static" + FileExt);
