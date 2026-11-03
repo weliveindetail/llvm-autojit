@@ -194,7 +194,6 @@ private:
 
   uint64_t getNextSeqNo() { return NextSeqNo++; }
   void releaseSeqNo(uint64_t SeqNo) {}
-  Error countSeqNo(uint64_t RemoteSeqNo);
 
   Expected<tpctypes::DylibHandle> loadDylib(const char *DylibPath) override;
 
@@ -217,7 +216,9 @@ private:
   std::unique_ptr<jitlink::JITLinkMemoryManager> OwnedMemMgr;
   std::unique_ptr<MemoryAccess> OwnedMemAccess;
 
-  std::atomic<uint64_t> NextSeqNo = 0;
+  // Each side numbers the calls it makes. Results carry the number of their
+  // call. 0 is the Setup message.
+  std::atomic<uint64_t> NextSeqNo = 1;
   PendingCallWrapperResultsMap PendingCallWrapperResults;
 };
 
@@ -227,8 +228,9 @@ private:
 
 autojit::Session::Session(int InFD, int OutFD,
                           std::unique_ptr<ExecutionSession> &ES) {
-  unsigned NumThreads = 1;
-  auto D = std::make_unique<DynamicThreadPoolTaskDispatcher>(NumThreads);
+  // The stub calls concurrently from many threads. Handlers block while they
+  // wait for nested calls to the stub, so we don't limit the threads.
+  auto D = std::make_unique<DynamicThreadPoolTaskDispatcher>(std::nullopt);
   auto SSP = std::make_shared<SymbolStringPool>();
   ES = std::make_unique<ExecutionSession>(
       std::make_unique<RemoteEPC>(std::move(SSP), std::move(D)));
@@ -656,21 +658,6 @@ autojit::RemoteEPC::createDefaultMemoryAccess(RemoteEPC &SREPC) {
   return std::make_unique<EPCGenericMemoryAccess>(SREPC, FAs);
 }
 
-Error autojit::RemoteEPC::countSeqNo(uint64_t RemoteSeqNo) {
-  uint64_t SeqNo = getNextSeqNo();
-  if (RemoteSeqNo != SeqNo) {
-#if !defined(NDEBUG)
-    if (g_autojit_debug)
-      return createStringError(inconvertibleErrorCode(),
-                               "Expected sequence number %llu but got: %llu\n",
-                               SeqNo, RemoteSeqNo);
-#endif
-    LOG() << "Warning: Expected sequence number " << SeqNo
-          << " but got: " << RemoteSeqNo << "\n";
-  }
-  return Error::success();
-}
-
 Error autojit::RemoteEPC::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
                                       ExecutorAddr TagAddr,
                                       ArrayRef<char> ArgBytes) {
@@ -710,10 +697,6 @@ Error autojit::RemoteEPC::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
 Error autojit::RemoteEPC::handleSetup(uint64_t RemoteSeqNo,
                                       ExecutorAddr TagAddr,
                                       SimpleRemoteEPCArgBytesVector ArgBytes) {
-  // Keep sequence numbers in sync bi-directionally
-  if (Error Err = countSeqNo(RemoteSeqNo))
-    return Err;
-
   if (TagAddr)
     return make_error<StringError>("Setup packet TagAddr not zero",
                                    inconvertibleErrorCode());
@@ -883,10 +866,6 @@ void autojit::RemoteEPC::handleCallWrapper(
   assert(ES && "No ExecutionSession attached");
   D->dispatch(makeGenericNamedTask(
       [this, RemoteSeqNo, TagAddr, ArgBytes = std::move(ArgBytes)]() {
-        // Keep sequence numbers in sync bi-directionally
-        if (Error Err = countSeqNo(RemoteSeqNo))
-          getExecutionSession().reportError(std::move(Err));
-
         // Call the wrapper function directly
         using WrapperFnTy =
             shared::CWrapperFunctionResult (*)(const char *, size_t);
