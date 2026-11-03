@@ -1,3 +1,4 @@
+// REQUIRES: libcxx
 // RUN: %clang -fpass-plugin=%autojit_plugin -stdlib=libc++ -std=c++17 -c %s -o %t.o
 // RUN: %clang %t.o -lc++ -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t.exe
 // RUN: %t.exe | FileCheck %s

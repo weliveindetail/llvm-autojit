@@ -1,5 +1,6 @@
 #include "runtime/AutoJITRuntime.h"
 
+#include "common/EHFrames.h"
 #include "common/Imports.h"
 
 #include "runtime/core/AutoJIT.h"
@@ -33,6 +34,9 @@
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/xxhash.h>
+#include <llvm/TargetParser/Host.h>
+#include <llvm/Support/Process.h>
+#include <llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h>
 
 #if LLVM_VERSION_MAJOR >= 21
 #include <llvm/ExecutionEngine/Orc/SelfExecutorProcessControl.h>
@@ -599,6 +603,72 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B, bool HaveOrcRuntimeDeps) {
   return Error::success();
 }
 
+// Register EH frames of JITed code with the program's unwinder (see
+// common/EHFrames.h). LLVM decides this when it is built and we link our own
+// private copy of the unwinder.
+static const autojit_eh_frame_registrar_t &getEHFrameRegistrar() {
+  static autojit_eh_frame_registrar_t Registrar = [] {
+    autojit_eh_frame_registrar_t R;
+    if (autojit_find_eh_frame_registrar(&R) == 0)
+      DBG() << "Register EH frames with unwinder in " << R.unwinder << "\n";
+    else
+      DBG() << "No unwinder found in the program, skip EH frames\n";
+    return R;
+  }();
+  return Registrar;
+}
+
+static Error registerEHFrames(ExecutorAddrRange EHFrame) {
+  autojit_register_eh_frames(&getEHFrameRegistrar(),
+                             EHFrame.Start.toPtr<const void *>(),
+                             EHFrame.size());
+  return Error::success();
+}
+
+static Error deregisterEHFrames(ExecutorAddrRange EHFrame) {
+  autojit_deregister_eh_frames(&getEHFrameRegistrar(),
+                               EHFrame.Start.toPtr<const void *>(),
+                               EHFrame.size());
+  return Error::success();
+}
+
+static shared::CWrapperFunctionResult
+registerEHFramesAllocAction(const char *ArgData, size_t ArgSize) {
+  using namespace shared;
+  return WrapperFunction<SPSError(SPSExecutorAddrRange)>::handle(
+             ArgData, ArgSize, registerEHFrames)
+      .release();
+}
+
+static shared::CWrapperFunctionResult
+deregisterEHFramesAllocAction(const char *ArgData, size_t ArgSize) {
+  using namespace shared;
+  return WrapperFunction<SPSError(SPSExecutorAddrRange)>::handle(
+             ArgData, ArgSize, deregisterEHFrames)
+      .release();
+}
+
+// In-process executor that registers EH frames with the program's unwinder.
+class InProcessControl : public SelfExecutorProcessControl {
+public:
+  using SelfExecutorProcessControl::SelfExecutorProcessControl;
+
+  static Expected<std::unique_ptr<InProcessControl>> Create() {
+    auto PageSize = sys::Process::getPageSize();
+    if (!PageSize)
+      return PageSize.takeError();
+    auto EPC = std::make_unique<InProcessControl>(
+        std::make_shared<SymbolStringPool>(),
+        std::make_unique<InPlaceTaskDispatcher>(),
+        Triple(sys::getProcessTriple()), *PageSize, nullptr);
+    EPC->BootstrapSymbols[rt::RegisterEHFrameSectionAllocActionName] =
+        ExecutorAddr::fromPtr(&registerEHFramesAllocAction);
+    EPC->BootstrapSymbols[rt::DeregisterEHFrameSectionAllocActionName] =
+        ExecutorAddr::fromPtr(&deregisterEHFramesAllocAction);
+    return EPC;
+  }
+};
+
 autojit::AutoJIT &autojit::AutoJIT::get() {
   static std::mutex Setup;
   static ManagedStatic<std::unique_ptr<autojit::AutoJIT>> Instance;
@@ -607,8 +677,7 @@ autojit::AutoJIT &autojit::AutoJIT::get() {
     std::lock_guard<std::mutex> Lock(Setup);
     if (!Instance.isConstructed()) {
       LLJITBuilder Builder;
-      Builder.setExecutorProcessControl(
-          ExitOnErr(SelfExecutorProcessControl::Create()));
+      Builder.setExecutorProcessControl(ExitOnErr(InProcessControl::Create()));
       *Instance = std::make_unique<AutoJIT>();
       constexpr bool HaveSupportedCxxStdlib = true;
       ExitOnErr(Instance->get()->initialize(Builder, HaveSupportedCxxStdlib));

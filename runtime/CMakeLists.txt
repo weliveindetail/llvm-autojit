@@ -190,10 +190,13 @@ target_link_libraries(autojit-so PRIVATE ${llvm_libs} ${tpde_libs})
 # re-enter materialization. The executable exports its own definitions of
 # libstdc++ symbols (e.g. template instantiations of std::string) and they
 # interpose the ones from libstdc++.so. So we link a private copy of the C++
-# standard library and resolve all references within the runtime. The unwinder
-# must stay shared: we register EH frames of JITed code with the process.
+# standard library and resolve all references within the runtime. Its
+# unwinder is private as well, so we never pull libgcc_s into programs
+# that use libunwind. We register EH frames of JITed code with the program's
+# unwinder, which we look up at run-time (see common/EHFrames.h).
 target_link_options(autojit-so PRIVATE
   -static-libstdc++
+  -static-libgcc
   -Wl,--exclude-libs,ALL
   -Wl,-z,defs
   -Wl,-Bsymbolic

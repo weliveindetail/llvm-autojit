@@ -1,9 +1,15 @@
-// REQUIRES: orc-rt || libcxx
-
-// RUN: %clang -fexceptions -frtti -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -stdlib=libc++ -o %t.exe %s
-
-// RUN: %t.exe
-// RUN: %t.exe catch-me-if-you-can | FileCheck %s
+// Exceptions thrown and caught in JITed code. The runtime registers EH frames
+// with the unwinder of the program, which is libunwind for libc++ here.
+// REQUIRES: libcxx
+//
+// RUN: %clang -fexceptions -frtti -fpass-plugin=%autojit_plugin -stdlib=libc++ -c %s -o %t.o
+// RUN: %clang -stdlib=libc++ %t.o -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
+// RUN: %t_inprocess.exe
+// RUN: %t_inprocess.exe catch-me-if-you-can | FileCheck %s
+//
+// RUN: %clang -stdlib=libc++ %t.o -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
+// RUN: %t_remote.exe
+// RUN: %t_remote.exe catch-me-if-you-can | FileCheck %s
 
 // CHECK: catch-me-if-you-can
 

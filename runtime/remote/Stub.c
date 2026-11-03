@@ -1,3 +1,4 @@
+#include "common/EHFrames.h"
 #include "common/LazyModule.h"
 #include "runtime/remote/Stub.h"
 #include "runtime/remote/StubSPS.h"
@@ -1642,6 +1643,41 @@ static void initialize_daemon(void) {
 /* External declarations for libunwind/libgcc eh-frame functions */
 extern void __register_frame(const void *);
 extern void __deregister_frame(const void *);
+extern void __unw_add_dynamic_eh_frame_section(const void *)
+    __attribute__((weak));
+extern void __unw_remove_dynamic_eh_frame_section(const void *)
+    __attribute__((weak));
+extern void __unw_add_dynamic_fde(const void *) __attribute__((weak));
+
+static autojit_eh_frame_registrar_t g_eh_frame_registrar;
+static pthread_once_t g_eh_frame_registrar_once = PTHREAD_ONCE_INIT;
+
+/* Register EH frames with the program's unwinder (see common/EHFrames.h). If
+ * it doesn't export one, it must be linked into the executable. */
+static void find_eh_frame_registrar(void) {
+  autojit_eh_frame_registrar_t *r = &g_eh_frame_registrar;
+  if (autojit_find_eh_frame_registrar(r) == 0) {
+    DEBUG_LOG("Register EH frames with unwinder in %s\n", r->unwinder);
+    return;
+  }
+  DEBUG_LOG("Register EH frames with unwinder in executable\n");
+  if (__unw_add_dynamic_eh_frame_section &&
+      __unw_remove_dynamic_eh_frame_section) {
+    r->add_section = __unw_add_dynamic_eh_frame_section;
+    r->remove_section = __unw_remove_dynamic_eh_frame_section;
+  } else if (__unw_add_dynamic_fde) {
+    r->add_fde = __register_frame;
+    r->remove_fde = __deregister_frame;
+  } else {
+    r->add_section = __register_frame;
+    r->remove_section = __deregister_frame;
+  }
+}
+
+static const autojit_eh_frame_registrar_t *get_eh_frame_registrar(void) {
+  pthread_once(&g_eh_frame_registrar_once, find_eh_frame_registrar);
+  return &g_eh_frame_registrar;
+}
 
 /* Wrapper for registering EH frames - called by daemon via RPC
  * Args: SPSExecutorAddrRange (Start:uint64_t, End:uint64_t)
@@ -1669,12 +1705,9 @@ static ssize_t llvm_orc_registerEHFrameAllocAction(const char *ArgData,
 
   DEBUG_LOG("Registering EH frame section at 0x%lx\n", start_addr);
 
-  /* Call __register_frame with the start address
-   * Note: libgcc expects a pointer to the start of the .eh_frame section.
-   * libunwind might require walking the section and registering each FDE,
-   * but for now we assume libgcc behavior (simpler and more common).
-   */
-  __register_frame((const void *)(uintptr_t)start_addr);
+  autojit_register_eh_frames(get_eh_frame_registrar(),
+                             (const void *)(uintptr_t)start_addr,
+                             end_addr - start_addr);
 
   /* SPSError [has_error:1_byte] */
   sps_write_uint8(Result, 0);
@@ -1707,8 +1740,9 @@ static ssize_t llvm_orc_deregisterEHFrameAllocAction(const char *ArgData,
 
   DEBUG_LOG("Deregistering EH frame section at 0x%lx\n", start_addr);
 
-  /* Call __deregister_frame with the start address */
-  __deregister_frame((const void *)(uintptr_t)start_addr);
+  autojit_deregister_eh_frames(get_eh_frame_registrar(),
+                               (const void *)(uintptr_t)start_addr,
+                               end_addr - start_addr);
 
   /* SPSError [has_error:1_byte] */
   sps_write_uint8(Result, 0);
