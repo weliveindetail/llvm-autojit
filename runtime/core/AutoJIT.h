@@ -33,6 +33,7 @@ namespace autojit {
 
 void initializeDebugLog();
 class ImportResolver;
+class ObjectCacheWriter;
 
 
 class AutoJIT {
@@ -62,6 +63,7 @@ private:
   std::unique_ptr<llvm::orc::LLJIT> JIT_;
   bool UseObjectCache_ = true;
   ImportResolver *Imports_ = nullptr;
+  std::unique_ptr<ObjectCacheWriter> CacheWriter_;
   // Threads that need the same module wait for it, all others proceed
   struct ModuleState {
     std::once_flag Loaded;
