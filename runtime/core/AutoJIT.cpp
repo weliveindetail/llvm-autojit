@@ -511,7 +511,7 @@ public:
 
   Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
     std::lock_guard<std::mutex> Lock(CompileMutex);
-    auto &B = Buffers.emplace_back();
+    auto &B = Buffers.emplace_back(std::make_unique<std::vector<uint8_t>>());
     if (!Compiler->compile_to_elf(M, *B)) {
       errs() << "TPDE Failed to compile IR file: " << M.getName() << "\n";
       exit(1);
