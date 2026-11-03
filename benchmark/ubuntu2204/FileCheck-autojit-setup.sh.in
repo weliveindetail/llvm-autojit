@@ -2,6 +2,9 @@
 
 rm -rf FileCheck/build_autojit
 
+# Keep lazy modules in the build tree, /tmp is shared with all other builds
+export AUTOJIT_DIR="$(pwd)/FileCheck/build_autojit/autojit"
+
 # For debug mode add: -Xclang -load -Xclang @CMAKE_INSTALL_PREFIX@/lib/autojit.so -mllvm -autojit-debug
 CFLAGS="-fpass-plugin=@CMAKE_INSTALL_PREFIX@/lib/autojit.so"
 LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -Wl,--no-gc-sections -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime"

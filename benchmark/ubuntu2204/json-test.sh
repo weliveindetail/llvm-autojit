@@ -20,7 +20,6 @@ fi
 
 echo "Test json with autojit"
 rm -rf json
-rm -f /tmp/autojit_*
 mkdir -p json
 
 ./json-autojit-setup.sh 2>&1 | tee json/test-autojit-setup.log
