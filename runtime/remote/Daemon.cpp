@@ -3,20 +3,20 @@
 #include "runtime/core/AutoJIT.h"
 #include "runtime/remote/Session.h"
 
-#include "llvm/ExecutionEngine/Orc/Core.h"
-#include "llvm/ExecutionEngine/Orc/EPCGenericDylibManager.h"
-#include "llvm/ExecutionEngine/Orc/EPCGenericMemoryAccess.h"
-#include "llvm/ExecutionEngine/Orc/Shared/SimplePackedSerialization.h"
-#include "llvm/ExecutionEngine/Orc/Shared/SimpleRemoteEPCUtils.h"
-#include "llvm/Support/Error.h"
-#include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/ManagedStatic.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/TargetParser/Host.h"
+#include <llvm/ExecutionEngine/Orc/Core.h>
+#include <llvm/ExecutionEngine/Orc/EPCGenericDylibManager.h>
+#include <llvm/ExecutionEngine/Orc/EPCGenericMemoryAccess.h>
+#include <llvm/ExecutionEngine/Orc/Shared/SimplePackedSerialization.h>
+#include <llvm/ExecutionEngine/Orc/Shared/SimpleRemoteEPCUtils.h>
+#include <llvm/Support/Error.h>
+#include <llvm/Support/ErrorHandling.h>
+#include <llvm/Support/ManagedStatic.h>
+#include <llvm/Support/raw_ostream.h>
+#include <llvm/TargetParser/Host.h>
 
-#include "llvm/ExecutionEngine/Orc/EPCGenericJITLinkMemoryManager.h"
-#include "llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h"
-#include "llvm/Support/FormatVariadic.h"
+#include <llvm/ExecutionEngine/Orc/EPCGenericJITLinkMemoryManager.h>
+#include <llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h>
+#include <llvm/Support/FormatVariadic.h>
 
 #include <csignal>
 #include <cstdint>

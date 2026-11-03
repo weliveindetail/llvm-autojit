@@ -2,7 +2,7 @@
 
 #include "AutoJITConfig.h"
 #include "runtime/AutoJITRuntime.h"
-#include "llvm/Config/llvm-config.h"
+#include <llvm/Config/llvm-config.h>
 
 #include <stdint.h>
 #include <stdio.h>

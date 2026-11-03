@@ -43,8 +43,8 @@ public:
   llvm::Error initialize(llvm::orc::LLJITBuilder &B, bool HaveOrcRuntimeDeps);
   uint64_t lookup(const char *Symbol);
 
-  /// Add the lazy module from FilePath to the JIT. Hash is the hash of its
-  /// contents, ImportAddrs are the addresses from the import table in the
+  /// Add the lazy module to the JIT, providing the path to the bitcode file,
+  /// the hash of its contents and the addresses from the import table in the
   /// module's static object. Uses the cached object if there is one.
   llvm::Error addModule(llvm::StringRef FilePath, uint64_t Hash,
                         llvm::ArrayRef<uint64_t> ImportAddrs);

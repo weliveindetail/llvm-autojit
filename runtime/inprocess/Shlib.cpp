@@ -1,7 +1,7 @@
 #include "runtime/AutoJITRuntime.h"
 #include "runtime/core/AutoJIT.h"
 
-#include "llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h"
+#include <llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h>
 
 #include <cstdint>
 #include <string>
