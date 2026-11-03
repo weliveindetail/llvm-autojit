@@ -1,5 +1,8 @@
 // Check that lazy modules and cached objects go to the configured directory
 //
+// The TPDE compiler doesn't use the object cache yet
+// XFAIL: tpde
+//
 // RUN: rm -rf %t.dir %t.rel && mkdir -p %t.rel
 // RUN: env AUTOJIT_DIR=%t.dir %clang_c -fpass-plugin=%autojit_plugin -c %s -o %t.o
 // RUN: ls %t.dir | FileCheck --check-prefix=LAZY %s
