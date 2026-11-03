@@ -141,13 +141,11 @@ static int send_epc_message(const epc_message_t *msg) {
   return ret;
 }
 
+/* Only one thread receives at a time, see wait_for_result() */
 static int recv_epc_message(epc_message_t *msg) {
-  pthread_mutex_lock(&g_io_mutex);
-
   /* Read header: [MsgSize:8][OpCode:8][SeqNo:8][TagAddr:8] */
   uint8_t header[FD_MSG_HEADER_SIZE];
   if (read_all(header, FD_MSG_HEADER_SIZE) < 0) {
-    pthread_mutex_unlock(&g_io_mutex);
     return -1;
   }
 
@@ -160,7 +158,6 @@ static int recv_epc_message(epc_message_t *msg) {
   /* Calculate size of argument bytes */
   if (msg_size < FD_MSG_HEADER_SIZE) {
     ERROR_LOG("Invalid message size: %lu\n", msg_size);
-    pthread_mutex_unlock(&g_io_mutex);
     return -1;
   }
 
@@ -170,20 +167,17 @@ static int recv_epc_message(epc_message_t *msg) {
   if (msg->arg_size > 0) {
     msg->arg_bytes = malloc(msg->arg_size);
     if (!msg->arg_bytes) {
-      pthread_mutex_unlock(&g_io_mutex);
-      return -1;
+        return -1;
     }
 
     if (read_all(msg->arg_bytes, msg->arg_size) < 0) {
       free(msg->arg_bytes);
-      pthread_mutex_unlock(&g_io_mutex);
-      return -1;
+        return -1;
     }
   } else {
     msg->arg_bytes = NULL;
   }
 
-  pthread_mutex_unlock(&g_io_mutex);
   return 0;
 }
 
@@ -193,19 +187,10 @@ static void free_epc_message(epc_message_t *msg) {
   msg->arg_size = 0;
 }
 
+/* Each side numbers the calls it makes. Results carry the number of their
+ * call. */
 static uint64_t next_sequence_number(void) {
   return __sync_fetch_and_add(&g_next_seqno, 1);
-}
-
-static void count_sequence_number(uint64_t actual) {
-  uint64_t expected = next_sequence_number();
-  if (actual != expected) {
-    ERROR_LOG("Warning: Expected sequence number %lu but got: %lu\n", expected,
-              actual);
-    if (__llvm_autojit_debug) {
-      abort();
-    }
-  }
 }
 
 /* ============================================================================
@@ -220,9 +205,6 @@ static int parse_setup_message(const epc_message_t *msg) {
    * - bootstrap_map: map<string, bytes> (we skip this)
    * - bootstrap_symbols: map<string, uint64_t>
    */
-
-  /* Keep sequence numbers in sync bi-directionally */
-  count_sequence_number(msg->seqno);
 
   const uint8_t *ptr = msg->arg_bytes;
   const uint8_t *end = msg->arg_bytes + msg->arg_size;
@@ -1180,28 +1162,91 @@ static int send_setup_message(void) {
  * ============================================================================
  */
 
-static int call_wrapper_function_locked(uint64_t fn_addr,
-                                        const uint8_t *data, size_t args_size,
-                                        uint8_t **result, size_t *result_size);
+static int handle_callwrapper_message(const epc_message_t *msg);
 
-/* Threads must not interleave calls: each one waits for its own Result
- * message. Recursive, because the daemon can send nested CallWrapper messages
- * that we handle on the waiting thread. */
-static pthread_mutex_t g_rpc_mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+/* Calls that wait for their results. Several threads can call concurrently.
+ * One of the waiting threads receives messages at a time: it hands results to
+ * the threads they belong to and handles calls from the daemon. */
+typedef struct pending_call {
+  uint64_t seqno;
+  int done;
+  epc_message_t result;
+  struct pending_call *next;
+} pending_call_t;
+
+static pthread_mutex_t g_calls_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_calls_cond = PTHREAD_COND_INITIALIZER;
+static pending_call_t *g_pending_calls = NULL;
+static int g_receiving = 0;
+static int g_connection_failed = 0;
+
+/* Receive and dispatch one message. The caller holds g_calls_mutex. */
+static void receive_one_message(void) {
+  g_receiving = 1;
+  pthread_mutex_unlock(&g_calls_mutex);
+
+  epc_message_t msg;
+  int ec = recv_epc_message(&msg);
+  if (ec == 0) {
+    DEBUG_LOG("Received message: opcode=0x%02lx, seqno=%lu\n", msg.opcode,
+              msg.seqno);
+    if (msg.opcode == OPCODE_CALLWRAPPER) {
+      ec = handle_callwrapper_message(&msg);
+      free_epc_message(&msg);
+    } else if (msg.opcode == OPCODE_HANGUP) {
+      ERROR_LOG("Daemon sent unexpected Hangup\n");
+      free_epc_message(&msg);
+      ec = -1;
+    } else if (msg.opcode != OPCODE_RESULT) {
+      ERROR_LOG("Unexpected message opcode 0x%02lx\n", msg.opcode);
+      free_epc_message(&msg);
+      ec = -1;
+    }
+  }
+
+  pthread_mutex_lock(&g_calls_mutex);
+  g_receiving = 0;
+  if (ec == 0 && msg.opcode == OPCODE_RESULT) {
+    pending_call_t *call = g_pending_calls;
+    while (call && call->seqno != msg.seqno)
+      call = call->next;
+    if (call) {
+      call->result = msg;
+      call->done = 1;
+    } else {
+      ERROR_LOG("Result for unknown seqno %lu\n", msg.seqno);
+      free_epc_message(&msg);
+      ec = -1;
+    }
+  }
+  if (ec < 0)
+    g_connection_failed = 1;
+  pthread_cond_broadcast(&g_calls_cond);
+}
+
+/* Wait until the result for call arrives and unlink it. Returns -1 if the
+ * connection failed. */
+static int wait_for_result(pending_call_t *call) {
+  pthread_mutex_lock(&g_calls_mutex);
+  while (!call->done && !g_connection_failed) {
+    if (g_receiving)
+      pthread_cond_wait(&g_calls_cond, &g_calls_mutex);
+    else
+      receive_one_message();
+  }
+
+  pending_call_t **link = &g_pending_calls;
+  while (*link != call)
+    link = &(*link)->next;
+  *link = call->next;
+  int ec = call->done ? 0 : -1;
+  pthread_mutex_unlock(&g_calls_mutex);
+  return ec;
+}
 
 static int call_wrapper_function(uint64_t fn_addr, const uint8_t *data,
                                  size_t args_size, uint8_t **result,
                                  size_t *result_size) {
-  pthread_mutex_lock(&g_rpc_mutex);
-  int ec = call_wrapper_function_locked(fn_addr, data, args_size, result,
-                                        result_size);
-  pthread_mutex_unlock(&g_rpc_mutex);
-  return ec;
-}
-
-static int call_wrapper_function_locked(uint64_t fn_addr,
-                                        const uint8_t *data, size_t args_size,
-                                        uint8_t **result, size_t *result_size) {
   /* Send CallWrapper message */
   epc_message_t call_msg = {.opcode = OPCODE_CALLWRAPPER,
                             .seqno = next_sequence_number(),
@@ -1212,26 +1257,29 @@ static int call_wrapper_function_locked(uint64_t fn_addr,
   DEBUG_LOG("Calling wrapper function at 0x%lx with seqno %lu\n", fn_addr,
             call_msg.seqno);
 
+  /* Register the call before we send it, so its result finds it */
+  pending_call_t call = {.seqno = call_msg.seqno, .done = 0, .next = NULL};
+  pthread_mutex_lock(&g_calls_mutex);
+  call.next = g_pending_calls;
+  g_pending_calls = &call;
+  pthread_mutex_unlock(&g_calls_mutex);
+
+  *result_size = 0;
   if (send_epc_message(&call_msg) < 0) {
     ERROR_LOG("Failed to send CallWrapper message\n");
+    pthread_mutex_lock(&g_calls_mutex);
+    g_connection_failed = 1;
+    pthread_mutex_unlock(&g_calls_mutex);
+    wait_for_result(&call);
     return -1;
   }
 
-  /* Wait for Result message - use message_loop_until to handle any nested
-   * CallWrapper messages from the daemon (e.g., memory reserve requests)
-   */
-  epc_message_t result_msg;
-  if (message_loop_until(OPCODE_RESULT, &result_msg) < 0) {
+  /* Calls from the daemon can arrive in the meantime, e.g. memory requests */
+  if (wait_for_result(&call) < 0) {
     ERROR_LOG("Failed to receive Result message\n");
     return -1;
   }
-
-  if (result_msg.seqno != call_msg.seqno) {
-    ERROR_LOG("Sequence number mismatch: expected %lu, got %lu\n",
-              call_msg.seqno, result_msg.seqno);
-    free_epc_message(&result_msg);
-    return -1;
-  }
+  epc_message_t result_msg = call.result;
 
   DEBUG_LOG("Received result with seqno %lu, arg_size=%zu\n", result_msg.seqno,
             result_msg.arg_size);
@@ -1278,9 +1326,6 @@ static int handle_callwrapper_message(const epc_message_t *msg) {
 
   DEBUG_LOG("Handling CallWrapper: fn=0x%lx, seqno=%lu, arg_size=%zu\n",
             msg->tag_addr, msg->seqno, msg->arg_size);
-
-  /* Keep sequence numbers in sync bi-directionally */
-  count_sequence_number(msg->seqno);
 
   /* Initialize result buffer - wrapper functions write result data here
    * Wrappers that return data will write starting at offset 9 (leaving space
@@ -1771,46 +1816,65 @@ static ssize_t llvm_orc_deregisterEHFrameAllocAction(const char *ArgData,
  * ============================================================================
  */
 
-/* Lazy modules that we sent to the daemon. Open addressing, only accessed
- * while holding g_rpc_mutex. */
-static const autojit_lazy_module_t **g_modules = NULL;
+/* Lazy modules that we sent to the daemon. Threads that need the same module
+ * wait until it's registered, all others proceed. Open addressing over
+ * entries that never move, only accessed while holding g_modules_mutex. */
+typedef enum { MODULE_REGISTERING, MODULE_REGISTERED } module_state_t;
+
+typedef struct {
+  const autojit_lazy_module_t *module;
+  module_state_t state;
+} module_entry_t;
+
+static pthread_mutex_t g_modules_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_modules_cond = PTHREAD_COND_INITIALIZER;
+static module_entry_t **g_modules = NULL;
 static size_t g_modules_capacity = 0;
 static size_t g_modules_count = 0;
 
-static size_t module_slot(const autojit_lazy_module_t **table, size_t capacity,
+static size_t module_slot(module_entry_t **table, size_t capacity,
                           const autojit_lazy_module_t *module) {
   size_t idx = (size_t)(((uintptr_t)module >> 3) * 0x9E3779B97F4A7C15ull);
-  for (idx &= capacity - 1; table[idx] && table[idx] != module;
+  for (idx &= capacity - 1; table[idx] && table[idx]->module != module;
        idx = (idx + 1) & (capacity - 1))
     ;
   return idx;
 }
 
-/* Returns 1 if the module was new */
-static int insert_module(const autojit_lazy_module_t *module) {
+/* Returns the entry for the module and whether it was new */
+static module_entry_t *lookup_module(const autojit_lazy_module_t *module,
+                                     int *is_new) {
   if (2 * (g_modules_count + 1) > g_modules_capacity) {
     size_t capacity = g_modules_capacity ? 2 * g_modules_capacity : 64;
-    const autojit_lazy_module_t **table = calloc(capacity, sizeof(*table));
+    module_entry_t **table = calloc(capacity, sizeof(*table));
     if (!table) {
       ERROR_LOG("out of memory\n");
       abort();
     }
     for (size_t i = 0; i < g_modules_capacity; i += 1)
       if (g_modules[i])
-        table[module_slot(table, capacity, g_modules[i])] = g_modules[i];
+        table[module_slot(table, capacity, g_modules[i]->module)] =
+            g_modules[i];
     free(g_modules);
     g_modules = table;
     g_modules_capacity = capacity;
   }
   size_t idx = module_slot(g_modules, g_modules_capacity, module);
-  if (g_modules[idx])
-    return 0;
-  g_modules[idx] = module;
-  g_modules_count += 1;
-  return 1;
+  *is_new = !g_modules[idx];
+  if (*is_new) {
+    g_modules[idx] = malloc(sizeof(module_entry_t));
+    if (!g_modules[idx]) {
+      ERROR_LOG("out of memory\n");
+      abort();
+    }
+    g_modules[idx]->module = module;
+    g_modules[idx]->state = MODULE_REGISTERING;
+    g_modules_count += 1;
+  }
+  return g_modules[idx];
 }
 
-/* Send the lazy module to the daemon. The caller holds g_rpc_mutex. */
+/* Send the lazy module to the daemon */
 static void register_module(const autojit_lazy_module_t *module) {
   const char *path = autojit_lazy_module_path(module);
   if (module->version != AUTOJIT_LAZY_MODULE_VERSION) {
@@ -1869,10 +1933,19 @@ void *__llvm_autojit_materialize(void **Slot, uint64_t guid,
 
   /* Send the lazy module to the daemon on first use */
   const autojit_lazy_module_t *module = (const autojit_lazy_module_t *)Module;
-  pthread_mutex_lock(&g_rpc_mutex);
-  if (insert_module(module))
+  int is_new;
+  pthread_mutex_lock(&g_modules_mutex);
+  module_entry_t *entry = lookup_module(module, &is_new);
+  if (is_new) {
+    pthread_mutex_unlock(&g_modules_mutex);
     register_module(module);
-  pthread_mutex_unlock(&g_rpc_mutex);
+    pthread_mutex_lock(&g_modules_mutex);
+    entry->state = MODULE_REGISTERED;
+    pthread_cond_broadcast(&g_modules_cond);
+  }
+  while (entry->state != MODULE_REGISTERED)
+    pthread_cond_wait(&g_modules_cond, &g_modules_mutex);
+  pthread_mutex_unlock(&g_modules_mutex);
 
   DEBUG_LOG("Requesting function: __autojit_fn_%lu\n", guid);
 
