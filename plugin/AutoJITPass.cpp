@@ -118,11 +118,6 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
         }
         continue;
       }
-      // TODO: The assembler, emits 32-bit relocations for DSO-locals, which
-      // will be out-of-range for our JITed code. The verifier prevents us from
-      // removing the flag in some cases though.
-      if (GV.hasDefaultVisibility() || GV.hasExternalWeakLinkage())
-        GV.setDSOLocal(false);
       if (GV.hasLocalLinkage()) {
         std::string NewName = (GV.getName() + UniquePostfix).str();
         if (LLVM_UNLIKELY(AutoJITDebug)) {
@@ -164,26 +159,6 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
         errs() << "autojit-plugin: Lazify function " << FnName << " as "
                << guidToFnName(FnGUID) << "\n";
       }
-      // TODO: Hidden definitions generate no (observable) symbols in the static
-      // binary, but they are part of the linker-visible ABI of the object file.
-      // The visibility change below changes the ABI. We could avoid this by
-      // adding module-specific, externally visibile functions instead, that
-      // forward calls to the hidden one. However, it has signifcant impact on
-      // link-time and run-time as well, which is the bigger issue long-term.
-      if (F->hasHiddenVisibility()) {
-        // These symbols generate static function frames and we want all calls
-        // to run through it, because they might be touched by the linker (it
-        // does deduplication for link-once function for example). As long as
-        // dlsym is the only way for AutoJIT to find static function frames, we
-        // must make sure they go into the dynamic symbol table.
-        if (LLVM_UNLIKELY(AutoJITDebug)) {
-          errs() << "autojit-plugin: Set hidden function to default visibility "
-                 << F->getName() << "\n";
-        }
-        F->setVisibility(GlobalValue::DefaultVisibility);
-        F->setDSOLocal(false);
-      }
-
       lazifyFn(F, FnGUID, MaterializeFn, LazyModule);
     }
 
