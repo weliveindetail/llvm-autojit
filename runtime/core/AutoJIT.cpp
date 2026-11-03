@@ -13,6 +13,7 @@
 #include <llvm/ExecutionEngine/Orc/IRTransformLayer.h>
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>
 #include <llvm/IR/GlobalAlias.h>
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/IR/LLVMContext.h>
@@ -151,6 +152,63 @@ static GlobalValue::GUID getFunctionGUID(Twine ModName, Function *F) {
   auto UniqueName = (ModName + ":" + F->getName()).str();
   return MD5Hash(UniqueName);
 }
+
+// Resolves imports in the link graph to the addresses from the import table of
+// their lazy module. This bypasses the symbol tables of the ExecutionSession,
+// which would add thousands of symbols with dependency tracking per module.
+class autojit::ImportResolver : public ObjectLinkingLayer::Plugin {
+public:
+  void addImports(uint64_t Hash, ArrayRef<uint64_t> Addrs) {
+    std::lock_guard<std::mutex> Lock(TablesMutex);
+    Tables[Hash].assign(Addrs.begin(), Addrs.end());
+  }
+
+  void modifyPassConfig(MaterializationResponsibility &MR,
+                        jitlink::LinkGraph &G,
+                        jitlink::PassConfiguration &Config) override {
+    Config.PrePrunePasses.push_back(
+        [this](jitlink::LinkGraph &G) { return resolveImports(G); });
+  }
+
+  Error notifyFailed(MaterializationResponsibility &MR) override {
+    return Error::success();
+  }
+  Error notifyRemovingResources(JITDylib &JD, ResourceKey K) override {
+    return Error::success();
+  }
+  void notifyTransferringResources(JITDylib &JD, ResourceKey DstKey,
+                                   ResourceKey SrcKey) override {}
+
+private:
+  Error resolveImports(jitlink::LinkGraph &G) {
+    SmallVector<std::pair<jitlink::Symbol *, uint64_t>, 32> Resolved;
+    std::lock_guard<std::mutex> Lock(TablesMutex);
+    for (jitlink::Symbol *Sym : G.external_symbols()) {
+      StringRef Name = *Sym->getName();
+      if (!Name.consume_front("__autojit_imp_"))
+        continue;
+      uint64_t Hash;
+      size_t Index;
+      if (Name.size() < 18 || Name.take_front(16).getAsInteger(16, Hash) ||
+          Name[16] != '_' || Name.drop_front(17).getAsInteger(10, Index))
+        return createStringError(inconvertibleErrorCode(),
+                                 "Invalid import " + *Sym->getName());
+      auto It = Tables.find(Hash);
+      if (It == Tables.end() || Index >= It->second.size())
+        return createStringError(inconvertibleErrorCode(),
+                                 "Unknown import " + *Sym->getName());
+      // Undefined weak symbols stay external and resolve to null
+      if (It->second[Index] != 0)
+        Resolved.emplace_back(Sym, It->second[Index]);
+    }
+    for (auto [Sym, Addr] : Resolved)
+      G.makeAbsolute(*Sym, ExecutorAddr(Addr));
+    return Error::success();
+  }
+
+  std::mutex TablesMutex;
+  DenseMap<uint64_t, std::vector<uint64_t>> Tables;
+};
 
 // Bump this whenever changes in the runtime affect the compiled objects
 static constexpr unsigned CacheVersion = 1;
@@ -532,18 +590,11 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B, bool HaveOrcRuntimeDeps) {
 
   JIT_ = ExitOnErr(B.create());
 
-  // Host symbols come from import tables. Search them before the process
-  // symbols, so we don't query dlsym for them.
-  HostImports_ = &JIT_->getExecutionSession().createBareJITDylib("<Imports>");
-  JITDylib &Main = JIT_->getMainJITDylib();
-  JITDylibSearchOrder LinkOrder;
-  Main.withLinkOrderDo(
-      [&](const JITDylibSearchOrder &Order) { LinkOrder = Order; });
-  auto Pos = LinkOrder.begin();
-  if (Pos != LinkOrder.end() && Pos->first == &Main)
-    ++Pos;
-  LinkOrder.insert(Pos, {HostImports_, JITDylibLookupFlags::MatchAllSymbols});
-  Main.setLinkOrder(std::move(LinkOrder), false);
+  // Host symbols come from import tables
+  auto Resolver = std::make_shared<ImportResolver>();
+  Imports_ = Resolver.get();
+  cast<ObjectLinkingLayer>(JIT_->getObjLinkingLayer())
+      .addPlugin(std::move(Resolver));
 
 #if !defined(NDEBUG)
   JIT_->getIRTransformLayer().setTransform(
@@ -609,17 +660,7 @@ autojit::AutoJIT::ensureModule(const autojit_lazy_module_t *Module) {
 
 llvm::Error autojit::AutoJIT::addModule(StringRef FilePath, uint64_t Hash,
                                        ArrayRef<uint64_t> ImportAddrs) {
-  SymbolMap Imports;
-  for (size_t I = 0; I < ImportAddrs.size(); I += 1) {
-    // Undefined weak symbols resolve to null
-    if (ImportAddrs[I] == 0)
-      continue;
-    Imports[JIT_->mangleAndIntern(getImportName(Hash, I))] = {
-        ExecutorAddr(ImportAddrs[I]), JITSymbolFlags::Exported};
-  }
-  if (!Imports.empty())
-    if (Error Err = HostImports_->define(absoluteSymbols(std::move(Imports))))
-      return Err;
+  Imports_->addImports(Hash, ImportAddrs);
 
   // Cached objects are named after the contents of the lazy module. We don't
   // need the IR then: imports are named by index.

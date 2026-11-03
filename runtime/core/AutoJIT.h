@@ -31,6 +31,7 @@ extern bool g_autojit_debug;
 namespace autojit {
 
 void initializeDebugLog();
+class ImportResolver;
 
 
 class AutoJIT {
@@ -59,7 +60,7 @@ private:
 
   std::unique_ptr<llvm::orc::LLJIT> JIT_;
   bool UseObjectCache_ = true;
-  llvm::orc::JITDylib *HostImports_ = nullptr;
+  ImportResolver *Imports_ = nullptr;
   std::mutex ModulesMutex_;
   llvm::DenseSet<const autojit_lazy_module_t *> Modules_;
 };
