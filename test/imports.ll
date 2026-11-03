@@ -6,11 +6,11 @@
 ; Symbols that might not be local to the linked image get an indirect entry
 ; via the GOT: @ext, @wk and @counter (bitmap 0b00010101 = 0x15).
 
-; IR: @__llvm_autojit_imports = private constant { i32, i32, i64, [6 x i32], [1 x i8] } { i32 1, i32 6, i64 {{-?[0-9]+}}, [6 x i32] {{.*}}, [1 x i8] c"\15" }
-; IR: call void @__llvm_autojit_register2(ptr @__llvm_autojit_lazy_file, ptr @__llvm_autojit_imports)
+; IR: @__llvm_autojit_module = private constant { i32, i32, i64, [6 x i32], [1 x i8], [{{[0-9]+}} x i8] } { i32 2, i32 6, i64 {{-?[0-9]+}}, [6 x i32] {{.*}}, [1 x i8] c"\15", [{{[0-9]+}} x i8] c"/tmp/autojit_{{[0-9a-f]+}}.bc\00" }
+; IR: call ptr @__llvm_autojit_materialize(ptr @__llvm_autojit_ptr_caller, i64 {{-?[0-9]+}}, ptr @__llvm_autojit_module)
 
-; ASM:      .L__llvm_autojit_imports:
-; ASM-NEXT:   .long 1
+; ASM:      .L__llvm_autojit_module:
+; ASM-NEXT:   .long 2
 ; ASM-NEXT:   .long 6
 ; ASM-NEXT:   .quad {{-?[0-9]+}}
 ; ASM-NEXT:   .long ext@GOTPCREL
@@ -20,6 +20,7 @@
 ; ASM-NEXT:   .long counter@GOTPCREL
 ; ASM-NEXT:   .long hidden_var-
 ; ASM-NEXT:   .byte 21
+; ASM-NEXT:   .asciz "/tmp/autojit_{{[0-9a-f]+}}.bc"
 
 source_filename = "/workspace/llvm-autojit/test/imports.c"
 target triple = "x86_64-pc-linux-gnu"

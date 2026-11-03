@@ -32,7 +32,7 @@
 #include <iostream>
 #include <cstdint>
 
-// All translation units register their lazy module at startup
+// The lazy modules of all translation units are loaded on demand
 uint64_t next_fibbonacci();
 const char *format_fibonacci(uint64_t);
 

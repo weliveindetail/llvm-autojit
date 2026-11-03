@@ -1,4 +1,4 @@
-#include "common/ImportTable.h"
+#include "common/LazyModule.h"
 #include "runtime/remote/Stub.h"
 #include "runtime/remote/StubSPS.h"
 
@@ -1720,33 +1720,65 @@ static ssize_t llvm_orc_deregisterEHFrameAllocAction(const char *ArgData,
  * ============================================================================
  */
 
-void __llvm_autojit_register2(const char *FilePath, const void *ImportTable) {
-  if (!FilePath) {
-    ERROR_LOG("invalid FilePath parameter\n");
-    return;
+/* Lazy modules that we sent to the daemon. Open addressing, only accessed
+ * while holding g_rpc_mutex. */
+static const autojit_lazy_module_t **g_modules = NULL;
+static size_t g_modules_capacity = 0;
+static size_t g_modules_count = 0;
+
+static size_t module_slot(const autojit_lazy_module_t **table, size_t capacity,
+                          const autojit_lazy_module_t *module) {
+  size_t idx = (size_t)(((uintptr_t)module >> 3) * 0x9E3779B97F4A7C15ull);
+  for (idx &= capacity - 1; table[idx] && table[idx] != module;
+       idx = (idx + 1) & (capacity - 1))
+    ;
+  return idx;
+}
+
+/* Returns 1 if the module was new */
+static int insert_module(const autojit_lazy_module_t *module) {
+  if (2 * (g_modules_count + 1) > g_modules_capacity) {
+    size_t capacity = g_modules_capacity ? 2 * g_modules_capacity : 64;
+    const autojit_lazy_module_t **table = calloc(capacity, sizeof(*table));
+    if (!table) {
+      ERROR_LOG("out of memory\n");
+      abort();
+    }
+    for (size_t i = 0; i < g_modules_capacity; i += 1)
+      if (g_modules[i])
+        table[module_slot(table, capacity, g_modules[i])] = g_modules[i];
+    free(g_modules);
+    g_modules = table;
+    g_modules_capacity = capacity;
   }
-  const autojit_import_table_t *imports =
-      (const autojit_import_table_t *)ImportTable;
-  if (!imports || imports->version != AUTOJIT_IMPORT_TABLE_VERSION) {
-    ERROR_LOG("unsupported import table in module %s\n", FilePath);
+  size_t idx = module_slot(g_modules, g_modules_capacity, module);
+  if (g_modules[idx])
+    return 0;
+  g_modules[idx] = module;
+  g_modules_count += 1;
+  return 1;
+}
+
+/* Send the lazy module to the daemon. The caller holds g_rpc_mutex. */
+static void register_module(const autojit_lazy_module_t *module) {
+  const char *path = autojit_lazy_module_path(module);
+  if (module->version != AUTOJIT_LAZY_MODULE_VERSION) {
+    ERROR_LOG("unsupported descriptor for lazy module %s\n", path);
     abort();
   }
 
-  /* Ensure daemon is initialized */
-  pthread_once(&g_init_once, initialize_daemon);
-
-  DEBUG_LOG("Registering module: %s (%u imports)\n", FilePath,
-            imports->num_entries);
+  DEBUG_LOG("Registering module: %s (%u imports)\n", path,
+            module->num_imports);
 
   /* Encode arguments:
    * SPSArgList<SPSString, uint64_t, SPSSequence<uint64_t>> */
   sps_buffer_t args;
-  sps_buffer_init(&args, 256 + 8 * (size_t)imports->num_entries);
-  sps_write_string(&args, FilePath);
-  sps_write_uint64(&args, imports->hash);
-  sps_write_uint64(&args, imports->num_entries);
-  for (uint32_t i = 0; i < imports->num_entries; i += 1)
-    sps_write_uint64(&args, autojit_import_address(imports, i));
+  sps_buffer_init(&args, 256 + 8 * (size_t)module->num_imports);
+  sps_write_string(&args, path);
+  sps_write_uint64(&args, module->hash);
+  sps_write_uint64(&args, module->num_imports);
+  for (uint32_t i = 0; i < module->num_imports; i += 1)
+    sps_write_uint64(&args, autojit_import_address(module, i));
   DEBUG_LOG("Encoded %zu bytes for RPC call\n", args.size);
 
   /* Call RPC function */
@@ -1774,14 +1806,22 @@ void __llvm_autojit_register2(const char *FilePath, const void *ImportTable) {
 void __jit_debug_register_code(void);
 #endif
 
-void *__llvm_autojit_materialize(void **Slot, uint64_t guid) {
-  if (!Slot) {
+void *__llvm_autojit_materialize(void **Slot, uint64_t guid,
+                                  const void *Module) {
+  if (!Slot || !Module) {
     ERROR_LOG("invalid parameters\n");
     abort();
   }
 
   /* Ensure daemon is initialized */
   pthread_once(&g_init_once, initialize_daemon);
+
+  /* Send the lazy module to the daemon on first use */
+  const autojit_lazy_module_t *module = (const autojit_lazy_module_t *)Module;
+  pthread_mutex_lock(&g_rpc_mutex);
+  if (insert_module(module))
+    register_module(module);
+  pthread_mutex_unlock(&g_rpc_mutex);
 
   DEBUG_LOG("Requesting function: __autojit_fn_%lu\n", guid);
 

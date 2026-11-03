@@ -22,7 +22,7 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
-#include "common/ImportTable.h"
+#include "common/LazyModule.h"
 #include "common/Imports.h"
 
 #if defined(AUTOJIT_ENABLE_TPDE)
@@ -66,8 +66,7 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       saveModule(M, FileStem + "_incoming" + FileExt);
     }
 
-    if (M.getNamedValue("__llvm_autojit_register2") ||
-        M.getNamedValue("__llvm_autojit_materialize")) {
+    if (M.getNamedValue("__llvm_autojit_materialize")) {
       errs() << "autojit-plugin: Skipping module " << M.getName() << " (uses reserved __llvm_autojit names)\n";
       return PreservedAnalyses::all();
     }
@@ -157,10 +156,10 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     sys::fs::remove(FileStem + ".o");
 
     // All further changes only affect static code
-    Type *VoidTy = Type::getVoidTy(Context);
-    PointerType *FnPtrTy = PointerType::get(Context, 0);
+    GlobalVariable *LazyModule =
+        emitLazyModule(M, Imports, ImportsHash, FilePath);
     FunctionType *MaterializeFnTy = FunctionType::get(
-        FnPtrTy, {FnPtrTy, Type::getInt64Ty(Context)}, false);
+        PtrTy, {PtrTy, Type::getInt64Ty(Context), PtrTy}, false);
     FunctionCallee MaterializeFn =
         M.getOrInsertFunction("__llvm_autojit_materialize", MaterializeFnTy);
 
@@ -191,45 +190,11 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
         F->setDSOLocal(false);
       }
 
-      lazifyFn(F, FnGUID, MaterializeFn);
+      lazifyFn(F, FnGUID, MaterializeFn, LazyModule);
     }
-
-    // Add static initializer that registers lazy file path
-    FunctionType *InitFnTy = FunctionType::get(VoidTy, {}, false);
-    StringRef SourceFile = sys::path::filename(M.getSourceFileName());
-    Function *InitFn = Function::Create(
-        InitFnTy, GlobalValue::InternalLinkage,
-        Twine("_GLOBAL__sub_I_") + SourceFile + "_llvm_autojit_init", M);
-    InitFn->setSection(".text.startup");
-    InitFn->addFnAttr(Attribute::NoUnwind);
-
-    BasicBlock *InitBB = BasicBlock::Create(Context, "entry", InitFn);
-    IRBuilder<> InitBuilder(InitBB);
-    FunctionType *RegisterFnTy =
-        FunctionType::get(VoidTy, {FnPtrTy, FnPtrTy}, false);
-    FunctionCallee RegisterFn =
-        M.getOrInsertFunction("__llvm_autojit_register2", RegisterFnTy);
-
-    Constant *FilePathConstant =
-        ConstantDataArray::getString(Context, FilePath);
-    GlobalVariable *FilePathGV = new GlobalVariable(
-        M, FilePathConstant->getType(), true, GlobalValue::PrivateLinkage,
-        FilePathConstant, "__llvm_autojit_lazy_file");
-    FilePathGV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
-    Value *FilePathPtr = InitBuilder.CreateConstGEP2_32(
-        FilePathGV->getValueType(), FilePathGV, 0, 0);
-
-    GlobalVariable *ImportTable = emitImportTable(M, Imports, ImportsHash);
-    InitBuilder.CreateCall(RegisterFn, {FilePathPtr, ImportTable});
-    InitBuilder.CreateRetVoid();
-
-    // Use runtime library priority so that all modules are registered before
-    // we run the first user function.
-    appendToGlobalCtors(M, InitFn, 100);
 
     // Add all at once: each call rebuilds the entire llvm.used array
     SmallVector<GlobalValue *, 16> Used(LazifyFns.begin(), LazifyFns.end());
-    Used.push_back(InitFn);
     appendToUsed(M, Used);
 
     if (LLVM_UNLIKELY(AutoJITDebug)) {
@@ -286,14 +251,15 @@ private:
     return FilePath;
   }
 
-  // Emit the import table (see common/ImportTable.h). Each entry is a 32-bit
-  // offset from the entry to its target. For symbols that might not be local
-  // to the linked image, we point to a GOT-equivalent slot that the backend
-  // folds into a GOT reference. This adds no dynamic relocations for symbols in
-  // the image and it shares GOT entries with regular code.
-  static GlobalVariable *emitImportTable(Module &M,
-                                         ArrayRef<GlobalValue *> Imports,
-                                         uint64_t Hash) {
+  // Emit the lazy module descriptor (see common/LazyModule.h). Each import
+  // entry is a 32-bit offset from the entry to its target. For symbols that
+  // might not be local to the linked image, we point to a GOT-equivalent slot
+  // that the backend folds into a GOT reference. This adds no dynamic
+  // relocations for symbols in the image and it shares GOT entries with
+  // regular code.
+  static GlobalVariable *emitLazyModule(Module &M,
+                                        ArrayRef<GlobalValue *> Imports,
+                                        uint64_t Hash, StringRef FilePath) {
     LLVMContext &Ctx = M.getContext();
     Type *I32Ty = Type::getInt32Ty(Ctx);
     Type *I64Ty = Type::getInt64Ty(Ctx);
@@ -302,12 +268,13 @@ private:
     ArrayType *EntriesTy = ArrayType::get(I32Ty, NumEntries);
     ArrayType *IndirectTy =
         ArrayType::get(Type::getInt8Ty(Ctx), (NumEntries + 7) / 8);
-    StructType *TableTy =
-        StructType::get(Ctx, {I32Ty, I32Ty, I64Ty, EntriesTy, IndirectTy});
+    Constant *Path = ConstantDataArray::getString(Ctx, FilePath);
+    StructType *TableTy = StructType::get(
+        Ctx, {I32Ty, I32Ty, I64Ty, EntriesTy, IndirectTy, Path->getType()});
 
     auto *Table = new GlobalVariable(M, TableTy, true,
                                      GlobalValue::PrivateLinkage, nullptr,
-                                     "__llvm_autojit_imports");
+                                     "__llvm_autojit_module");
     Table->setAlignment(Align(8));
 
     SmallVector<Constant *, 32> Entries;
@@ -336,15 +303,16 @@ private:
     }
 
     Table->setInitializer(ConstantStruct::get(
-        TableTy, {ConstantInt::get(I32Ty, AUTOJIT_IMPORT_TABLE_VERSION),
+        TableTy, {ConstantInt::get(I32Ty, AUTOJIT_LAZY_MODULE_VERSION),
                   ConstantInt::get(I32Ty, NumEntries),
                   ConstantInt::get(I64Ty, Hash),
                   ConstantArray::get(EntriesTy, Entries),
-                  ConstantDataArray::get(Ctx, Indirect)}));
+                  ConstantDataArray::get(Ctx, Indirect), Path}));
     return Table;
   }
 
-  void lazifyFn(Function *F, GlobalValue::GUID FnGUID, FunctionCallee MaterializeFn) {
+  void lazifyFn(Function *F, GlobalValue::GUID FnGUID,
+                FunctionCallee MaterializeFn, GlobalVariable *LazyModule) {
     Module *M = F->getParent();
     LLVMContext &Context = M->getContext();
     PointerType *FnPtrTy = PointerType::get(Context, 0);
@@ -376,8 +344,8 @@ private:
     // Materialize block calls the runtime, which also fills the slot
     Builder.SetInsertPoint(MaterializeBB);
     Value *Guid = ConstantInt::get(Type::getInt64Ty(Context), FnGUID);
-    Value *MaterializedPtr =
-        Builder.CreateCall(MaterializeFn, {FnPtr, Guid}, "materialized_ptr");
+    Value *MaterializedPtr = Builder.CreateCall(
+        MaterializeFn, {FnPtr, Guid, LazyModule}, "materialized_ptr");
     Builder.CreateBr(CallBB);
 
     // Call block calls actual function through ptr and returns

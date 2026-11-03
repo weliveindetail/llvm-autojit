@@ -551,10 +551,8 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B, bool HaveOrcRuntimeDeps) {
   return Error::success();
 }
 
-autojit::AutoJIT &
-autojit::AutoJIT::get(std::vector<ModuleRegistration> &NewModules) {
+autojit::AutoJIT &autojit::AutoJIT::get() {
   static std::mutex Setup;
-  static std::mutex Register;
   static ManagedStatic<std::unique_ptr<autojit::AutoJIT>> Instance;
 
   {
@@ -570,23 +568,30 @@ autojit::AutoJIT::get(std::vector<ModuleRegistration> &NewModules) {
     }
   }
 
-  if (!NewModules.empty()) {
-    // We can lock inside the condition here, because it's fine to execute the
-    // code below again as long as we don't process modules twice. It might
-    // happen a few times at startup, but it's cheaper than the additional
-    // locking on every get.
-    std::lock_guard<std::mutex> Lock(Register);
-    for (const ModuleRegistration &R : NewModules) {
-      SmallVector<uint64_t, 32> Addrs;
-      Addrs.reserve(R.Imports->num_entries);
-      for (uint32_t I = 0; I < R.Imports->num_entries; I += 1)
-        Addrs.push_back(autojit_import_address(R.Imports, I));
-      ExitOnErr(Instance->get()->addModule(R.FilePath, R.Imports->hash, Addrs));
-    }
-    NewModules.clear();
-  }
-
   return **Instance;
+}
+
+llvm::Error
+autojit::AutoJIT::ensureModule(const autojit_lazy_module_t *Module) {
+  std::lock_guard<std::mutex> Lock(ModulesMutex_);
+  if (Modules_.contains(Module))
+    return Error::success();
+
+  const char *FilePath = autojit_lazy_module_path(Module);
+  if (Module->version != AUTOJIT_LAZY_MODULE_VERSION)
+    return createStringError(inconvertibleErrorCode(),
+                             "Unsupported descriptor for lazy module " +
+                                 Twine(FilePath));
+
+  SmallVector<uint64_t, 32> ImportAddrs;
+  ImportAddrs.reserve(Module->num_imports);
+  for (uint32_t I = 0; I < Module->num_imports; I += 1)
+    ImportAddrs.push_back(autojit_import_address(Module, I));
+  if (Error Err = addModule(FilePath, Module->hash, ImportAddrs))
+    return Err;
+
+  Modules_.insert(Module);
+  return Error::success();
 }
 
 llvm::Error autojit::AutoJIT::addModule(StringRef FilePath, uint64_t ImportsHash,
