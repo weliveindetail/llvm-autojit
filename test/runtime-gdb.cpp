@@ -10,16 +10,16 @@
 // RUN: %clang -g %s -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -lautojit_static_debug-%arch %fsanitize -o %t_remote.exe
 //
 // RUN: env AUTOJIT_DEBUG=On %gdb -ex 'set breakpoint pending on' \
-// RUN:     -ex "break debugger.cpp:$(grep -n 'break here$' %s | head -1 | cut -d: -f1)" \
+// RUN:     -ex "break runtime-gdb.cpp:$(grep -n 'break here$' %s | head -1 | cut -d: -f1)" \
 // RUN:     -ex run -ex bt -ex continue --args %t_inprocess.exe 2>&1 | FileCheck %s
 // RUN: env AUTOJIT_DEBUG=On %gdb -ex 'set breakpoint pending on' \
-// RUN:     -ex "break debugger.cpp:$(grep -n 'break here$' %s | head -1 | cut -d: -f1)" \
+// RUN:     -ex "break runtime-gdb.cpp:$(grep -n 'break here$' %s | head -1 | cut -d: -f1)" \
 // RUN:     -ex run -ex bt -ex continue --args %t_remote.exe 2>&1 | FileCheck %s
 //
 // CHECK-NOT: Cannot enable debugger support
-// CHECK: Breakpoint 1, jitted (X=1) at {{.*}}debugger.cpp:[[@LINE+7]]
-// CHECK: #0  jitted (X=1) at {{.*}}debugger.cpp:[[@LINE+6]]
-// CHECK: #1  {{.*}} in main ({{.*}}) at {{.*}}debugger.cpp:[[@LINE+12]]
+// CHECK: Breakpoint 1, jitted (X=1) at {{.*}}runtime-gdb.cpp:[[@LINE+7]]
+// CHECK: #0  jitted (X=1) at {{.*}}runtime-gdb.cpp:[[@LINE+6]]
+// CHECK: #1  {{.*}} in main ({{.*}}) at {{.*}}runtime-gdb.cpp:[[@LINE+12]]
 // CHECK: Result: 3
 // CHECK: exited normally
 
