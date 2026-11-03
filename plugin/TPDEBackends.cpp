@@ -1,7 +1,7 @@
 #include "TPDEBackends.h"
 
-#include "llvm/IR/Module.h"
-#include "llvm/TargetParser/Triple.h"
+#include <llvm/IR/Module.h>
+#include <llvm/TargetParser/Triple.h>
 
 #if defined(AUTOJIT_ENABLE_TPDE)
 #include "tpde-llvm/LLVMCompiler.hpp"
