@@ -49,7 +49,7 @@ Install a llvm-autojit release along with [clang release 21](https://weliveindet
 Hello C
 ```
 
-A shared library is a simple, but not always a practical way to provide our runtime. That's why we have another option: We can statically link a RPC stub that forwards all compile requests to `autojitd`. The stub is a single object file and `libautojit_static-x86_64.a` is a linker script that adds it to the link, so it works at any position on the link line. Link `autojit_static_debug-x86_64` instead to add support for the GDB JIT interface. It requires `-rdynamic` for now, because `autojitd` looks up the registration function by name.
+A shared library is a simple, but not always a practical way to provide our runtime. That's why we have another option: We can statically link a RPC stub that forwards all compile requests to `autojitd`. The stub is a single object file and `libautojit_static-x86_64.a` is a linker script that adds it to the link, so it works at any position on the link line. Link `autojit_static_debug-x86_64` instead to add support for the GDB JIT interface. Run with `AUTOJIT_DEBUG=On` to register JITed code with the debugger.
 ```
 > clang-21 -O0 -g -fpass-plugin=/usr/local/lib/autojit.so -o hello.o -c hello.c
 > clang-21 hello.o -lautojit_static-x86-64 -o hello_c_autojitd
