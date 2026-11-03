@@ -50,6 +50,8 @@ else:
 
 config.environment['AUTOJIT_USE_TPDE'] = use_tpde
 print("Running regression tests with TPDE:", use_tpde)
+if use_tpde.strip().lower() in {"1", "on", "yes", "true"}:
+    config.available_features.add('tpde')
 
 def is_set(var_name: str) -> bool:
     val = os.getenv(var_name)

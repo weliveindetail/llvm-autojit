@@ -3,6 +3,8 @@
 // has the trampoline for jitted().
 //
 // REQUIRES: gdb
+// TPDE doesn't emit debug info
+// XFAIL: tpde
 //
 // RUN: %clang -g %s -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
 // RUN: %clang -g %s -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -lautojit_static_debug-%arch %fsanitize -o %t_remote.exe
