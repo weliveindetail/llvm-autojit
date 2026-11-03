@@ -3,6 +3,7 @@
 #include "AutoJITConfig.h"
 #include "common/LazyModule.h"
 
+#include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/DenseSet.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
@@ -61,8 +62,14 @@ private:
   std::unique_ptr<llvm::orc::LLJIT> JIT_;
   bool UseObjectCache_ = true;
   ImportResolver *Imports_ = nullptr;
+  // Threads that need the same module wait for it, all others proceed
+  struct ModuleState {
+    std::once_flag Loaded;
+    std::string Error;
+  };
   std::mutex ModulesMutex_;
-  llvm::DenseSet<const autojit_lazy_module_t *> Modules_;
+  llvm::DenseMap<const autojit_lazy_module_t *, std::unique_ptr<ModuleState>>
+      Modules_;
 };
 
 /// Name of the JITed definition of the function with the given GUID in the
