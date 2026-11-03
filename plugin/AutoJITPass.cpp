@@ -107,32 +107,6 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
       errs() << "autojit-plugin: Processing module " << M.getName() << "\n";
     }
 
-    // Local definitions get exposed and must not collide. This affects both,
-    // static code and lazy code.
-    std::string UniquePostfix = "_autojit_module_" + getModuleGUID(M);
-
-    for (GlobalVariable &GV : M.globals()) {
-      if (GV.hasAtLeastLocalUnnamedAddr()) {
-        if (LLVM_UNLIKELY(AutoJITDebug)) {
-          errs() << "autojit-plugin: Keep variable " << GV.getName() << "\n";
-        }
-        continue;
-      }
-      if (GV.hasLocalLinkage()) {
-        std::string NewName = (GV.getName() + UniquePostfix).str();
-        if (LLVM_UNLIKELY(AutoJITDebug)) {
-          errs() << "autojit-plugin: Promote variable " << GV.getName()
-                 << " as " << NewName << "\n";
-        }
-        GV.setName(NewName);
-        GV.setLinkage(GlobalValue::ExternalLinkage);
-        continue;
-      }
-      if (LLVM_UNLIKELY(AutoJITDebug)) {
-        errs() << "autojit-plugin: Keep variable " << GV.getName() << "\n";
-      }
-    }
-
     // Collect the symbols that lazy code imports from static code. We must do
     // this on the same IR that we save: the runtime repeats it on the loaded
     // module and matches the entries in our import table by index.

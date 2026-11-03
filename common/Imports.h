@@ -49,8 +49,9 @@ void forEachImport(llvm::Module &M, CallbackT Callback) {
   for (GlobalVariable &GV : M.globals()) {
     if (GV.getName().starts_with("llvm.") || !hasLiveUses(GV))
       continue;
-    if (!GV.isDeclaration() &&
-        (GV.hasLocalLinkage() || GV.hasAtLeastLocalUnnamedAddr()))
+    // The lazy module gets its own copy of unnamed_addr constants. All other
+    // variables are shared with the static object, including local ones.
+    if (!GV.isDeclaration() && GV.hasAtLeastLocalUnnamedAddr())
       continue;
     Callback(static_cast<GlobalValue &>(GV));
   }
