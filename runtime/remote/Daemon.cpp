@@ -106,15 +106,17 @@ autojit_rpc_materialize(const char *ArgData, size_t ArgSize) {
   DBG() << "autojit_rpc_materialize: " << blobToHex(ArgData, ArgSize) << "\n";
 
   uint64_t Guid;
+  uint64_t ModuleHash;
   shared::SPSInputBuffer IB(ArgData, ArgSize);
-  if (!shared::SPSArgList<uint64_t>::deserialize(IB, Guid))
-    return outOfBandError("Failed to deserialize GUID");
+  if (!shared::SPSArgList<uint64_t, uint64_t>::deserialize(IB, Guid,
+                                                          ModuleHash))
+    return outOfBandError("Failed to deserialize GUID and module hash");
 
   auto *Inst = Instance.load();
   if (!Inst)
     return outOfBandError("JIT not initialized");
 
-  std::string Name = autojit::guidToFnName(Guid);
+  std::string Name = autojit::guidToFnName(Guid, ModuleHash);
   DBG() << "Lookup function: " << Name << "\n";
 
   uint64_t Addr = Inst->lookup(Name.c_str());

@@ -65,6 +65,8 @@ private:
   llvm::DenseSet<const autojit_lazy_module_t *> Modules_;
 };
 
-std::string guidToFnName(llvm::GlobalValue::GUID Guid);
+/// Name of the JITed definition of the function with the given GUID in the
+/// lazy module with the given hash.
+std::string guidToFnName(llvm::GlobalValue::GUID Guid, uint64_t ModuleHash);
 
 } // namespace autojit
