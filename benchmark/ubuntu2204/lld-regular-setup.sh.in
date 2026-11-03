@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -e
+
+rm -rf lld/build_regular
+
+echo "Configuring regular lld.."
+CC="@AUTOJIT_BENCH_TOOLS_DIR@/clang" CXX="@AUTOJIT_BENCH_TOOLS_DIR@/clang++" cmake -GNinja \
+    -S "llvm-project/llvm" \
+    -B "lld/build_regular" \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DLLVM_ENABLE_PROJECTS=lld \
+    -DLLVM_TARGETS_TO_BUILD=X86 \
+    -DLLVM_ENABLE_LIBCXX=Off \
+    -DLLVM_USE_LINKER=lld
