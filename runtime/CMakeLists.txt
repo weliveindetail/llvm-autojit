@@ -195,11 +195,13 @@ target_link_libraries(autojit-so PRIVATE ${llvm_libs} ${tpde_libs})
 # standard library and resolve all references within the runtime. Its
 # unwinder is private as well, so we never pull libgcc_s into programs
 # that use libunwind. We register EH frames of JITed code with the program's
-# unwinder, which we look up at run-time (see common/EHFrames.h).
+# unwinder, which we look up at run-time (see common/EHFrames.h). The version
+# script hides all their symbols. We don't use --exclude-libs: it would also
+# hide the symbols from LLVM's archives that exports.txt lists, e.g. the GDB
+# JIT interface, and GDB ignores it if it's local.
 target_link_options(autojit-so PRIVATE
   -static-libstdc++
   -static-libgcc
-  -Wl,--exclude-libs,ALL
   -Wl,-z,defs
   -Wl,-Bsymbolic
   -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.txt
