@@ -706,24 +706,34 @@ autojit::AutoJIT &autojit::AutoJIT::get() {
 
 llvm::Error
 autojit::AutoJIT::ensureModule(const autojit_lazy_module_t *Module) {
-  std::lock_guard<std::mutex> Lock(ModulesMutex_);
-  if (Modules_.contains(Module))
-    return Error::success();
+  ModuleState *State;
+  {
+    std::lock_guard<std::mutex> Lock(ModulesMutex_);
+    std::unique_ptr<ModuleState> &Entry = Modules_[Module];
+    if (!Entry)
+      Entry = std::make_unique<ModuleState>();
+    State = Entry.get();
+  }
 
-  const char *FilePath = autojit_lazy_module_path(Module);
-  if (Module->version != AUTOJIT_LAZY_MODULE_VERSION)
-    return createStringError(inconvertibleErrorCode(),
-                             "Unsupported descriptor for lazy module " +
-                                 Twine(FilePath));
+  // Load modules outside of the lock, so threads can load different modules
+  // concurrently
+  std::call_once(State->Loaded, [&]() {
+    const char *FilePath = autojit_lazy_module_path(Module);
+    if (Module->version != AUTOJIT_LAZY_MODULE_VERSION) {
+      State->Error =
+          ("Unsupported descriptor for lazy module " + Twine(FilePath)).str();
+      return;
+    }
+    SmallVector<uint64_t, 32> ImportAddrs;
+    ImportAddrs.reserve(Module->num_imports);
+    for (uint32_t I = 0; I < Module->num_imports; I += 1)
+      ImportAddrs.push_back(autojit_import_address(Module, I));
+    if (Error Err = addModule(FilePath, Module->hash, ImportAddrs))
+      State->Error = toString(std::move(Err));
+  });
 
-  SmallVector<uint64_t, 32> ImportAddrs;
-  ImportAddrs.reserve(Module->num_imports);
-  for (uint32_t I = 0; I < Module->num_imports; I += 1)
-    ImportAddrs.push_back(autojit_import_address(Module, I));
-  if (Error Err = addModule(FilePath, Module->hash, ImportAddrs))
-    return Err;
-
-  Modules_.insert(Module);
+  if (!State->Error.empty())
+    return createStringError(inconvertibleErrorCode(), State->Error);
   return Error::success();
 }
 
