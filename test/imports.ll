@@ -7,7 +7,7 @@
 ; via the GOT: @ext, @wk and @counter (bitmap 0b00010101 = 0x15).
 
 ; IR: @__llvm_autojit_module = private constant { i32, i32, i64, [6 x i32], [1 x i8], [{{[0-9]+}} x i8] } { i32 2, i32 6, i64 {{-?[0-9]+}}, [6 x i32] {{.*}}, [1 x i8] c"\15", [{{[0-9]+}} x i8] c"/tmp/autojit_{{[0-9a-f]+}}.bc\00" }
-; IR: call ptr @__llvm_autojit_materialize(ptr @__llvm_autojit_ptr_caller, i64 {{-?[0-9]+}}, ptr @__llvm_autojit_module)
+; IR: call void asm sideeffect "{{.*}}", "s,s"(ptr @__llvm_autojit_ptr_caller, ptr @__llvm_autojit_module)
 
 ; ASM:      .L__llvm_autojit_module:
 ; ASM-NEXT:   .long 2

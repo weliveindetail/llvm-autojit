@@ -7,6 +7,7 @@
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/InlineAsm.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/MC/TargetRegistry.h>
@@ -239,11 +240,8 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
     // All further changes only affect static code
     GlobalVariable *LazyModule =
         emitLazyModule(M, Imports, Hash, FilePath);
-    FunctionType *MaterializeFnTy = FunctionType::get(
-        PtrTy, {PtrTy, Type::getInt64Ty(Context), PtrTy}, false);
-    FunctionCallee MaterializeFn =
-        M.getOrInsertFunction("__llvm_autojit_materialize", MaterializeFnTy);
-
+    FunctionCallee MaterializeFn;
+    Function *ResolverThunk = nullptr;
     for (Function *F : LazifyFns) {
       auto FnName = F->getName();
       auto FnGUID = uniqueGUID(M.getSourceFileName(), F);
@@ -251,7 +249,19 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
         errs() << "autojit-plugin: Lazify function " << FnName << " as "
                << guidToFnName(FnGUID) << "\n";
       }
-      lazifyFn(F, FnGUID, MaterializeFn, LazyModule);
+      if (canUseX86_64Trampoline(*F)) {
+        if (!ResolverThunk)
+          ResolverThunk = emitResolverThunk(M);
+        lazifyFnX86_64(F, FnGUID, ResolverThunk, LazyModule);
+      } else {
+        if (!MaterializeFn) {
+          FunctionType *MaterializeFnTy = FunctionType::get(
+              PtrTy, {PtrTy, Type::getInt64Ty(Context), PtrTy}, false);
+          MaterializeFn = M.getOrInsertFunction("__llvm_autojit_materialize",
+                                                MaterializeFnTy);
+        }
+        lazifyFn(F, FnGUID, MaterializeFn, LazyModule);
+      }
     }
 
     // Add all at once: each call rebuilds the entire llvm.used array
@@ -417,6 +427,81 @@ private:
                   ConstantArray::get(EntriesTy, Entries),
                   ConstantDataArray::get(Ctx, Indirect), Path}));
     return Table;
+  }
+
+  // x86-64 trampolines only jump through their slot and leave all arguments
+  // untouched. They need r11 as scratch register, which the C calling
+  // convention doesn't use for arguments. With the large code model, the slot
+  // might be out of range.
+  static bool canUseX86_64Trampoline(const Function &F) {
+    const Module &M = *F.getParent();
+    const Triple &TT = M.getTargetTriple();
+    return TT.getArch() == Triple::x86_64 && TT.isOSBinFormatELF() &&
+           M.getCodeModel() != CodeModel::Large &&
+           F.getCallingConv() == CallingConv::C;
+  }
+
+  static Function *createNakedFunction(Function *F) {
+    F->addFnAttr(Attribute::Naked);
+    F->addFnAttr(Attribute::NoUnwind);
+    // The jump is only valid in the trampoline itself. At -O0, the always
+    // inliner still runs after us (e.g. for allocators in libstdc++ 13).
+    F->removeFnAttr(Attribute::AlwaysInline);
+    F->addFnAttr(Attribute::NoInline);
+    // No unwind info: trampolines don't have a frame
+    F->removeFnAttr(Attribute::UWTable);
+    return F;
+  }
+
+  // Slots of x86-64 trampolines initially point to this thunk. It's local to
+  // the module, so the slots get relative relocations. The resolver is in the
+  // runtime (see runtime/common/ResolverX86_64.c).
+  static Function *emitResolverThunk(Module &M) {
+    LLVMContext &Context = M.getContext();
+    FunctionType *FnTy = FunctionType::get(Type::getVoidTy(Context), false);
+    Function *Thunk = createNakedFunction(Function::Create(
+        FnTy, GlobalValue::InternalLinkage, "__llvm_autojit_resolve_thunk", M));
+    IRBuilder<> Builder(BasicBlock::Create(Context, "entry", Thunk));
+    InlineAsm *Asm = InlineAsm::get(
+        FnTy, "jmpq *__llvm_autojit_resolve@GOTPCREL(%rip)", "",
+        /*hasSideEffects=*/true);
+    Builder.CreateCall(Asm);
+    Builder.CreateUnreachable();
+    return Thunk;
+  }
+
+  // The trampoline passes its entry in r11 and jumps through the slot. The
+  // entry follows the jump, see autojit_trampoline_entry_t. Slots of
+  // linkonce functions go into their comdat, so the linker discards them
+  // together.
+  void lazifyFnX86_64(Function *F, GlobalValue::GUID FnGUID,
+                      Function *ResolverThunk, GlobalVariable *LazyModule) {
+    Module *M = F->getParent();
+    LLVMContext &Context = M->getContext();
+    PointerType *PtrTy = PointerType::get(Context, 0);
+
+    auto *Slot = new GlobalVariable(*M, PtrTy, false,
+                                    GlobalValue::InternalLinkage, ResolverThunk,
+                                    "__llvm_autojit_ptr_" + F->getName());
+    Slot->setAlignment(Align(8));
+    Slot->setComdat(F->getComdat());
+
+    F->dropAllReferences();
+    createNakedFunction(F);
+    IRBuilder<> Builder(BasicBlock::Create(Context, "entry", F));
+    std::string AsmStr;
+    raw_string_ostream(AsmStr) << "leaq 1f(%rip), %r11\n"
+                               << "jmpq *${0:P}(%rip)\n"
+                               << "1:\n"
+                               << ".quad " << FnGUID << "\n"
+                               << ".long ${0:P} - 1b\n"
+                               << ".long ${1:P} - 1b";
+    FunctionType *AsmTy = FunctionType::get(Type::getVoidTy(Context),
+                                            {PtrTy, PtrTy}, false);
+    InlineAsm *Asm = InlineAsm::get(AsmTy, AsmStr, "s,s",
+                                    /*hasSideEffects=*/true);
+    Builder.CreateCall(Asm, {Slot, LazyModule});
+    Builder.CreateUnreachable();
   }
 
   void lazifyFn(Function *F, GlobalValue::GUID FnGUID,

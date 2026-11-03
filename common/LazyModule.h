@@ -37,6 +37,14 @@ typedef struct {
   uint64_t hash;
 } autojit_lazy_module_t;
 
+/* Data that x86-64 trampolines store after their jump. They pass its address
+ * to the resolver in r11. Offsets are relative to the start of the entry. */
+typedef struct {
+  uint64_t guid;
+  int32_t slot_offset;
+  int32_t module_offset;
+} autojit_trampoline_entry_t;
+
 static inline const int32_t *
 autojit_import_entries(const autojit_lazy_module_t *module) {
   return (const int32_t *)(module + 1);
