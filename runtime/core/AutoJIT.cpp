@@ -204,7 +204,7 @@ private:
 };
 
 // Bump this whenever changes in the runtime affect the compiled objects
-static constexpr unsigned CacheVersion = 2;
+static constexpr unsigned CacheVersion = 3;
 
 static std::string getCacheStem(StringRef FilePath, uint64_t Hash) {
   StringRef Stem = FilePath;
@@ -219,6 +219,36 @@ static std::string getCacheStem(StringRef FilePath, uint64_t Hash) {
 static std::string getImportName(uint64_t Hash, size_t Index) {
   std::string HashStr = utohexstr(Hash, /*LowerCase=*/true, /*Width=*/16);
   return ("__autojit_imp_" + HashStr + "_" + Twine(Index)).str();
+}
+
+// Clang enables outline atomics for AArch64 Linux by default. Their helpers
+// (e.g. __aarch64_ldadd4_acq_rel) come from libgcc.a or compiler-rt and are
+// hidden in each image, so JITed code can't link against them. Emit atomics
+// inline instead. The target-features attribute replaces the features of the
+// TargetMachine, so we add LSE explicitly if the host has it. Otherwise the
+// backend emits LL/SC loops, which work on all cores.
+static void disableOutlineAtomics(Module &M) {
+  if (!M.getTargetTriple().isAArch64())
+    return;
+  static const bool HostHasLSE = [] {
+    auto Features = sys::getHostCPUFeatures();
+    auto It = Features.find("lse");
+    return It != Features.end() && It->second;
+  }();
+  for (Function &F : M) {
+    if (F.isDeclaration())
+      continue;
+    SmallVector<StringRef, 32> Features;
+    if (Attribute A = F.getFnAttribute("target-features"); A.isValid())
+      SplitString(A.getValueAsString(), Features, ",");
+    if (llvm::is_contained(Features, "-outline-atomics"))
+      continue;
+    llvm::erase(Features, "+outline-atomics");
+    Features.push_back("-outline-atomics");
+    if (HostHasLSE && !llvm::is_contained(Features, "-lse"))
+      Features.push_back("+lse");
+    F.addFnAttr("target-features", join(Features, ","));
+  }
 }
 
 Expected<ThreadSafeModule>
@@ -281,6 +311,8 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
                                  Twine(ImportNames.size()) +
                                  " imports, but its import table has " +
                                  Twine(NumImports));
+
+  disableOutlineAtomics(*M);
 
   std::unordered_set<Function *> DropFunctions;
 
