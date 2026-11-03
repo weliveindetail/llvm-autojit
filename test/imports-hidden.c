@@ -5,7 +5,7 @@
 // RUN: %clang_c -fpass-plugin=%autojit_plugin -c %s -o %t.o
 // RUN: %clang_c %t.o %t_hidden.o -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
 // RUN: %t_inprocess.exe | FileCheck %s
-// RUN: %clang_c %t.o %t_hidden.o -rdynamic -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
+// RUN: %clang_c %t.o %t_hidden.o -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
 // RUN: %t_remote.exe | FileCheck %s
 //
 // CHECK: hiddenFn(HiddenVar) = 43

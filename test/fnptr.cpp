@@ -1,9 +1,9 @@
 // Check that function pointers don't break in lazy code
 //
-// RUN: %clang %s -rdynamic -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
+// RUN: %clang %s -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
 // RUN: %t_inprocess.exe 2>&1 | FileCheck %s
 //
-// RUN: %clang %s -rdynamic -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
+// RUN: %clang %s -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
 // RUN: %t_remote.exe 2>&1 | FileCheck %s
 //
 // CHECK-NOT: JIT session error

@@ -4,16 +4,16 @@
 // XFAIL: orc_rt
 
 // RUN: %clang_c -fpass-plugin=%autojit_plugin -c %s -o %t.o
-// RUN: %clang_c %t.o %fsanitize -L%autojit_runtime_dir -lautojit_static-%arch -rdynamic -pthread -o %t.exe
+// RUN: %clang_c %t.o %fsanitize -L%autojit_runtime_dir -lautojit_static-%arch -pthread -o %t.exe
 // RUN: env AUTOJITD_FULL_SHUTDOWN=Off %t.exe 2>&1 | FileCheck %s
 // RUN: env AUTOJITD_FULL_SHUTDOWN=On %t.exe 2>&1 | FileCheck %s
 
 // The stub library can come before the objects on the link line
-// RUN: %clang_c -L%autojit_runtime_dir -lautojit_static-%arch %t.o %fsanitize -rdynamic -pthread -o %t_lib_first.exe
+// RUN: %clang_c -L%autojit_runtime_dir -lautojit_static-%arch %t.o %fsanitize -pthread -o %t_lib_first.exe
 // RUN: %t_lib_first.exe 2>&1 | FileCheck %s
 
 // Stub with debugger support
-// RUN: %clang_c %t.o %fsanitize -L%autojit_runtime_dir -lautojit_static_debug-%arch -rdynamic -pthread -o %t_debug.exe
+// RUN: %clang_c %t.o %fsanitize -L%autojit_runtime_dir -lautojit_static_debug-%arch -pthread -o %t_debug.exe
 // RUN: %t_debug.exe 2>&1 | FileCheck %s
 
 // CHECK-NOT: JIT session error

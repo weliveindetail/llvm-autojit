@@ -10,7 +10,6 @@ export AUTOJIT_DEBUG=On
 rustc -Z llvm-plugins="@CMAKE_INSTALL_PREFIX@/lib/autojit.so" \
       -L @CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime \
       -C link-arg=-Wl,-rpath,@CMAKE_INSTALL_PREFIX@/lib \
-      -C link-arg=-rdynamic \
       -o hello \
       llvm-autojit-bench/hello.rs
 

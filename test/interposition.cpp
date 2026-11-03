@@ -1,6 +1,6 @@
 // Lazy functions in the executable can interpose symbols that the runtime uses
 // itself. In C++20 mode, libstdc++ has no extern templates for std::string and
-// the executable exports its own instantiations, even without -rdynamic,
+// the executable exports its own instantiations, even without,
 // because libstdc++.so defines them as well. The runtime must not call them,
 // because it would re-enter materialization.
 //

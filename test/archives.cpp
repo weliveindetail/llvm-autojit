@@ -9,14 +9,14 @@
 // RUN: rm -f %t.a
 // RUN: %ar cq %t.a %t_add.o %t_multiply.o %t_hello.o
 //
-// RUN: %clang %t.o %t.a -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
+// RUN: %clang %t.o %t.a -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
 // RUN: %t_inprocess.exe 2>&1 | FileCheck %s
 //
 // Imports don't depend on dynamic symbols
 // RUN: %clang %t.o %t.a -Wl,--gc-sections -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess_gc.exe
 // RUN: %t_inprocess_gc.exe 2>&1 | FileCheck %s
 //
-// RUN: %clang %t.o %t.a -rdynamic -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
+// RUN: %clang %t.o %t.a -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
 // RUN: %t_remote.exe 2>&1 | FileCheck %s
 
 // CHECK-NOT: JIT session error
