@@ -249,10 +249,10 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
         errs() << "autojit-plugin: Lazify function " << FnName << " as "
                << guidToFnName(FnGUID) << "\n";
       }
-      if (canUseX86_64Trampoline(*F)) {
+      if (canUseLeanTrampoline(*F)) {
         if (!ResolverThunk)
           ResolverThunk = emitResolverThunk(M);
-        lazifyFnX86_64(F, FnGUID, ResolverThunk, LazyModule);
+        lazifyFnLean(F, FnGUID, ResolverThunk, LazyModule);
       } else {
         if (!MaterializeFn) {
           FunctionType *MaterializeFnTy = FunctionType::get(
@@ -433,16 +433,35 @@ private:
     return Table;
   }
 
-  // x86-64 trampolines only jump through their slot and leave all arguments
-  // untouched. They need r11 as scratch register, which the C calling
-  // convention doesn't use for arguments. With the large code model, the slot
-  // might be out of range.
-  static bool canUseX86_64Trampoline(const Function &F) {
+  // Lean trampolines only jump through their slot and leave all arguments
+  // untouched. They need scratch registers that the C calling convention
+  // doesn't use for arguments: r11 on x86-64, x16 and x17 on AArch64. They
+  // address the slot PC-relative, which might be out of range with the large
+  // code model.
+  static bool canUseLeanTrampoline(const Function &F) {
     const Module &M = *F.getParent();
     const Triple &TT = M.getTargetTriple();
-    return TT.getArch() == Triple::x86_64 && TT.isOSBinFormatELF() &&
-           M.getCodeModel() != CodeModel::Large &&
-           F.getCallingConv() == CallingConv::C;
+    if (!TT.isOSBinFormatELF() || M.getCodeModel() == CodeModel::Large ||
+        F.getCallingConv() != CallingConv::C)
+      return false;
+    switch (TT.getArch()) {
+    case Triple::x86_64:
+      return true;
+    case Triple::aarch64:
+      return TT.getEnvironment() != Triple::GNUILP32 && !hasSMEAttrs(F);
+    default:
+      return false;
+    }
+  }
+
+  // The resolver is a regular function that we enter in non-streaming mode
+  // without ZA state. Functions with SME attributes keep the generic
+  // trampoline, which the backend handles as a regular call.
+  static bool hasSMEAttrs(const Function &F) {
+    for (const Attribute &A : F.getAttributes().getFnAttrs())
+      if (A.isStringAttribute() && A.getKindAsString().starts_with("aarch64_"))
+        return true;
+    return false;
   }
 
   static Function *createNakedFunction(Function *F) {
@@ -457,29 +476,43 @@ private:
     return F;
   }
 
-  // Slots of x86-64 trampolines initially point to this thunk. It's local to
+  // Slots of lean trampolines initially point to this thunk. It's local to
   // the module, so the slots get relative relocations. The resolver is in the
-  // runtime (see runtime/common/ResolverX86_64.c).
+  // runtime (see runtime/common/Resolver*.c). On x86-64, the backend emits
+  // endbr64 for CET based on the module flag. On AArch64, it emits BTI only
+  // for functions with the attribute, which clang adds to all functions.
   static Function *emitResolverThunk(Module &M) {
     LLVMContext &Context = M.getContext();
     FunctionType *FnTy = FunctionType::get(Type::getVoidTy(Context), false);
     Function *Thunk = createNakedFunction(Function::Create(
         FnTy, GlobalValue::InternalLinkage, "__llvm_autojit_resolve_thunk", M));
+    StringRef AsmStr;
+    if (M.getTargetTriple().getArch() == Triple::aarch64) {
+      // x16 holds the entry, so we can only use x17
+      AsmStr = "adrp x17, :got:__llvm_autojit_resolve\n"
+               "ldr x17, [x17, :got_lo12:__llvm_autojit_resolve]\n"
+               "br x17";
+      auto *BTI = mdconst::extract_or_null<ConstantInt>(
+          M.getModuleFlag("branch-target-enforcement"));
+      if (BTI && !BTI->isZero())
+        Thunk->addFnAttr("branch-target-enforcement");
+    } else {
+      AsmStr = "jmpq *__llvm_autojit_resolve@GOTPCREL(%rip)";
+    }
     IRBuilder<> Builder(BasicBlock::Create(Context, "entry", Thunk));
-    InlineAsm *Asm = InlineAsm::get(
-        FnTy, "jmpq *__llvm_autojit_resolve@GOTPCREL(%rip)", "",
-        /*hasSideEffects=*/true);
+    InlineAsm *Asm = InlineAsm::get(FnTy, AsmStr, "",
+                                    /*hasSideEffects=*/true);
     Builder.CreateCall(Asm);
     Builder.CreateUnreachable();
     return Thunk;
   }
 
-  // The trampoline passes its entry in r11 and jumps through the slot. The
-  // entry follows the jump, see autojit_trampoline_entry_t. Slots of
-  // linkonce functions go into their comdat, so the linker discards them
-  // together.
-  void lazifyFnX86_64(Function *F, GlobalValue::GUID FnGUID,
-                      Function *ResolverThunk, GlobalVariable *LazyModule) {
+  // The trampoline passes its entry in a scratch register and jumps through
+  // the slot. The entry follows the jump, see autojit_trampoline_entry_t.
+  // Slots of linkonce functions go into their comdat, so the linker discards
+  // them together.
+  void lazifyFnLean(Function *F, GlobalValue::GUID FnGUID,
+                    Function *ResolverThunk, GlobalVariable *LazyModule) {
     Module *M = F->getParent();
     LLVMContext &Context = M->getContext();
     PointerType *PtrTy = PointerType::get(Context, 0);
@@ -494,12 +527,29 @@ private:
     createNakedFunction(F);
     IRBuilder<> Builder(BasicBlock::Create(Context, "entry", F));
     std::string AsmStr;
-    raw_string_ostream(AsmStr) << "leaq 1f(%rip), %r11\n"
-                               << "jmpq *${0:P}(%rip)\n"
-                               << "1:\n"
-                               << ".quad " << FnGUID << "\n"
-                               << ".long ${0:P} - 1b\n"
-                               << ".long ${1:P} - 1b";
+    raw_string_ostream OS(AsmStr);
+    if (M->getTargetTriple().getArch() == Triple::aarch64) {
+      // x16 and x17 are the intra-procedure-call scratch registers. With BTI,
+      // br x17 may land on "bti c" in the resolver thunk. The runtime stores
+      // the slot with release semantics after it linked the code. We load it
+      // with acquire semantics, so the JITed code sees its data.
+      OS << "adr x16, 1f\n"
+         << "adrp x17, ${0:c}\n"
+         << "add x17, x17, :lo12:${0:c}\n"
+         << "ldar x17, [x17]\n"
+         << "br x17\n"
+         << "1:\n"
+         << ".xword " << FnGUID << "\n"
+         << ".word ${0:c} - 1b\n"
+         << ".word ${1:c} - 1b";
+    } else {
+      OS << "leaq 1f(%rip), %r11\n"
+         << "jmpq *${0:P}(%rip)\n"
+         << "1:\n"
+         << ".quad " << FnGUID << "\n"
+         << ".long ${0:P} - 1b\n"
+         << ".long ${1:P} - 1b";
+    }
     FunctionType *AsmTy = FunctionType::get(Type::getVoidTy(Context),
                                             {PtrTy, PtrTy}, false);
     InlineAsm *Asm = InlineAsm::get(AsmTy, AsmStr, "s,s",

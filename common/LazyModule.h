@@ -37,8 +37,9 @@ typedef struct {
   uint64_t hash;
 } autojit_lazy_module_t;
 
-/* Data that x86-64 trampolines store after their jump. They pass its address
- * to the resolver in r11. Offsets are relative to the start of the entry. */
+/* Data that x86-64 and AArch64 trampolines store after their jump. They pass
+ * its address to the resolver in r11 (x86-64) or x16 (AArch64). Offsets are
+ * relative to the start of the entry. The entry might not be 8-byte aligned. */
 typedef struct {
   uint64_t guid;
   int32_t slot_offset;
