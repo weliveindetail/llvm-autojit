@@ -41,6 +41,11 @@ static cl::opt<bool> AutoJITDebug(
     "autojit-debug", cl::init(false), cl::Hidden,
     cl::desc("Enable AutoJIT debug mode - output .ll files instead of .bc"));
 
+static cl::opt<std::string> AutoJITDir(
+    "autojit-dir", cl::init("/tmp"), cl::Hidden,
+    cl::desc("Directory for lazy modules (and the runtime's object cache). "
+             "Also set via AUTOJIT_DIR environment variable."));
+
 namespace {
 
 static GlobalValue::GUID uniqueGUID(Twine ModName, Function *F) {
@@ -60,7 +65,7 @@ static std::string guidToFnName(GlobalValue::GUID Guid) {
 struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
     std::string GUID = getModuleGUID(M);
-    std::string FileStem = "/tmp/autojit_" + GUID;
+    std::string FileStem = getOutputDir() + "/autojit_" + GUID;
     StringRef FileExt = AutoJITDebug ? ".ll" : ".bc";
 
     if (LLVM_UNLIKELY(AutoJITDebug)) {
@@ -148,6 +153,26 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
   }
 
 private:
+  // The runtime loads lazy modules from their absolute path and caches their
+  // compiled objects next to them.
+  static const std::string &getOutputDir() {
+    static const std::string Dir = [] {
+      SmallString<256> Path(AutoJITDir);
+      if (std::error_code EC = sys::fs::make_absolute(Path)) {
+        errs() << "autojit-plugin error: Invalid directory " << AutoJITDir
+               << ": " << EC.message() << "\n";
+        exit(1);
+      }
+      if (std::error_code EC = sys::fs::create_directories(Path)) {
+        errs() << "autojit-plugin error: Failed to create directory " << Path
+               << ": " << EC.message() << "\n";
+        exit(1);
+      }
+      return std::string(Path);
+    }();
+    return Dir;
+  }
+
   std::string getModuleGUID(const Module &M) {
     // Get the original source file path from the module
     std::string SourcePath = M.getSourceFileName();
@@ -347,6 +372,9 @@ llvmGetPassPluginInfo() {
     if (Val == "1" || Val == "on" || Val == "true" || Val == "yes")
       AutoJITDebug = true;
   }
+  if (const char *Var = std::getenv("AUTOJIT_DIR"))
+    if (*Var)
+      AutoJITDir = Var;
 #if defined(AUTOJIT_ENABLE_TPDE)
   if (getTheX86_32Target && getTheX86_64Target) {
     RegisterTargetMachine<X86TargetMachineTPDE> X(getTheX86_32Target());
