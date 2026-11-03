@@ -499,7 +499,15 @@ void autojit::RemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
     if (isQuickHangup()) {
       LOG() << "Warning: ignore RPC invocation after disconnect\n";
       OnComplete(DummyResult); // Can be both, void or ErrorSuccess
+      return;
     }
+  }
+
+  // The caller waits for a result, so we can't just drop the call
+  if (!WrapperFnAddr) {
+    OnComplete(shared::WrapperFunctionResult::createOutOfBandError(
+        "Call to null wrapper function in the executor"));
+    return;
   }
 
   uint64_t SeqNo;
@@ -684,11 +692,6 @@ Error autojit::RemoteEPC::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
     DBG() << ", seqno = " << SeqNo << ", tag-addr = " << TagAddr
            << ", arg-buffer = " << formatv("{0:x}", ArgBytes.size())
            << " bytes\n";
-  }
-
-  if (OpC == SimpleRemoteEPCOpcode::CallWrapper && TagAddr.getValue() == 0) {
-    LOG() << "Warning: supress RPC invocation of nullptr\n";
-    return Error::success();
   }
 
   return T->sendMessage(OpC, SeqNo, TagAddr, ArgBytes);
