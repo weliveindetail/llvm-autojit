@@ -128,13 +128,14 @@ endfunction()
 # Default stub without debugger support
 add_autojit_stub(autojit_static
   SOURCES remote/Stub.c remote/StubSPS.c common/ResolverX86_64.c
+          common/ResolverAArch64.c
   DEFINES AUTOJIT_STUB_DEBUG_SUPPORT=0
 )
 
 # Stub with support for the GDB JIT interface
 add_autojit_stub(autojit_static_debug
   SOURCES remote/Stub.c remote/StubDebug.c remote/StubSPS.c
-          common/ResolverX86_64.c
+          common/ResolverX86_64.c common/ResolverAArch64.c
   DEFINES AUTOJIT_STUB_DEBUG_SUPPORT=1
 )
 
@@ -176,6 +177,7 @@ install(
 add_library(autojit-so SHARED
   inprocess/Shlib.cpp
   common/ResolverX86_64.c
+  common/ResolverAArch64.c
   core/AutoJIT.cpp
   core/ExecutorPlatform.cpp
   ${orc_rt}
