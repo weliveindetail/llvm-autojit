@@ -1,10 +1,7 @@
 # Build the AutoJIT runtime library
-if(AUTOJIT_ENABLE_TPDE)
-  set(tpde_libs tpde_llvm)
-  set(tpde_backends TPDEBackends.cpp)
-else()
-  set(tpde_backends PARTIAL_SOURCES_INTENDED)
-endif()
+# TPDEBackends.cpp subclasses the X86TargetMachine, which is a private and
+# final class in vanilla LLVM. Only the runtime uses TPDE for now.
+set(tpde_backends PARTIAL_SOURCES_INTENDED)
 
 if(AUTOJIT_BUILD_EXTERNAL)
   include(${LLVM_BINARY_DIR}/lib/cmake/llvm/AddLLVM.cmake)
