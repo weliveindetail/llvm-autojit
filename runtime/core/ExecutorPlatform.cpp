@@ -10,6 +10,7 @@
 #include "llvm/TargetParser/Triple.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -141,9 +142,15 @@ Expected<JITDylibSP> autojit::ExecutorPlatform::operator()(LLJIT &J) {
     J.getExecutionSession().setPlatform(std::move(*P));
     J.setPlatformSupport(std::make_unique<ORCPlatformSupport>(J));
   } else {
-    // At this point we cannot fall back anymore, becasue LLVM doesn't expose
-    // the GenericLLVMIRPlatformSupport class.
-    LOG() << "Failed to install orc-runtime: " << toString(P.takeError());
+    // We cannot fall back anymore: ELFNixPlatform registered a plugin with the
+    // linking layer that refers to the destroyed platform. Every further link
+    // would run into undefined behavior. We are in the middle of the first
+    // materialization and hold the runtime's locks, so we must not run atexit
+    // handlers or static destructors: they might call lazy code.
+    LOG() << "Failed to install orc-runtime: " << toString(P.takeError())
+          << "\n";
+    fflush(nullptr);
+    _Exit(1);
   }
 
   return &PlatformJD;
