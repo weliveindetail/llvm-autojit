@@ -26,6 +26,13 @@ config.substitutions.append(('%autojit_plugin', config.autojit_plugin))
 config.substitutions.append(('%autojit_runtime_dir', config.autojit_runtime_dir))
 config.substitutions.append(('%autojit_tools_dir', config.autojit_tools_dir))
 config.substitutions.append(('%arch', config.host_arch))
+config.available_features.add(config.host_arch)
+try:
+    with open('/proc/cpuinfo') as cpuinfo:
+        if ' avx ' in cpuinfo.read():
+            config.available_features.add('avx')
+except OSError:
+    pass
 
 if config.sanitize:
     config.substitutions.append(('%fsanitize', f"-fsanitize={config.sanitize}" ))
