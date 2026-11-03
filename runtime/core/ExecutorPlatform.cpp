@@ -45,10 +45,18 @@ static bool isEnvVarSet(const char *Name) {
 }
 
 static Error installDebugSupport(ObjectLinkingLayer *JITLinkLayer) {
+  // The executor provides the registration function as bootstrap symbol. We
+  // can't look it up by name: it isn't exported from the program.
   auto &ES = JITLinkLayer->getExecutionSession();
-  auto StubDebug = createJITLoaderGDBRegistrar(ES);
-  if (!StubDebug)
-    return StubDebug.takeError();
+  ExecutorAddr RegisterFn;
+  if (auto Err = ES.getExecutorProcessControl().getBootstrapSymbols(
+          {{RegisterFn, "llvm_orc_registerJITLoaderGDBWrapper"}})) {
+    consumeError(std::move(Err));
+    return createStringError(inconvertibleErrorCode(),
+                             "Executor has no GDB JIT interface. Link "
+                             "autojit_static_debug instead of autojit_static.");
+  }
+  auto StubDebug = std::make_unique<EPCDebugObjectRegistrar>(ES, RegisterFn);
 
   bool AutoRegisterCode = true;
   if (isEnvVarSet("AUTOJIT_DEBUG_NO_AUTOREGISTER")) {
@@ -57,7 +65,7 @@ static Error installDebugSupport(ObjectLinkingLayer *JITLinkLayer) {
   }
   constexpr bool RequireDebugSections = false;
   auto Plugin = std::make_unique<DebugObjectManagerPlugin>(
-      ES, std::move(*StubDebug), RequireDebugSections, AutoRegisterCode);
+      ES, std::move(StubDebug), RequireDebugSections, AutoRegisterCode);
   JITLinkLayer->addPlugin(std::move(Plugin));
   return Error::success();
 }
@@ -92,6 +100,14 @@ Expected<JITDylibSP> autojit::ExecutorPlatform::operator()(LLJIT &J) {
       dyn_cast<ObjectLinkingLayer>(&J.getObjLinkingLayer());
   assert(JITLinkLayer && "DebuggableExecutorNativePlatform requires JITLink");
 
+  // Debugger support doesn't depend on the orc-runtime. Setting it up first
+  // allows us to debug the runtime code as well.
+  if (EnableDebugging) {
+    if (Error Err = installDebugSupport(JITLinkLayer))
+      LOG() << "Cannot enable debugger support: " << toString(std::move(Err))
+            << "\n";
+  }
+
   if (isEnvVarSet("AUTOJITD_DISABLE_ORC_RUNTIME")) {
     LOG() << "Skip install orc-runtime: AUTOJITD_DISABLE_ORC_RUNTIME\n";
     return setUpGenericLLVMIRPlatform(J);
@@ -119,12 +135,6 @@ Expected<JITDylibSP> autojit::ExecutorPlatform::operator()(LLJIT &J) {
   auto &ES = J.getExecutionSession();
   auto &PlatformJD = ES.createBareJITDylib("<Platform>");
   PlatformJD.addToLinkOrder(*ProcessSymbolsJD);
-
-  // Setting up debug support first, allows us to debug the runtime code
-  if (EnableDebugging) {
-    if (Error Err = installDebugSupport(JITLinkLayer))
-      LOG() << "Cannot enable debugger support: " << toString(std::move(Err));
-  }
 
   if (auto P = ELFNixPlatform::Create(*JITLinkLayer, PlatformJD,
                                       std::move(*OrcRuntime))) {

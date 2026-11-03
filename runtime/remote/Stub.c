@@ -1019,6 +1019,13 @@ static uint64_t detect_stdlibs(void) {
   return result;
 }
 
+
+#if AUTOJIT_STUB_DEBUG_SUPPORT
+/* Defined in StubDebug.c */
+ssize_t llvm_orc_registerJITLoaderGDBWrapper(const char *data, uint64_t size,
+                                             sps_buffer_t *Result);
+#endif
+
 static int send_setup_message(void) {
   /* Setup message format (SPS encoded):
    * - target_triple: string
@@ -1049,8 +1056,10 @@ static int send_setup_message(void) {
   /* Bootstrap symbols - populate with all required symbols */
   /* Symbol names from llvm/lib/ExecutionEngine/Orc/Shared/OrcRTBridge.cpp */
 
-  /* Count: 2 dispatch + 6 memory write + 3 dylib mgr + 4 memory mgr + 2 eh-frame = 17 */
-  sps_write_uint64(&setup_data, 17);
+  /* Count: 2 dispatch + 6 memory write + 3 dylib mgr + 4 memory mgr + 2 eh-frame
+   * = 17, plus the GDB JIT interface if we have it */
+  const uint64_t num_bootstrap_symbols = 17 + AUTOJIT_STUB_DEBUG_SUPPORT;
+  sps_write_uint64(&setup_data, num_bootstrap_symbols);
 
   /* __llvm_orc_SimpleRemoteEPC_dispatch_ctx - context for RPC calls back to
    * stub */
@@ -1135,9 +1144,17 @@ static int send_setup_message(void) {
   sps_write_uint64(&setup_data,
                    (uint64_t)(uintptr_t)llvm_orc_deregisterEHFrameAllocAction);
 
+#if AUTOJIT_STUB_DEBUG_SUPPORT
+  /* GDB JIT interface. The daemon can't look it up by name, because the
+   * program doesn't export it. */
+  sps_write_string(&setup_data, "llvm_orc_registerJITLoaderGDBWrapper");
+  sps_write_uint64(&setup_data,
+                   (uint64_t)(uintptr_t)llvm_orc_registerJITLoaderGDBWrapper);
+#endif
+
   DEBUG_LOG(
-      "Sending Setup message: triple=%s, page_size=%lu, bootstrap_symbols=17\n",
-      triple, page_size);
+      "Sending Setup message: triple=%s, page_size=%lu, bootstrap_symbols=%lu\n",
+      triple, page_size, num_bootstrap_symbols);
 
   /* Send Setup message */
   epc_message_t setup_msg = {.opcode = OPCODE_SETUP,

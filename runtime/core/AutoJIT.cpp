@@ -15,6 +15,7 @@
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>
+#include <llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h>
 #include <llvm/IR/GlobalAlias.h>
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/IR/LLVMContext.h>
@@ -665,6 +666,8 @@ public:
         ExecutorAddr::fromPtr(&registerEHFramesAllocAction);
     EPC->BootstrapSymbols[rt::DeregisterEHFrameSectionAllocActionName] =
         ExecutorAddr::fromPtr(&deregisterEHFramesAllocAction);
+    EPC->BootstrapSymbols["llvm_orc_registerJITLoaderGDBWrapper"] =
+        ExecutorAddr::fromPtr(&llvm_orc_registerJITLoaderGDBWrapper);
     return EPC;
   }
 };
