@@ -2,12 +2,7 @@
 
 clang="@AUTOJIT_BENCH_TOOLS_DIR@/clang"
 CFLAGS="-O0 -g"
-LDFLAGS=""
-
-if [ "@AUTOJIT_BUILD_UNIFIED@" = "On" ]; then
-  # Use the just-built compiler and linker
-  LDFLAGS="$LDFLAGS -fuse-ld=lld -B@CMAKE_INSTALL_PREFIX@/bin"
-fi
+LDFLAGS="-fuse-ld=lld"
 
 cd bzip2/build_regular
 make CC="$clang" CXX="$clang++" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"

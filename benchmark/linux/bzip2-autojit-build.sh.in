@@ -9,10 +9,7 @@ else
   LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime"
 fi
 
-if [ "@AUTOJIT_BUILD_UNIFIED@" = "On" ]; then
-  # Use the just-built compiler and linker
-  LDFLAGS="$LDFLAGS -fuse-ld=lld -B@CMAKE_INSTALL_PREFIX@/bin"
-fi
+LDFLAGS="$LDFLAGS -fuse-ld=lld"
 
 # Keep lazy modules in the build tree, /tmp is shared with all other builds
 export AUTOJIT_DIR="$(pwd)/bzip2/$AUTOJIT_BUILD_DIR/autojit"
