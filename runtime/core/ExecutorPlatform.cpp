@@ -115,10 +115,8 @@ Expected<JITDylibSP> autojit::ExecutorPlatform::operator()(LLJIT &J) {
   }
 
   std::unique_ptr<MemoryBuffer> Archive = getEmbeddedOrcRuntime();
-  if (!Archive) {
-    LOG() << "Cannot install orc-runtime: no embedded liborc_rt\n";
+  if (!Archive)
     return setUpGenericLLVMIRPlatform(J);
-  }
 
   if (!HaveOrcRuntimeDeps) {
     LOG() << "Cannot install orc-runtime: missing C++ stdlib\n";
