@@ -13,6 +13,3 @@ if [[ -z "$last_num" ]]; then
 else
     outfile="FileCheck/trace-regular-$((last_num+1)).json"
 fi
-
-touch $outfile
-ninjatracing FileCheck/build_regular/.ninja_log > $outfile
