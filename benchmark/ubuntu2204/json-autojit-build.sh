@@ -4,4 +4,8 @@
 export AUTOJIT_DIR="$(pwd)/json/$AUTOJIT_BUILD_DIR/autojit"
 
 echo "Building autojit binary.."
-ninja -C json/$AUTOJIT_BUILD_DIR tests/test-hash_cpp11
+if [ "$JSON_TEST_ALL" = "On" ]; then
+  ninja -C json/$AUTOJIT_BUILD_DIR
+else
+  ninja -C json/$AUTOJIT_BUILD_DIR tests/test-hash_cpp11
+fi
