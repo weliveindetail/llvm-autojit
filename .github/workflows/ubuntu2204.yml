@@ -20,7 +20,7 @@ jobs:
           -v ${{ github.workspace }}:/workspace/llvm-autojit \
           -w /workspace \
           weliveindetail/ubuntu-llvm20:22.04 \
-          /workspace/llvm-autojit/benchmark/ubuntu2204/docker-tests.sh
+          /workspace/llvm-autojit/benchmark/linux/docker-tests.sh
 
   check-llvm21:
     runs-on: ubuntu-latest
@@ -35,18 +35,18 @@ jobs:
           -v ${{ github.workspace }}:/workspace/llvm-autojit \
           -w /workspace \
           weliveindetail/ubuntu-llvm21:22.04 \
-          /workspace/llvm-autojit/benchmark/ubuntu2204/docker-tests.sh
+          /workspace/llvm-autojit/benchmark/linux/docker-tests.sh
     - name: Build sample projects with shared library
       run: |
         docker run --rm \
           -v ${{ github.workspace }}:/workspace/llvm-autojit \
           -w /workspace \
           weliveindetail/ubuntu-llvm21:22.04 \
-          /workspace/llvm-autojit/benchmark/ubuntu2204/docker-samples-shlib.sh
+          /workspace/llvm-autojit/benchmark/linux/docker-samples-shlib.sh
     - name: Build sample projects with static stub and autojitd
       run: |
         docker run --rm \
           -v ${{ github.workspace }}:/workspace/llvm-autojit \
           -w /workspace \
           weliveindetail/ubuntu-llvm21:22.04 \
-          /workspace/llvm-autojit/benchmark/ubuntu2204/docker-samples-autojitd.sh
+          /workspace/llvm-autojit/benchmark/linux/docker-samples-autojitd.sh
