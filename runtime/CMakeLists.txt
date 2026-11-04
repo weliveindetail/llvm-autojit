@@ -2,42 +2,6 @@ if(AUTOJIT_ENABLE_TPDE)
   set(tpde_libs tpde_llvm)
 endif()
 
-if(AUTOJIT_EMBED_ORC_RUNTIME)
-  set(clang_rt_libs clang/${LLVM_VERSION_MAJOR}/lib)
-  if (AUTOJIT_BUILD_UNIFIED)
-    # Build runtime: ninja -C runtimes/runtimes-bins orc_rt-x86_64
-    set(orc_rt_path ${CMAKE_BINARY_DIR}/lib/${clang_rt_libs}/x86_64-unknown-linux-gnu/liborc_rt.a)
-  endif()
-  if(AUTOJIT_BUILD_EXTERNAL)
-    # apt packages for clang up to 21 have LLVM_ENABLE_PER_TARGET_RUNTIME_DIR=Off
-    set(orc_rt_path ${LLVM_BINARY_DIR}/lib/${clang_rt_libs}/linux/liborc_rt-x86_64.a)
-  endif()
-
-  if (orc_rt_path)
-    message(STATUS "Found: ${orc_rt_path}")
-    add_custom_command(
-      OUTPUT liborc_rt
-      COMMAND ${CMAKE_COMMAND} -E copy ${orc_rt_path} ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt
-      DEPENDS ${orc_rt_path}
-      COMMENT "Copy ${orc_rt_path} -> ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt"
-    )
-    add_custom_command(
-      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o
-      COMMAND objcopy --input binary --output elf64-x86-64 --binary-architecture i386 liborc_rt ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o
-      DEPENDS liborc_rt
-      COMMENT "Convert ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.a -> ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o"
-    )
-    add_custom_target(embed_orc_rt DEPENDS
-      ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt
-      ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o
-    )
-
-    set(orc_rt ${CMAKE_CURRENT_BINARY_DIR}/liborc_rt.o)
-  else()
-    message(WARNING "liborc_rt not found")
-  endif()
-endif()
-
 # The runtime must not resolve symbols from shared libraries that programs
 # might define themselves, e.g. a program that builds its own zlib with autojit.
 # The executable would export its lazy definitions and they would interpose the
@@ -147,7 +111,6 @@ add_executable(autojitd
   remote/Session.cpp
   core/AutoJIT.cpp
   core/ExecutorPlatform.cpp
-  ${orc_rt}
 )
 set_target_properties(autojitd PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
@@ -159,9 +122,6 @@ if(NOT LLVM_ENABLE_RTTI)
   target_compile_options(autojitd PRIVATE -fno-rtti -fno-exceptions)
 endif()
 
-if(AUTOJIT_EMBED_ORC_RUNTIME)
-  add_dependencies(autojitd embed_orc_rt)
-endif()
 if(AUTOJIT_SANITIZE)
   target_compile_options(autojitd PRIVATE -fsanitize=${AUTOJIT_SANITIZE})
   target_link_options(autojitd PRIVATE -fsanitize=${AUTOJIT_SANITIZE})
@@ -180,7 +140,6 @@ add_library(autojit-so SHARED
   common/ResolverAArch64.c
   core/AutoJIT.cpp
   core/ExecutorPlatform.cpp
-  ${orc_rt}
 )
 set_target_properties(autojit-so PROPERTIES
   LIBRARY_OUTPUT_NAME "autojit-runtime"
@@ -211,10 +170,6 @@ target_link_options(autojit-so PRIVATE
 
 if(NOT LLVM_ENABLE_RTTI)
   target_compile_options(autojit-so PRIVATE -fno-rtti -fno-exceptions)
-endif()
-
-if(AUTOJIT_EMBED_ORC_RUNTIME)
-  add_dependencies(autojit-so embed_orc_rt)
 endif()
 
 install(

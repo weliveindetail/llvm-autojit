@@ -21,11 +21,9 @@ Useful for development, because we can hack on LLVM in parallel. This works on U
         -DLLVM_LINK_LLVM_DYLIB=On \
         -DLLVM_USE_LINKER=lld \
         -DLLVM_EXTERNAL_PROJECTS=llvm-autojit \
-        -DLLVM_EXTERNAL_LLVM_AUTOJIT_SOURCE_DIR=$(pwd)/llvm-autojit \
-        -DAUTOJIT_EMBED_ORC_RUNTIME=On
+        -DLLVM_EXTERNAL_LLVM_AUTOJIT_SOURCE_DIR=$(pwd)/llvm-autojit
 
 > ninja -C build runtimes
-> ninja -C build/runtimes/runtimes-bins compiler-rt/lib/orc/all
 > ninja -C build check-autojit
 [3495/3496] Running the AutoJIT tests
 Running regression tests with TPDE: OFF
@@ -41,7 +39,7 @@ Environment:
   export AUTOJIT_DISABLE_OBJECT_CACHE="On"
 
 Features:
-  libstdcxx, plugins, llvm-debug, orc-rt, shell
+  libstdcxx, plugins, llvm-debug, shell
 
 -- Testing: 17 tests, 1 workers --
 PASS: AutoJIT :: archives.cpp (1 of 17)

@@ -54,7 +54,6 @@ A shared library is a simple, but not always a practical way to provide our runt
 > clang-21 -O0 -g -fpass-plugin=/usr/local/lib/autojit.so -o hello.o -c hello.c
 > clang-21 hello.o -lautojit_static-x86-64 -o hello_c_autojitd
 > ./hello_c_autojitd
-[autojit-runtime] Cannot install orc-runtime: missing C++ stdlib
 Hello C
 [autojit-runtime] Warning: ignore RPC invocation after disconnect
 ```
@@ -105,7 +104,6 @@ And here again, the shared library approach works, but might not be the best sol
         -L /usr/local/lib -lautojit_static-x86_64
         -o hello_rust_autojitd hello.rs
 ./hello_rust_autojitd
-[autojit-runtime] Cannot install orc-runtime: missing C++ stdlib
 Hello World!
 [autojit-runtime] Warning: ignore RPC invocation after disconnect
 ```

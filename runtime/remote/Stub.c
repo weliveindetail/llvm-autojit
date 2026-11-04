@@ -981,27 +981,6 @@ static void __orc_rt_jit_dispatch_impl(__orc_rt_Opaque *Ctx, const void *FnTag,
  * ============================================================================
  */
 
-enum StdLibFlagOffsets {
-  LibcGnu = 0,
-  LibcMusl = 1,
-  LibStdCxx = 8,
-  LibCxx = 9,
-};
-
-static uint64_t detect_stdlibs(void) {
-  uint64_t result = 0;
-  if (dlsym(RTLD_DEFAULT, "gnu_get_libc_version"))
-    result |= 1 << LibcGnu;
-  if (dlsym(RTLD_DEFAULT, "__musl_libc_version"))
-    result |= 1 << LibcMusl;
-  if (dlsym(RTLD_DEFAULT, "_ZSt4cout"))
-    result |= 1 << LibStdCxx;
-  if (dlsym(RTLD_DEFAULT, "_ZNSt3__14coutE"))
-    result |= 1 << LibCxx;
-  return result;
-}
-
-
 #if AUTOJIT_STUB_DEBUG_SUPPORT
 /* Defined in StubDebug.c */
 ssize_t llvm_orc_registerJITLoaderGDBWrapper(const char *data, uint64_t size,
@@ -1012,7 +991,6 @@ static int send_setup_message(void) {
   /* Setup message format (SPS encoded):
    * - target_triple: string
    * - page_size: uint64_t
-   * - stdlibs: uint64_t
    * - bootstrap_map: map<string, bytes>
    * - bootstrap_symbols: map<string, uint64_t>
    */
@@ -1033,10 +1011,6 @@ static int send_setup_message(void) {
   /* Get page size */
   uint64_t page_size = sysconf(_SC_PAGESIZE);
   sps_write_uint64(&setup_data, page_size);
-
-  /* Get stdlibs */
-  uint64_t stdlibs = detect_stdlibs();
-  sps_write_uint64(&setup_data, stdlibs);
 
   /* Bootstrap map - empty for now */
   sps_write_uint64(&setup_data, 0);

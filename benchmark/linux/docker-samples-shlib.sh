@@ -4,8 +4,7 @@ set -xeuo pipefail
 cd /workspace
 cmake -GNinja -Bbuild -Sllvm-autojit \
       -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_INSTALL_PREFIX=/workspace/install \
-      -DAUTOJIT_EMBED_ORC_RUNTIME=On
+      -DCMAKE_INSTALL_PREFIX=/workspace/install
 ninja -C build install-autojit-bench
 
 export AUTOJITD_FORCE_SPAWN=Off

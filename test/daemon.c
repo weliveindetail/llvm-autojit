@@ -1,8 +1,5 @@
 // Exercise the daemonized runtime with static stub library
 
-// FIXME: The orc-runtime is written in C++ and doesn't work in C programs!
-// XFAIL: orc_rt
-
 // RUN: %clang_c -fpass-plugin=%autojit_plugin -c %s -o %t.o
 // RUN: %clang_c %t.o %fsanitize -L%autojit_runtime_dir -lautojit_static-%arch -pthread -o %t.exe
 // RUN: env AUTOJITD_FULL_SHUTDOWN=Off %t.exe 2>&1 | FileCheck %s

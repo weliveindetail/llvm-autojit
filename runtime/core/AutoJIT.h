@@ -42,7 +42,7 @@ public:
   ~AutoJIT();
 
   static AutoJIT &get();
-  llvm::Error initialize(llvm::orc::LLJITBuilder &B, bool HaveOrcRuntimeDeps);
+  llvm::Error initialize(llvm::orc::LLJITBuilder &B);
   uint64_t lookup(const char *Symbol);
 
   /// Add the lazy module to the JIT, providing the path to the bitcode file,

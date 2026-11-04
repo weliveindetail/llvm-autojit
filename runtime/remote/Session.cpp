@@ -37,30 +37,19 @@ static ExitOnError ExitOnErr("[autojitd] ");
 
 namespace autojit {
 
-enum StdLib : uint64_t {
-  LibcGnu = 1 << 0,
-  LibcMusl = 1 << 1,
-  LibStdCxx = 1 << 8,
-  LibCxx = 1 << 9,
-};
-
 struct RemoteEPCExecutorInfo {
   std::string TargetTriple;
   uint64_t PageSize;
-  uint64_t StdLibs;
   StringMap<std::vector<char>> BootstrapMap;
   StringMap<ExecutorAddr> BootstrapSymbols;
 
   MSVCPError deserialize(shared::WrapperFunctionResult Bytes);
-  bool hasSupportedCxxStdlib() const {
-    return (StdLibs & (LibCxx | LibStdCxx)) != 0;
-  }
 };
 
 } // namespace autojit
 
 using SPSRemoteEPCExecutorInfo = shared::SPSTuple<
-    shared::SPSString, uint64_t, uint64_t,
+    shared::SPSString, uint64_t,
     shared::SPSSequence<
         shared::SPSTuple<shared::SPSString, shared::SPSSequence<char>>>,
     shared::SPSSequence<
@@ -72,15 +61,13 @@ class shared::SPSSerializationTraits<SPSRemoteEPCExecutorInfo,
 public:
   static size_t size(const autojit::RemoteEPCExecutorInfo &SI) {
     return SPSRemoteEPCExecutorInfo::AsArgList::size(
-        SI.TargetTriple, SI.PageSize, SI.StdLibs, SI.BootstrapMap,
-        SI.BootstrapSymbols);
+        SI.TargetTriple, SI.PageSize, SI.BootstrapMap, SI.BootstrapSymbols);
   }
 
   static bool deserialize(SPSInputBuffer &IB,
                           autojit::RemoteEPCExecutorInfo &SI) {
     return SPSRemoteEPCExecutorInfo::AsArgList::deserialize(
-        IB, SI.TargetTriple, SI.PageSize, SI.StdLibs, SI.BootstrapMap,
-        SI.BootstrapSymbols);
+        IB, SI.TargetTriple, SI.PageSize, SI.BootstrapMap, SI.BootstrapSymbols);
   }
 };
 
@@ -169,7 +156,6 @@ public:
                 SimpleRemoteEPCArgBytesVector ArgBytes) override;
 
   void setTransport(SimpleRemoteEPCTransport &T) { this->T = &T; }
-  bool hasSupportedCxxStdlib() const { return HaveSupportedCxxStdlib; }
 
   Error waitForSetup();
   Error sendSetupMessage(StringMap<ExecutorAddr> Symbols);
@@ -211,7 +197,6 @@ private:
   char DummyResultValue;
 
   SimpleRemoteEPCTransport *T;
-  bool HaveSupportedCxxStdlib;
   std::unique_ptr<EPCGenericDylibManager> EPCDylibMgr;
   std::unique_ptr<jitlink::JITLinkMemoryManager> OwnedMemMgr;
   std::unique_ptr<MemoryAccess> OwnedMemAccess;
@@ -248,7 +233,7 @@ autojit::AutoJIT *autojit::Session::launch(std::unique_ptr<ExecutionSession> ES,
 
   LLJITBuilder Builder;
   Builder.setExecutionSession(std::move(ES));
-  ExitOnErr(AutoJIT_.initialize(Builder, EPC_->hasSupportedCxxStdlib()));
+  ExitOnErr(AutoJIT_.initialize(Builder));
 
   // Send our own setup message to the target process
   ExitOnErr(EPC_->sendSetupMessage(std::move(Symbols)));
@@ -795,7 +780,6 @@ Error autojit::RemoteEPC::waitForSetup() {
   this->PageSize = EI.PageSize;
   this->BootstrapMap = std::move(EI.BootstrapMap);
   this->BootstrapSymbols = patchSymbolNames(std::move(EI.BootstrapSymbols));
-  this->HaveSupportedCxxStdlib = EI.hasSupportedCxxStdlib();
 
   // Get dispatch symbols for RPC calls back to the stub
   using namespace SimpleRemoteEPCDefaultBootstrapSymbolNames;
