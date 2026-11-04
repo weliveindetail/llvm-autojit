@@ -70,7 +70,7 @@ Definitions of library functions like `malloc` or `memcpy` stay in static code, 
 
 ## Basic Rust example
 
-LLVM plugins are not yet enabled in Rust release versions, but we can use a nightly version. The current plugin releases are tested with Rust nightly 1.91. Other versions may work as well. Please find more details in the [Dockerfile for our CI image](https://github.com/weliveindetail/llvm-autojit/blob/main/benchmark/ubuntu2204/llvm21/Dockerfile).
+LLVM plugins are not yet enabled in Rust release versions, but we can use a nightly version. The current plugin releases are tested with Rust nightly 1.91. Other versions may work as well. Please find more details in the [Dockerfile for our CI image](https://github.com/weliveindetail/llvm-autojit/blob/main/benchmark/linux/docker/ubuntu2204-llvm21/Dockerfile).
 ```
 > rustc --version --verbose
 rustc 1.91.0-nightly (1ebbd87a6 2025-08-11)
