@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 
-clang="clang"
+clang="@AUTOJIT_BENCH_TOOLS_DIR@/clang"
 CFLAGS="-O0 -g"
 LDFLAGS=""
 
 if [ "@AUTOJIT_BUILD_UNIFIED@" = "On" ]; then
   # Use the just-built compiler and linker
   LDFLAGS="$LDFLAGS -fuse-ld=lld -B@CMAKE_INSTALL_PREFIX@/bin"
-  clang="@CMAKE_INSTALL_PREFIX@/bin/clang"
 fi
 
 cd bzip2/build_regular
