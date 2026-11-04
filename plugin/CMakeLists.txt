@@ -23,7 +23,9 @@ add_llvm_pass_plugin(autojit
   )
 
 # Don't add a 'lib' prefix to the plugin
+# PCH doesn't fit since the plugin builds with C++20
 set_target_properties(autojit PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+  DISABLE_PRECOMPILE_HEADERS On
   PREFIX ""
 )
