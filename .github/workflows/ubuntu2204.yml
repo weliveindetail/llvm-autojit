@@ -23,13 +23,23 @@ jobs:
           /workspace/llvm-autojit/benchmark/linux/docker-tests.sh
 
   check-llvm21:
-    runs-on: ubuntu-latest
+    name: check-llvm21 (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      # Only arch matters, not OS versions (tests run inside the containers)
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
     - name: Checkout llvm-autojit
       uses: actions/checkout@v4
     - name: Pull docker image
       run: docker pull weliveindetail/ubuntu-llvm21:22.04
-    - name: Run regression tests against Ubuntu LLVM 21.1.5
+    - name: Run regression tests against Ubuntu LLVM 21
       run: |
         docker run --rm \
           -v ${{ github.workspace }}:/workspace/llvm-autojit \
