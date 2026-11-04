@@ -7,21 +7,6 @@ on:
     branches: [ main ]
 
 jobs:
-  check-llvm20:
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout llvm-autojit
-      uses: actions/checkout@v4
-    - name: Pull docker image
-      run: docker pull weliveindetail/ubuntu-llvm20:22.04
-    - name: Run regression tests against Ubuntu LLVM 20.1.8
-      run: |
-        docker run --rm \
-          -v ${{ github.workspace }}:/workspace/llvm-autojit \
-          -w /workspace \
-          weliveindetail/ubuntu-llvm20:22.04 \
-          /workspace/llvm-autojit/benchmark/linux/docker-tests.sh
-
   check-llvm21:
     name: check-llvm21 (${{ matrix.arch }})
     strategy:

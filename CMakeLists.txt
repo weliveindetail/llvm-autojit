@@ -49,6 +49,13 @@ else()
   set(LLVM_NO_RTTI 1)
 endif()
 
+set(AUTOJIT_SUPPORTED_LLVM_VERSIONS 21)
+if(NOT LLVM_VERSION_MAJOR IN_LIST AUTOJIT_SUPPORTED_LLVM_VERSIONS)
+  string(REPLACE ";" ", " supported "${AUTOJIT_SUPPORTED_LLVM_VERSIONS}")
+  message(FATAL_ERROR "LLVM ${LLVM_VERSION_MAJOR} is not supported, "
+                      "llvm-autojit supports: ${supported}")
+endif()
+
 if(AUTOJIT_ENABLE_TPDE)
   add_compile_options(-Wno-unused-parameter)
   set(TPDE_LINK_LLVM_STATIC On)
