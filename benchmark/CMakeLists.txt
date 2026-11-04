@@ -1,12 +1,5 @@
-# Detect OS and include appropriate benchmark scripts
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  # Detect Linux distribution and version
-  if(EXISTS "/etc/os-release")
-    file(READ "/etc/os-release" OS_RELEASE)
-    if(OS_RELEASE MATCHES "Ubuntu.*22\\.04")
-      add_subdirectory(linux)
-    endif()
-  endif()
+  add_subdirectory(linux)
 endif()
 
 if(TARGET install-autojit-bench-scripts)
