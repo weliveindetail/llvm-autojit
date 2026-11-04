@@ -16,6 +16,3 @@ if [[ -z "$last_num" ]]; then
 else
     outfile="FileCheck/trace-autojit-$((last_num+1)).json"
 fi
-
-touch $outfile
-ninjatracing FileCheck/build_autojit/.ninja_log > $outfile
