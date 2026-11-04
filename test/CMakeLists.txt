@@ -8,7 +8,7 @@ set(LLVM_LIT_ARGS "-vv --no-progress-bar --workers 1 ")
 
 if(AUTOJIT_BUILD_EXTERNAL)
   find_program(clang_exec
-               NAMES clang-20 clang
+               NAMES clang-${LLVM_VERSION_MAJOR} clang
                HINTS ${LLVM_TOOLS_BINARY_DIR})
   if(clang_exec)
     message(STATUS "Found: ${clang_exec}")

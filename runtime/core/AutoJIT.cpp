@@ -40,9 +40,7 @@
 #include <llvm/Support/Process.h>
 #include <llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h>
 
-#if LLVM_VERSION_MAJOR >= 21
 #include <llvm/ExecutionEngine/Orc/SelfExecutorProcessControl.h>
-#endif
 
 #if defined(AUTOJIT_ENABLE_TPDE)
 #include "tpde-llvm/LLVMCompiler.hpp"

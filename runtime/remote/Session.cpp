@@ -14,12 +14,8 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/TargetParser/Host.h>
 
-#if LLVM_VERSION_MAJOR >= 21
 #include <llvm/ExecutionEngine/Orc/MemoryAccess.h>
 using MemoryAccess = llvm::orc::MemoryAccess;
-#else
-using MemoryAccess = llvm::orc::ExecutorProcessControl::MemoryAccess;
-#endif
 
 #include <atomic>
 #include <cstdint>
@@ -731,17 +727,10 @@ static StringMap<ExecutorAddr> patchSymbolNames(StringMap<ExecutorAddr> Map) {
     }
   };
 
-#if LLVM_VERSION_MAJOR < 21
-  RenameEntry("llvm_orc_registerEHFrameAllocAction",
-              "llvm_orc_registerEHFrameSectionWrapper");
-  RenameEntry("llvm_orc_deregisterEHFrameAllocAction",
-              "llvm_orc_deregisterEHFrameSectionWrapper");
-#else
   RenameEntry("llvm_orc_registerEHFrameSectionWrapper",
               "llvm_orc_registerEHFrameAllocAction");
   RenameEntry("llvm_orc_deregisterEHFrameSectionWrapper",
               "llvm_orc_deregisterEHFrameAllocAction");
-#endif
 
   return Map;
 }
