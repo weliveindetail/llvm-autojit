@@ -1,16 +1,13 @@
 #include "runtime/core/ExecutorPlatform.h"
 
 #include <llvm/ExecutionEngine/Orc/DebugObjectManagerPlugin.h>
-#include <llvm/ExecutionEngine/Orc/ELFNixPlatform.h>
 #include <llvm/ExecutionEngine/Orc/EPCDebugObjectRegistrar.h>
-#include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>
 #include <llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/TargetParser/Triple.h>
 
 #include <algorithm>
-#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -29,11 +26,6 @@ extern bool g_autojit_debug;
 #endif
 
 #define LOG() ::llvm::errs() << "[autojit-runtime] "
-
-// Linker fills in relocations for the bounds of the linked liborc_rt.a, which
-// resolve to the actual memory load addresses at startup.
-extern "C" const unsigned char _binary_liborc_rt_start[];
-extern "C" const unsigned char _binary_liborc_rt_end[];
 
 static bool isEnvVarSet(const char *Name) {
   if (const char *Var = std::getenv(Name)) {
@@ -71,29 +63,7 @@ static Error installDebugSupport(ObjectLinkingLayer *JITLinkLayer) {
   return Error::success();
 }
 
-static std::unique_ptr<MemoryBuffer> getEmbeddedOrcRuntime() {
-#if defined(AUTOJIT_EMBED_ORC_RUNTIME)
-  const char *OrcRtStart =
-      reinterpret_cast<const char *>(_binary_liborc_rt_start);
-  const char *OrcRtEnd = reinterpret_cast<const char *>(_binary_liborc_rt_end);
-  StringRef OrcRuntimeData(OrcRtStart, OrcRtEnd - OrcRtStart);
-#if !defined(NDEBUG)
-  auto MemRngStr = format("[0x%" PRIx64 ", 0x%" PRIx64 "]",
-                          reinterpret_cast<uintptr_t>(OrcRtStart),
-                          reinterpret_cast<uintptr_t>(OrcRtEnd));
-  DBG() << "Install embedded orc-runtime from memory range " << MemRngStr
-        << "\n";
-#endif
-  return MemoryBuffer::getMemBuffer(OrcRuntimeData, "orc_rt", false);
-#else
-  return nullptr;
-#endif // AUTOJIT_EMBED_ORC_RUNTIME
-}
-
 Expected<JITDylibSP> autojit::ExecutorPlatform::operator()(LLJIT &J) {
-  auto ProcessSymbolsJD = J.getProcessSymbolsJITDylib();
-  assert(ProcessSymbolsJD && "Native platforms require process symbols");
-
   const Triple &TT = J.getTargetTriple();
   assert(TT.getObjectFormat() == Triple::ELF && "Support other platforms");
 
@@ -101,55 +71,11 @@ Expected<JITDylibSP> autojit::ExecutorPlatform::operator()(LLJIT &J) {
       dyn_cast<ObjectLinkingLayer>(&J.getObjLinkingLayer());
   assert(JITLinkLayer && "DebuggableExecutorNativePlatform requires JITLink");
 
-  // Debugger support doesn't depend on the orc-runtime. Setting it up first
-  // allows us to debug the runtime code as well.
   if (EnableDebugging) {
     if (Error Err = installDebugSupport(JITLinkLayer))
       LOG() << "Cannot enable debugger support: " << toString(std::move(Err))
             << "\n";
   }
 
-  if (isEnvVarSet("AUTOJITD_DISABLE_ORC_RUNTIME")) {
-    LOG() << "Skip install orc-runtime: AUTOJITD_DISABLE_ORC_RUNTIME\n";
-    return setUpGenericLLVMIRPlatform(J);
-  }
-
-  std::unique_ptr<MemoryBuffer> Archive = getEmbeddedOrcRuntime();
-  if (!Archive)
-    return setUpGenericLLVMIRPlatform(J);
-
-  if (!HaveOrcRuntimeDeps) {
-    LOG() << "Cannot install orc-runtime: missing C++ stdlib\n";
-    return setUpGenericLLVMIRPlatform(J);
-  }
-
-  auto OrcRuntime = StaticLibraryDefinitionGenerator::Create(
-      *JITLinkLayer, std::move(Archive));
-  if (!OrcRuntime) {
-    LOG() << "Cannot install orc-runtime: " << toString(OrcRuntime.takeError())
-          << "\n";
-    return setUpGenericLLVMIRPlatform(J);
-  }
-
-  auto &ES = J.getExecutionSession();
-  auto &PlatformJD = ES.createBareJITDylib("<Platform>");
-  PlatformJD.addToLinkOrder(*ProcessSymbolsJD);
-
-  if (auto P = ELFNixPlatform::Create(*JITLinkLayer, PlatformJD,
-                                      std::move(*OrcRuntime))) {
-    J.getExecutionSession().setPlatform(std::move(*P));
-    J.setPlatformSupport(std::make_unique<ORCPlatformSupport>(J));
-  } else {
-    // We cannot fall back anymore: ELFNixPlatform registered a plugin with the
-    // linking layer that refers to the destroyed platform. Every further link
-    // would run into undefined behavior. We are in the middle of the first
-    // materialization and hold the runtime's locks, so we must not run atexit
-    // handlers or static destructors: they might call lazy code.
-    LOG() << "Failed to install orc-runtime: " << toString(P.takeError())
-          << "\n";
-    fflush(nullptr);
-    _Exit(1);
-  }
-
-  return &PlatformJD;
+  return setUpGenericLLVMIRPlatform(J);
 }

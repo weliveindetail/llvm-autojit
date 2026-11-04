@@ -549,10 +549,9 @@ autojit::AutoJIT::AutoJIT() {
   autojit::initializeDebugLog();
 }
 
-Error autojit::AutoJIT::initialize(LLJITBuilder &B, bool HaveOrcRuntimeDeps) {
+Error autojit::AutoJIT::initialize(LLJITBuilder &B) {
   UseObjectCache_ = !isEnvVarSet("AUTOJIT_DISABLE_OBJECT_CACHE");
-  B.setPlatformSetUp(
-      autojit::ExecutorPlatform(g_autojit_debug, HaveOrcRuntimeDeps));
+  B.setPlatformSetUp(autojit::ExecutorPlatform(g_autojit_debug));
 
   // Threads that materialize different modules compile them concurrently.
   // The compiler creates a TargetMachine for each module.
@@ -693,8 +692,7 @@ autojit::AutoJIT &autojit::AutoJIT::get() {
       LLJITBuilder Builder;
       Builder.setExecutorProcessControl(ExitOnErr(InProcessControl::Create()));
       *Instance = std::make_unique<AutoJIT>();
-      constexpr bool HaveSupportedCxxStdlib = true;
-      ExitOnErr(Instance->get()->initialize(Builder, HaveSupportedCxxStdlib));
+      ExitOnErr(Instance->get()->initialize(Builder));
       std::atexit(llvm_shutdown);
     }
   }

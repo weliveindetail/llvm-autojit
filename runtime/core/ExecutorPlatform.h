@@ -10,15 +10,12 @@ namespace autojit {
 
 class ExecutorPlatform {
 public:
-  ExecutorPlatform(bool EnableDebugging, bool HaveOrcRuntimeDeps)
-      : EnableDebugging(EnableDebugging),
-        HaveOrcRuntimeDeps(HaveOrcRuntimeDeps) {}
+  ExecutorPlatform(bool EnableDebugging) : EnableDebugging(EnableDebugging) {}
 
   llvm::Expected<llvm::orc::JITDylibSP> operator()(llvm::orc::LLJIT &J);
 
 private:
   bool EnableDebugging;
-  bool HaveOrcRuntimeDeps;
 };
 
 } // namespace autojit

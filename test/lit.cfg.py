@@ -111,10 +111,6 @@ config.available_features.add('shell')
 if hasattr(config, 'enable_plugins') and config.enable_plugins:
     config.available_features.add('plugins')
 
-# We could provide a way to load it from disk instead
-if config.orc_rt_embedded == "On":
-    config.available_features.add('orc-rt')
-
 # Debugger tests need GDB and permission to launch programs under it, which
 # might be prohibited in CI (e.g. ptrace in containers)
 def can_run_gdb(gdb: str) -> bool:
