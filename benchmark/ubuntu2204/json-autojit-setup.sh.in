@@ -7,8 +7,8 @@ rm -rf json/$AUTOJIT_BUILD_DIR
 # Keep lazy modules in the build tree, /tmp is shared with all other builds
 export AUTOJIT_DIR="$(pwd)/json/$AUTOJIT_BUILD_DIR/autojit"
 
-cc="cc"
-cxx="c++"
+cc="@AUTOJIT_BENCH_TOOLS_DIR@/clang"
+cxx="@AUTOJIT_BENCH_TOOLS_DIR@/clang++"
 CFLAGS="-fpass-plugin=@CMAKE_INSTALL_PREFIX@/lib/autojit.so"
 
 if [ "$AUTOJIT_LINK_STATIC_RUNTIME" = "On" ]; then
@@ -21,8 +21,6 @@ fi
 if [ "@AUTOJIT_BUILD_UNIFIED@" = "On" ]; then
   # Use the just-built compiler and linker
   LDFLAGS="$LDFLAGS -fuse-ld=lld -B@CMAKE_INSTALL_PREFIX@/bin"
-  cc="@CMAKE_INSTALL_PREFIX@/bin/clang"
-  cxx="@CMAKE_INSTALL_PREFIX@/bin/clang++"
 fi
 
 echo "Building autojit binary.."

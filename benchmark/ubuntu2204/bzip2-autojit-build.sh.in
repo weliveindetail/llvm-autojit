@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-clang="clang"
+clang="@AUTOJIT_BENCH_TOOLS_DIR@/clang"
 CFLAGS="-O0 -g -fpass-plugin=@CMAKE_INSTALL_PREFIX@/lib/autojit.so"
 
 if [ "$AUTOJIT_LINK_STATIC_RUNTIME" = "On" ]; then
@@ -13,7 +13,6 @@ fi
 if [ "@AUTOJIT_BUILD_UNIFIED@" = "On" ]; then
   # Use the just-built compiler and linker
   LDFLAGS="$LDFLAGS -fuse-ld=lld -B@CMAKE_INSTALL_PREFIX@/bin"
-  clang="@CMAKE_INSTALL_PREFIX@/bin/clang"
 fi
 
 # Keep lazy modules in the build tree, /tmp is shared with all other builds
