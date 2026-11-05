@@ -1,3 +1,4 @@
+; REQUIRES: x86-registered-target
 ; RUN: %opt --load-pass-plugin=%autojit_plugin -passes=AutoJIT %s -o - | %llc -O0 -o - | FileCheck %s
 
 ; With indirect branch tracking, trampolines and the resolver thunk must start
