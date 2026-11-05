@@ -105,11 +105,6 @@ public:
   RemoteEPC(std::shared_ptr<SymbolStringPool> SSP,
             std::unique_ptr<TaskDispatcher> D)
       : ExecutorProcessControl(std::move(SSP), std::move(D)) {
-    // Callback result that can be decoded as void or ErrorSuccess
-    DummyResultValue = '\0';
-    DummyResult.Data.ValuePtr = &DummyResultValue;
-    DummyResult.Size = 1;
-
     this->DylibMgr = this;
   }
 
@@ -193,8 +188,6 @@ private:
   Error DisconnectErr = Error::success();
   bool Disconnecting = false;
   bool FullShutdownRequested = false;
-  shared::CWrapperFunctionResult DummyResult;
-  char DummyResultValue;
 
   SimpleRemoteEPCTransport *T;
   std::unique_ptr<EPCGenericDylibManager> EPCDylibMgr;
@@ -483,7 +476,10 @@ void autojit::RemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
     std::unique_lock<std::mutex> Lock(ServerStateMutex);
     if (isQuickHangup()) {
       LOG() << "Warning: ignore RPC invocation after disconnect\n";
-      OnComplete(DummyResult); // Can be both, void or ErrorSuccess
+      // A zero byte decodes as both, void and ErrorSuccess
+      auto Result = shared::WrapperFunctionResult::allocate(1);
+      Result.data()[0] = '\0';
+      OnComplete(std::move(Result));
       return;
     }
   }
@@ -719,8 +715,10 @@ static StringMap<ExecutorAddr> patchSymbolNames(StringMap<ExecutorAddr> Map) {
   auto RenameEntry = [&Map](StringRef From, StringRef To) {
     auto It = Map.find(From);
     if (It != Map.end()) {
-      Map.try_emplace(To, It->second);
+      // Inserting may invalidate the iterator
+      ExecutorAddr Addr = It->second;
       Map.erase(It);
+      Map.try_emplace(To, Addr);
     }
   };
 
