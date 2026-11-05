@@ -157,7 +157,9 @@ static bool mayBeOutOfRange(const GlobalValue &GV, const Triple &TT,
   return isLargeGlobalValue(GV, TT, CM, LargeDataThreshold);
 }
 
+// Must not be skipped, e.g. for optnone functions
 struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
+  static bool isRequired() { return true; }
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
     std::string GUID = getModuleGUID(M);
     std::string FileStem = getOutputDir() + "/autojit_" + GUID;
