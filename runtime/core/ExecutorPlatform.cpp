@@ -1,5 +1,4 @@
 #include "runtime/core/ExecutorPlatform.h"
-#include "runtime/core/OrcCompat.h"
 
 #if AUTOJIT_LLVM_21
 #include <llvm/ExecutionEngine/Orc/DebugObjectManagerPlugin.h>
