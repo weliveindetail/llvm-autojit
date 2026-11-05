@@ -43,7 +43,7 @@ static Error installDebugSupport(ObjectLinkingLayer *JITLinkLayer) {
   auto &ES = JITLinkLayer->getExecutionSession();
   ExecutorAddr RegisterFn;
   if (auto Err = ES.getExecutorProcessControl().getBootstrapSymbols(
-          {{RegisterFn, "llvm_orc_registerJITLoaderGDBWrapper"}})) {
+          {{RegisterFn, autojit::GDBRegisterBootstrapName}})) {
     consumeError(std::move(Err));
     return createStringError(inconvertibleErrorCode(),
                              "Executor has no GDB JIT interface. Link "
