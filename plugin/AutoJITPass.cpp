@@ -39,11 +39,6 @@
 #include "common/LazyModule.h"
 #include "common/Imports.h"
 
-// Never defined, only the runtime uses TPDE for now
-#if defined(AUTOJIT_PLUGIN_ENABLE_TPDE)
-#include "TPDEBackends.h"
-#endif
-
 #include <algorithm>
 #include <regex>
 #include <string>
@@ -666,15 +661,6 @@ private:
 
 } // end anonymous namespace
 
-#if defined(AUTOJIT_PLUGIN_ENABLE_TPDE)
-namespace llvm {
-
-LLVM_ABI Target &getTheX86_32Target() __attribute__((weak));
-LLVM_ABI Target &getTheX86_64Target() __attribute__((weak));
-
-} // namespace llvm
-#endif
-
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
   if (const char *Var = std::getenv("AUTOJIT_DEBUG")) {
@@ -692,14 +678,6 @@ llvmGetPassPluginInfo() {
   if (const char *Var = std::getenv("AUTOJIT_DIR"))
     if (*Var)
       AutoJITDir = Var;
-#if defined(AUTOJIT_PLUGIN_ENABLE_TPDE)
-  if (getTheX86_32Target && getTheX86_64Target) {
-    RegisterTargetMachine<X86TargetMachineTPDE> X(getTheX86_32Target());
-    RegisterTargetMachine<X86TargetMachineTPDE> Y(getTheX86_64Target());
-  } else {
-    errs() << "Failed to register TPDE codegen backend\n";
-  }
-#endif
   return {.APIVersion = LLVM_PLUGIN_API_VERSION,
           .PluginName = "AutoJIT Pass",
           .PluginVersion = "v0.1",
