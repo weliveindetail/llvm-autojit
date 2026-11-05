@@ -7,6 +7,45 @@ on:
     branches: [ main ]
 
 jobs:
+  check-llvm23:
+    name: check-llvm23 (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      # Only arch matters, not OS versions (tests run inside the containers)
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+    - name: Checkout llvm-autojit
+      uses: actions/checkout@v4
+    - name: Pull docker image
+      run: docker pull weliveindetail/ubuntu-llvm23:24.04
+    - name: Run regression tests against LLVM 23
+      run: |
+        docker run --rm \
+          -v ${{ github.workspace }}:/workspace/llvm-autojit \
+          -w /workspace \
+          weliveindetail/ubuntu-llvm23:24.04 \
+          /workspace/llvm-autojit/benchmark/linux/docker-tests.sh
+    - name: Build sample projects with shared library
+      run: |
+        docker run --rm \
+          -v ${{ github.workspace }}:/workspace/llvm-autojit \
+          -w /workspace \
+          weliveindetail/ubuntu-llvm23:24.04 \
+          /workspace/llvm-autojit/benchmark/linux/docker-samples-shlib.sh
+    - name: Build sample projects with static stub and autojitd
+      run: |
+        docker run --rm \
+          -v ${{ github.workspace }}:/workspace/llvm-autojit \
+          -w /workspace \
+          weliveindetail/ubuntu-llvm23:24.04 \
+          /workspace/llvm-autojit/benchmark/linux/docker-samples-autojitd.sh
+
   check-llvm24:
     name: check-llvm24 (${{ matrix.arch }})
     strategy:
