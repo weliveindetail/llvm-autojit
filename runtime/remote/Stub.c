@@ -32,12 +32,19 @@
  * - 0x01: Hangup      - Disconnect
  * - 0x02: Result      - Reply to CallWrapper
  * - 0x03: CallWrapper - RPC call
+ *
+ * Result messages carry the result kind in TagAddr, like LLVM 24:
+ * - 0: Value, ArgBytes hold the result
+ * - 1: Out-of-band error, ArgBytes hold the message
  */
 
 #define OPCODE_SETUP 0x00
 #define OPCODE_HANGUP 0x01
 #define OPCODE_RESULT 0x02
 #define OPCODE_CALLWRAPPER 0x03
+
+#define RESULT_KIND_VALUE 0x00
+#define RESULT_KIND_OUT_OF_BAND_ERROR 0x01
 
 #define FD_MSG_HEADER_SIZE 32
 
@@ -1266,27 +1273,28 @@ static int call_wrapper_function(uint64_t fn_addr, const uint8_t *data,
 
   int ec = 0;
   *result = NULL;
+  *result_size = result_msg.arg_size;
 
-  if (result_msg.arg_bytes != NULL && result_msg.arg_size == 0) {
-    /* Out-of-band errors have C-string in bytes and zero in size */
-    const char *c_str = (char *)result_msg.arg_bytes;
-    *result_size = strlen(c_str);
+  /* Out-of-band errors carry their message as the result */
+  if (result_msg.tag_addr == RESULT_KIND_OUT_OF_BAND_ERROR) {
     ec = -1;
-  } else {
-    *result_size = result_msg.arg_size;
+  } else if (result_msg.tag_addr != RESULT_KIND_VALUE) {
+    ERROR_LOG("Unknown result kind %lu\n", result_msg.tag_addr);
+    free_epc_message(&result_msg);
+    *result_size = 0;
+    return -1;
   }
 
   if (*result_size > 0) {
-    *result = malloc(*result_size);
+    /* Zero-terminated, so callers can print error messages */
+    *result = malloc(*result_size + 1);
     if (!*result) {
       free_epc_message(&result_msg);
       *result_size = 0;
       return -1;
     }
-  }
-
-  if (*result) {
     memcpy(*result, result_msg.arg_bytes, *result_size);
+    (*result)[*result_size] = '\0';
   }
 
   free_epc_message(&result_msg);
@@ -1323,12 +1331,12 @@ static int handle_callwrapper_message(const epc_message_t *msg) {
   if (ret < 0) {
     ERROR_LOG("Wrapper function returned error\n");
     sps_buffer_free(&result_buf);
-    /* Send empty result on error */
+    static const char err_msg[] = "Wrapper function failed in the executor";
     epc_message_t result_msg = {.opcode = OPCODE_RESULT,
                                 .seqno = msg->seqno,
-                                .tag_addr = 0,
-                                .arg_bytes = NULL,
-                                .arg_size = 0};
+                                .tag_addr = RESULT_KIND_OUT_OF_BAND_ERROR,
+                                .arg_bytes = (uint8_t *)err_msg,
+                                .arg_size = sizeof(err_msg) - 1};
     if (send_epc_message(&result_msg) < 0) {
       ERROR_LOG("Failed to send Result message\n");
       return -1;
@@ -1339,7 +1347,7 @@ static int handle_callwrapper_message(const epc_message_t *msg) {
   /* Send Result message with the result data */
   epc_message_t result_msg = {.opcode = OPCODE_RESULT,
                               .seqno = msg->seqno,
-                              .tag_addr = 0,
+                              .tag_addr = RESULT_KIND_VALUE,
                               .arg_bytes = result_buf.data,
                               .arg_size = result_buf.size};
 

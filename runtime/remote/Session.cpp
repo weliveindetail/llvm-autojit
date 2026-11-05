@@ -35,6 +35,11 @@ using namespace llvm::orc;
 
 static ExitOnError ExitOnErr("[autojitd] ");
 
+// Result messages carry the result kind in TagAddr, like LLVM 24. The payload
+// of an out-of-band error is its message.
+static constexpr ExecutorAddr ResultKindValue(0);
+static constexpr ExecutorAddr ResultKindOutOfBandError(1);
+
 namespace autojit {
 
 struct RemoteEPCExecutorInfo {
@@ -544,7 +549,9 @@ autojit::RemoteEPC::handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
       break;
     case SimpleRemoteEPCOpcode::Result:
       DBG() << "Result";
-      assert(!TagAddr && "Non-zero TagAddr for Result?");
+      assert((TagAddr == ResultKindValue ||
+              TagAddr == ResultKindOutOfBandError) &&
+             "Unknown result kind");
       break;
     case SimpleRemoteEPCOpcode::CallWrapper:
       DBG() << "CallWrapper";
@@ -664,7 +671,9 @@ Error autojit::RemoteEPC::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
       break;
     case SimpleRemoteEPCOpcode::Result:
       DBG() << "Result";
-      assert(!TagAddr && "Non-zero TagAddr for Result?");
+      assert((TagAddr == ResultKindValue ||
+              TagAddr == ResultKindOutOfBandError) &&
+             "Unknown result kind");
       break;
     case SimpleRemoteEPCOpcode::CallWrapper:
       DBG() << "CallWrapper";
@@ -823,8 +832,9 @@ Error autojit::RemoteEPC::handleResult(uint64_t SeqNo, ExecutorAddr TagAddr,
                                        SimpleRemoteEPCArgBytesVector ArgBytes) {
   IncomingWFRHandler SendResult;
 
-  if (TagAddr)
-    return make_error<StringError>("Unexpected TagAddr in result message",
+  if (TagAddr != ResultKindValue && TagAddr != ResultKindOutOfBandError)
+    return make_error<StringError>("Unknown result kind " +
+                                       Twine(TagAddr.getValue()),
                                    inconvertibleErrorCode());
 
   {
@@ -837,6 +847,12 @@ Error autojit::RemoteEPC::handleResult(uint64_t SeqNo, ExecutorAddr TagAddr,
     SendResult = std::move(I->second);
     PendingCallWrapperResults.erase(I);
     releaseSeqNo(SeqNo);
+  }
+
+  if (TagAddr == ResultKindOutOfBandError) {
+    std::string Msg(ArgBytes.data(), ArgBytes.size());
+    SendResult(shared::WrapperFunctionResult::createOutOfBandError(Msg));
+    return Error::success();
   }
 
   auto WFR =
@@ -862,15 +878,13 @@ void autojit::RemoteEPC::handleCallWrapper(
         if (ErrMsg) {
           DBG() << "RPC function returned out-of-band error: " << ErrMsg
                 << "\n";
-          // For out-of-band errors, send the error as-is
-          // The size is 0 and ValuePtr points to the error string
-          if (auto Err =
-                  sendMessage(SimpleRemoteEPCOpcode::Result, RemoteSeqNo,
-                              ExecutorAddr(), {ErrMsg, strlen(ErrMsg) + 1}))
+          if (auto Err = sendMessage(SimpleRemoteEPCOpcode::Result, RemoteSeqNo,
+                                     ResultKindOutOfBandError,
+                                     {ErrMsg, strlen(ErrMsg)}))
             getExecutionSession().reportError(std::move(Err));
         } else {
           if (auto Err = sendMessage(SimpleRemoteEPCOpcode::Result, RemoteSeqNo,
-                                     ExecutorAddr(), {WFR.data(), WFR.size()}))
+                                     ResultKindValue, {WFR.data(), WFR.size()}))
             getExecutionSession().reportError(std::move(Err));
         }
       },
