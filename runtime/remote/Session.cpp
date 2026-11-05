@@ -16,7 +16,7 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/TargetParser/Host.h>
 
-#if AUTOJIT_ORC_V24
+#if !AUTOJIT_LLVM_21
 #include <llvm/ExecutionEngine/Orc/EPCGenericDylibManagerSPS.h>
 #include <llvm/ExecutionEngine/Orc/EPCGenericJITLinkMemoryManagerSPS.h>
 #include <llvm/ExecutionEngine/Orc/EPCGenericMemoryAccessSPS.h>
@@ -109,10 +109,10 @@ private:
   std::atomic<bool> LoopFinished{false};
 };
 
-#if AUTOJIT_ORC_V24
-using ArgBytesVector = WFBuffer;
-#else
+#if AUTOJIT_LLVM_21
 using ArgBytesVector = SimpleRemoteEPCArgBytesVector;
+#else
+using ArgBytesVector = WFBuffer;
 #endif
 
 class RemoteEPC : public ExecutorProcessControl,
@@ -161,7 +161,7 @@ public:
   Error waitForSetup();
   Error sendSetupMessage(StringMap<ExecutorAddr> Symbols);
 
-#if AUTOJIT_ORC_V24
+#if !AUTOJIT_LLVM_21
   Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
   createDefaultMemoryManager() override;
   Expected<std::unique_ptr<DylibManager>> createDefaultDylibMgr() override;
@@ -174,10 +174,10 @@ public:
 protected:
   // Completes the setup once we received the bootstrap symbols. LLVM 21 has no
   // default, LegacyRemoteEPC implements it.
-#if AUTOJIT_ORC_V24
-  virtual Error finishSetup();
-#else
+#if AUTOJIT_LLVM_21
   virtual Error finishSetup() = 0;
+#else
+  virtual Error finishSetup();
 #endif
 
 private:
@@ -213,7 +213,7 @@ private:
 
 ////////////////////////////////////////////////////////////////// LLVM 21 ///
 
-#if !AUTOJIT_ORC_V24
+#if AUTOJIT_LLVM_21
 namespace autojit {
 
 // The stub's dylib manager has LLVM 24's interface
@@ -604,11 +604,11 @@ void autojit::Transport::listenLoop() {
     }
 
     // Read the argument bytes
-#if AUTOJIT_ORC_V24
-    auto ArgBytes = WFBuffer::allocate(MsgSize - FDMsgHeader::Size);
-#else
+#if AUTOJIT_LLVM_21
     ArgBytesVector ArgBytes;
     ArgBytes.resize(MsgSize - FDMsgHeader::Size);
+#else
+    auto ArgBytes = WFBuffer::allocate(MsgSize - FDMsgHeader::Size);
 #endif
     if (auto Err = readBytes(ArgBytes.data(), ArgBytes.size())) {
       LOG() << "Failed to read message payload: " << toString(std::move(Err))
@@ -794,7 +794,7 @@ int autojit::RemoteEPC::waitForDisconnect() {
   return 0;
 }
 
-#if AUTOJIT_ORC_V24
+#if !AUTOJIT_LLVM_21
 Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
 autojit::RemoteEPC::createDefaultMemoryManager() {
   return sps::createEPCGenericJITLinkMemoryManager(getExecutionSession());

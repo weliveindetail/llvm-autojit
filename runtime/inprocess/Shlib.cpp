@@ -1,5 +1,6 @@
 #include "runtime/AutoJITRuntime.h"
 #include "runtime/core/AutoJIT.h"
+#include "runtime/core/OrcCompat.h"
 
 #include <llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h>
 
@@ -7,7 +8,7 @@
 #include <string>
 
 LLVM_ATTRIBUTE_USED void linkComponents() {
-#if LLVM_VERSION_MAJOR < 22
+#if AUTOJIT_LLVM_21
   LOG() << (void *)&llvm_orc_registerJITLoaderGDBWrapper;
 #endif
   LOG() << (void *)&llvm_orc_registerJITLoaderGDBAllocAction;

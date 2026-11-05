@@ -6,19 +6,20 @@
 #include <llvm/Config/llvm-config.h>
 #include <llvm/ExecutionEngine/Orc/Shared/WrapperFunctionUtils.h>
 
-#if LLVM_VERSION_MAJOR >= 24
-#define AUTOJIT_ORC_V24 1
+// Guards legacy code, LLVM 24 is the default
+#if LLVM_VERSION_MAJOR == 21
+#define AUTOJIT_LLVM_21 1
 #else
-#define AUTOJIT_ORC_V24 0
+#define AUTOJIT_LLVM_21 0
 #endif
 
 namespace autojit {
-#if AUTOJIT_ORC_V24
-using WFBuffer = llvm::orc::shared::WrapperFunctionBuffer;
-using CWFBuffer = llvm::orc::shared::CWrapperFunctionBuffer;
-#else
+#if AUTOJIT_LLVM_21
 using WFBuffer = llvm::orc::shared::WrapperFunctionResult;
 using CWFBuffer = llvm::orc::shared::CWrapperFunctionResult;
+#else
+using WFBuffer = llvm::orc::shared::WrapperFunctionBuffer;
+using CWFBuffer = llvm::orc::shared::CWrapperFunctionBuffer;
 #endif
 } // namespace autojit
 
