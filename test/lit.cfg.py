@@ -48,6 +48,12 @@ config.substitutions.append(('%llc', str(bin / 'llc')))
 config.substitutions.append(('%readelf', str(bin / 'llvm-readelf')))
 config.substitutions.append(('FileCheck', str(bin / 'FileCheck')))
 
+# Tests with IR for a specific target need its backend, e.g. x86-registered-target
+targets = subprocess.check_output([str(bin / 'llvm-config'), '--targets-built'],
+                                  text=True)
+for target in targets.split():
+    config.available_features.add(target.lower() + '-registered-target')
+
 config.environment['PATH'] = config.llvm_tools_dir + ":/usr/bin"
 
 if 'AUTOJIT_USE_TPDE' in os.environ:
