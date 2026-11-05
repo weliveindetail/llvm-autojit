@@ -1,6 +1,7 @@
 #include "AutoJITConfig.h"
 
 #include "runtime/core/AutoJIT.h"
+#include "runtime/core/OrcCompat.h"
 #include "runtime/remote/Session.h"
 
 #include <llvm/ExecutionEngine/Orc/Core.h>
@@ -66,14 +67,14 @@ static std::string blobToHex(const char *ArgData, size_t ArgSize) {
   return Buffer;
 }
 
-shared::CWrapperFunctionResult outOfBandError(Twine Msg) {
+autojit::CWFBuffer outOfBandError(Twine Msg) {
   std::string Tmp = Msg.str();
   DBG() << "Raise out-of-band error: " << Tmp << "\n";
-  return shared::WrapperFunctionResult::createOutOfBandError(Tmp.c_str())
+  return autojit::WFBuffer::createOutOfBandError(Tmp.c_str())
       .release();
 }
 
-extern "C" shared::CWrapperFunctionResult
+extern "C" autojit::CWFBuffer
 autojit_rpc_register(const char *ArgData, size_t ArgSize) {
   DBG() << "autojit_rpc_register: " << blobToHex(ArgData, ArgSize) << "\n";
 
@@ -98,10 +99,10 @@ autojit_rpc_register(const char *ArgData, size_t ArgSize) {
                           Message);
   }
 
-  return shared::WrapperFunctionResult().release();
+  return autojit::WFBuffer().release();
 }
 
-extern "C" shared::CWrapperFunctionResult
+extern "C" autojit::CWFBuffer
 autojit_rpc_materialize(const char *ArgData, size_t ArgSize) {
   DBG() << "autojit_rpc_materialize: " << blobToHex(ArgData, ArgSize) << "\n";
 
@@ -123,7 +124,7 @@ autojit_rpc_materialize(const char *ArgData, size_t ArgSize) {
   DBG() << "Materialized at address 0x" << format("%016" PRIx64, Addr) << "\n";
 
   size_t ResultSize = shared::SPSArgList<uint64_t>::size(Addr);
-  auto Result = shared::WrapperFunctionResult::allocate(ResultSize);
+  auto Result = autojit::WFBuffer::allocate(ResultSize);
   shared::SPSOutputBuffer OB(Result.data(), Result.size());
   if (!shared::SPSArgList<uint64_t>::serialize(OB, Addr))
     return outOfBandError("Failed to serialize address");

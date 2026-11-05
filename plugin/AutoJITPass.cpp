@@ -11,13 +11,21 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/MC/TargetRegistry.h>
+#include <llvm/Config/llvm-config.h>
 #include <llvm/Passes/PassBuilder.h>
+#if LLVM_VERSION_MAJOR >= 22
+#include <llvm/Plugins/PassPlugin.h>
+#else
 #include <llvm/Passes/PassPlugin.h>
+#endif
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/Compiler.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/FileSystem.h>
+#if LLVM_VERSION_MAJOR >= 22
+#include <llvm/Support/IOSandbox.h>
+#endif
 #include <llvm/Support/CodeGen.h>
 #include <llvm/Support/MD5.h>
 #include <llvm/Support/Path.h>
@@ -158,9 +166,17 @@ static bool mayBeOutOfRange(const GlobalValue &GV, const Triple &TT,
 }
 
 // Must not be skipped, e.g. for optnone functions
+#if LLVM_VERSION_MAJOR >= 23
+struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
+#else
 struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
   static bool isRequired() { return true; }
+#endif
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
+#if LLVM_VERSION_MAJOR >= 22
+    // We write lazy modules next to the object file, not through clang's VFS
+    auto BypassSandbox = sys::sandbox::scopedDisable();
+#endif
     std::string GUID = getModuleGUID(M);
     std::string FileStem = getOutputDir() + "/autojit_" + GUID;
     StringRef FileExt = AutoJITDebug ? ".ll" : ".bc";
@@ -284,9 +300,13 @@ private:
   // so the C library and our runtime call them. Symbols interpose by name, so
   // we don't check the prototype.
   static bool isLibFunc(Function &F, FunctionAnalysisManager &FAM) {
+    const TargetLibraryInfo &TLI = FAM.getResult<TargetLibraryAnalysis>(F);
+#if LLVM_VERSION_MAJOR >= 24
+    return TLI.getLibFunc(F.getName()) != NotLibFunc;
+#else
     LibFunc Func;
-    return FAM.getResult<TargetLibraryAnalysis>(F).getLibFunc(F.getName(),
-                                                              Func);
+    return TLI.getLibFunc(F.getName(), Func);
+#endif
   }
 
   // The runtime loads lazy modules from their absolute path and caches their
@@ -394,8 +414,13 @@ private:
     std::optional<CodeModel::Model> CM = M.getCodeModel();
     uint64_t LargeDataThreshold = M.getLargeDataThreshold().value_or(0);
 
+#if LLVM_VERSION_MAJOR >= 23
+    uint64_t EntriesOffset =
+        M.getDataLayout().getStructLayout(TableTy)->getElementOffset(3);
+#else
     Constant *Zero = ConstantInt::get(I32Ty, 0);
     Constant *EntriesIdx = ConstantInt::get(I32Ty, 3);
+#endif
     for (unsigned I = 0; I < NumEntries; I += 1) {
       GlobalValue *GV = Imports[I];
       Constant *Target = GV;
@@ -417,9 +442,14 @@ private:
       }
       // Offset from the entry to its target: a static relocation that the
       // linker resolves, since both are in the same image
+#if LLVM_VERSION_MAJOR >= 23
+      Constant *Place = ConstantExpr::getInBoundsPtrAdd(
+          Table, ConstantInt::get(I64Ty, EntriesOffset + I * 4));
+#else
       Constant *Idx[] = {Zero, EntriesIdx, ConstantInt::get(I32Ty, I)};
       Constant *Place =
           ConstantExpr::getInBoundsGetElementPtr(TableTy, Table, Idx);
+#endif
       Constant *Offset =
           ConstantExpr::getSub(ConstantExpr::getPtrToInt(Target, I64Ty),
                                ConstantExpr::getPtrToInt(Place, I64Ty));

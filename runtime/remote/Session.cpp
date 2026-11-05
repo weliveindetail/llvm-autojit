@@ -1,5 +1,7 @@
 #include "runtime/remote/Session.h"
 
+#include "runtime/core/OrcCompat.h"
+
 #include <llvm/ExecutionEngine/Orc/Core.h>
 #include <llvm/ExecutionEngine/Orc/DylibManager.h>
 #include <llvm/ExecutionEngine/Orc/EPCGenericJITLinkMemoryManager.h>
@@ -13,6 +15,14 @@
 #include <llvm/Support/ManagedStatic.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/TargetParser/Host.h>
+
+#if AUTOJIT_ORC_V24
+#include <llvm/ExecutionEngine/Orc/EPCGenericDylibManagerSPS.h>
+#include <llvm/ExecutionEngine/Orc/EPCGenericJITLinkMemoryManagerSPS.h>
+#include <llvm/ExecutionEngine/Orc/EPCGenericMemoryAccessSPS.h>
+#include <llvm/ExecutionEngine/Orc/LookupAndApply.h>
+#include <llvm/ExecutionEngine/Orc/RecordProxy.h>
+#endif
 
 #include <llvm/ExecutionEngine/Orc/MemoryAccess.h>
 using MemoryAccess = llvm::orc::MemoryAccess;
@@ -44,7 +54,7 @@ struct RemoteEPCExecutorInfo {
   StringMap<std::vector<char>> BootstrapMap;
   StringMap<ExecutorAddr> BootstrapSymbols;
 
-  MSVCPError deserialize(shared::WrapperFunctionResult Bytes);
+  MSVCPError deserialize(autojit::WFBuffer Bytes);
 };
 
 } // namespace autojit
@@ -99,6 +109,7 @@ private:
   std::atomic<bool> LoopFinished{false};
 };
 
+#if !AUTOJIT_ORC_V24
 // The stub's dylib manager has LLVM 24's interface
 class LegacyDylibManager : public DylibManager {
 public:
@@ -121,6 +132,13 @@ private:
   ExecutorAddr Load;
   ExecutorAddr Lookup;
 };
+#endif
+
+#if AUTOJIT_ORC_V24
+using ArgBytesVector = WFBuffer;
+#else
+using ArgBytesVector = SimpleRemoteEPCArgBytesVector;
+#endif
 
 class RemoteEPC : public ExecutorProcessControl,
                   public SimpleRemoteEPCTransportClient {
@@ -139,6 +157,7 @@ public:
     llvm_unreachable("Daemon is passive");
   }
 
+#if !AUTOJIT_ORC_V24
   Expected<int32_t> runAsVoidFunction(ExecutorAddr) override {
     llvm_unreachable("Daemon is passive");
   }
@@ -146,6 +165,7 @@ public:
   Expected<int32_t> runAsIntFunction(ExecutorAddr, int) override {
     llvm_unreachable("Daemon is passive");
   }
+#endif
 
   void handleDisconnect(Error Err) override {
     llvm_unreachable("Daemon is passive");
@@ -169,30 +189,37 @@ public:
 
   Expected<HandleMessageAction>
   handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo, ExecutorAddr TagAddr,
-                SimpleRemoteEPCArgBytesVector ArgBytes) override;
+                ArgBytesVector ArgBytes) override;
 
   void setTransport(SimpleRemoteEPCTransport &T) { this->T = &T; }
 
   Error waitForSetup();
   Error sendSetupMessage(StringMap<ExecutorAddr> Symbols);
 
+#if AUTOJIT_ORC_V24
+  Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
+  createDefaultMemoryManager() override;
+  Expected<std::unique_ptr<DylibManager>> createDefaultDylibMgr() override;
+  Expected<std::unique_ptr<MemoryAccess>> createDefaultMemoryAccess() override;
+#else
   static Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
   createDefaultMemoryManager(RemoteEPC &SREPC);
   static Expected<std::unique_ptr<MemoryAccess>>
   createDefaultMemoryAccess(RemoteEPC &SREPC);
+#endif
 
   Error sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
                     ExecutorAddr TagAddr, ArrayRef<char> ArgBytes);
 
 private:
   Error handleSetup(uint64_t SeqNo, ExecutorAddr TagAddr,
-                    SimpleRemoteEPCArgBytesVector ArgBytes);
-  HandleMessageAction handleHangup(SimpleRemoteEPCArgBytesVector ArgBytes);
+                    ArgBytesVector ArgBytes);
+  HandleMessageAction handleHangup(ArgBytesVector ArgBytes);
 
   Error handleResult(uint64_t SeqNo, ExecutorAddr TagAddr,
-                     SimpleRemoteEPCArgBytesVector ArgBytes);
+                     ArgBytesVector ArgBytes);
   void handleCallWrapper(uint64_t RemoteSeqNo, ExecutorAddr TagAddr,
-                         SimpleRemoteEPCArgBytesVector ArgBytes);
+                         ArgBytesVector ArgBytes);
 
   uint64_t getNextSeqNo() { return NextSeqNo++; }
   void releaseSeqNo(uint64_t SeqNo) {}
@@ -206,9 +233,11 @@ private:
   bool FullShutdownRequested = false;
 
   SimpleRemoteEPCTransport *T;
+#if !AUTOJIT_ORC_V24
   std::unique_ptr<DylibManager> OwnedDylibMgr;
   std::unique_ptr<jitlink::JITLinkMemoryManager> OwnedMemMgr;
   std::unique_ptr<MemoryAccess> OwnedMemAccess;
+#endif
 
   // Each side numbers the calls it makes. Results carry the number of their
   // call. 0 is the Setup message.
@@ -412,15 +441,19 @@ void autojit::Transport::listenLoop() {
     }
 
     // Read the argument bytes
-    SimpleRemoteEPCArgBytesVector ArgBytes;
+#if AUTOJIT_ORC_V24
+    auto ArgBytes = WFBuffer::allocate(MsgSize - FDMsgHeader::Size);
+#else
+    ArgBytesVector ArgBytes;
     ArgBytes.resize(MsgSize - FDMsgHeader::Size);
+#endif
     if (auto Err = readBytes(ArgBytes.data(), ArgBytes.size())) {
       LOG() << "Failed to read message payload: " << toString(std::move(Err))
             << "\n";
       continue;
     }
 
-    auto Status = C.handleMessage(OpC, SeqNo, TagAddr, ArgBytes);
+    auto Status = C.handleMessage(OpC, SeqNo, TagAddr, std::move(ArgBytes));
     if (!Status) {
       LOG() << "Failed to handle message: " << toString(Status.takeError())
             << "\n";
@@ -447,6 +480,7 @@ autojit::RemoteEPC::~RemoteEPC() {
 #endif
 }
 
+#if !AUTOJIT_ORC_V24
 Expected<std::unique_ptr<autojit::LegacyDylibManager>>
 autojit::LegacyDylibManager::Create(ExecutorProcessControl &EPC) {
   std::unique_ptr<LegacyDylibManager> M(new LegacyDylibManager(EPC));
@@ -512,6 +546,7 @@ void autojit::LegacyDylibManager::lookupNext(
       },
       Instance, Request.front().Handle, Symbols);
 }
+#endif
 
 void autojit::RemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
                                           IncomingWFRHandler OnComplete,
@@ -521,7 +556,7 @@ void autojit::RemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
     if (isQuickHangup()) {
       LOG() << "Warning: ignore RPC invocation after disconnect\n";
       // A zero byte decodes as both, void and ErrorSuccess
-      auto Result = shared::WrapperFunctionResult::allocate(1);
+      auto Result = autojit::WFBuffer::allocate(1);
       Result.data()[0] = '\0';
       OnComplete(std::move(Result));
       return;
@@ -530,7 +565,7 @@ void autojit::RemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
 
   // The caller waits for a result, so we can't just drop the call
   if (!WrapperFnAddr) {
-    OnComplete(shared::WrapperFunctionResult::createOutOfBandError(
+    OnComplete(autojit::WFBuffer::createOutOfBandError(
         "Call to null wrapper function in the executor"));
     return;
   }
@@ -562,7 +597,7 @@ void autojit::RemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
     }
 
     if (H)
-      H(shared::WrapperFunctionResult::createOutOfBandError("disconnecting"));
+      H(autojit::WFBuffer::createOutOfBandError("disconnecting"));
 
     getExecutionSession().reportError(std::move(Err));
   }
@@ -571,7 +606,7 @@ void autojit::RemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
 Expected<SimpleRemoteEPCTransportClient::HandleMessageAction>
 autojit::RemoteEPC::handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
                                   ExecutorAddr TagAddr,
-                                  SimpleRemoteEPCArgBytesVector ArgBytes) {
+                                  ArgBytesVector ArgBytes) {
 
   {
     DBG() << "RemoteEPC::handleMessage: opc = ";
@@ -629,9 +664,9 @@ autojit::RemoteEPC::handleMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
 }
 
 SimpleRemoteEPCTransportClient::HandleMessageAction
-autojit::RemoteEPC::handleHangup(SimpleRemoteEPCArgBytesVector ArgBytes) {
+autojit::RemoteEPC::handleHangup(ArgBytesVector ArgBytes) {
   auto WFR =
-      shared::WrapperFunctionResult::copyFrom(ArgBytes.data(), ArgBytes.size());
+      autojit::WFBuffer::copyFrom(ArgBytes.data(), ArgBytes.size());
   if (const char *ErrMsg = WFR.getOutOfBandError()) {
     LOG() << "Hangup error: " << ErrMsg << "\n";
     return EndSession;
@@ -664,6 +699,35 @@ int autojit::RemoteEPC::waitForDisconnect() {
   return 0;
 }
 
+#if AUTOJIT_ORC_V24
+Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
+autojit::RemoteEPC::createDefaultMemoryManager() {
+  return sps::createEPCGenericJITLinkMemoryManager(getExecutionSession());
+}
+
+Expected<std::unique_ptr<DylibManager>>
+autojit::RemoteEPC::createDefaultDylibMgr() {
+  return sps::createEPCGenericDylibManager(getExecutionSession());
+}
+
+// The stub doesn't implement reads
+Expected<std::unique_ptr<MemoryAccess>>
+autojit::RemoteEPC::createDefaultMemoryAccess() {
+  using namespace sps;
+  EPCGenericMemoryAccess::Funcs F;
+  if (auto Err = lookupAndApply(
+          getExecutionSession().getBootstrapJITDylib(),
+          {recordProxy<MemWriteUInt8sProxySpec>(&F.WriteUInt8s),
+           recordProxy<MemWriteUInt16sProxySpec>(&F.WriteUInt16s),
+           recordProxy<MemWriteUInt32sProxySpec>(&F.WriteUInt32s),
+           recordProxy<MemWriteUInt64sProxySpec>(&F.WriteUInt64s),
+           recordProxy<MemWritePointersProxySpec>(&F.WritePointers),
+           recordProxy<MemWriteBuffersProxySpec>(&F.WriteBuffers)}))
+    return std::move(Err);
+  return std::make_unique<EPCGenericMemoryAccess>(getExecutionSession(),
+                                                  std::move(F));
+}
+#else
 Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
 autojit::RemoteEPC::createDefaultMemoryManager(RemoteEPC &SREPC) {
   EPCGenericJITLinkMemoryManager::SymbolAddrs SAs;
@@ -694,6 +758,7 @@ autojit::RemoteEPC::createDefaultMemoryAccess(RemoteEPC &SREPC) {
 
   return std::make_unique<EPCGenericMemoryAccess>(SREPC, FAs);
 }
+#endif
 
 Error autojit::RemoteEPC::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
                                       ExecutorAddr TagAddr,
@@ -730,7 +795,7 @@ Error autojit::RemoteEPC::sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
 
 Error autojit::RemoteEPC::handleSetup(uint64_t RemoteSeqNo,
                                       ExecutorAddr TagAddr,
-                                      SimpleRemoteEPCArgBytesVector ArgBytes) {
+                                      ArgBytesVector ArgBytes) {
   if (TagAddr)
     return make_error<StringError>("Setup packet TagAddr not zero",
                                    inconvertibleErrorCode());
@@ -744,13 +809,13 @@ Error autojit::RemoteEPC::handleSetup(uint64_t RemoteSeqNo,
   PendingCallWrapperResults.erase(I);
 
   auto WFR =
-      shared::WrapperFunctionResult::copyFrom(ArgBytes.data(), ArgBytes.size());
+      autojit::WFBuffer::copyFrom(ArgBytes.data(), ArgBytes.size());
   SetupMsgHandler(std::move(WFR));
   return Error::success();
 }
 
 MSVCPError autojit::RemoteEPCExecutorInfo::deserialize(
-    shared::WrapperFunctionResult Bytes) {
+    autojit::WFBuffer Bytes) {
   if (const char *ErrMsg = Bytes.getOutOfBandError())
     return make_error<StringError>(ErrMsg, inconvertibleErrorCode());
 
@@ -761,6 +826,7 @@ MSVCPError autojit::RemoteEPCExecutorInfo::deserialize(
   return Error::success();
 }
 
+#if !AUTOJIT_ORC_V24
 static StringMap<ExecutorAddr> patchSymbolNames(StringMap<ExecutorAddr> Map) {
   auto RenameEntry = [&Map](StringRef From, StringRef To) {
     auto It = Map.find(From);
@@ -780,6 +846,7 @@ static StringMap<ExecutorAddr> patchSymbolNames(StringMap<ExecutorAddr> Map) {
 
   return Map;
 }
+#endif
 
 Error autojit::RemoteEPC::waitForSetup() {
   std::promise<MSVCPError> EIP;
@@ -788,7 +855,7 @@ Error autojit::RemoteEPC::waitForSetup() {
 
   // Prepare a handler for the setup packet.
   PendingCallWrapperResults[0] =
-      RunInPlace()([&](shared::WrapperFunctionResult SetupMsgBytes) {
+      RunInPlace()([&](autojit::WFBuffer SetupMsgBytes) {
         EIP.set_value(EI.deserialize(std::move(SetupMsgBytes)));
       });
 
@@ -821,6 +888,16 @@ Error autojit::RemoteEPC::waitForSetup() {
   this->TargetTriple = Triple(EI.TargetTriple);
   this->PageSize = EI.PageSize;
   this->BootstrapMap = std::move(EI.BootstrapMap);
+#if AUTOJIT_ORC_V24
+  this->BootstrapSymbols = std::move(EI.BootstrapSymbols);
+
+  // The session copied the bootstrap symbols when we created it, before we
+  // received them
+  SymbolMap Symbols;
+  for (const auto &[Name, Addr] : this->BootstrapSymbols)
+    Symbols[ES->intern(Name)] = {Addr, JITSymbolFlags::Exported};
+  return ES->getBootstrapJITDylib().define(absoluteSymbols(std::move(Symbols)));
+#else
   this->BootstrapSymbols = patchSymbolNames(std::move(EI.BootstrapSymbols));
 
   // Get dispatch symbols for RPC calls back to the stub
@@ -839,6 +916,7 @@ Error autojit::RemoteEPC::waitForSetup() {
   this->MemAccess = OwnedMemAccess.get();
 
   return Error::success();
+#endif
 }
 
 Error autojit::RemoteEPC::sendSetupMessage(StringMap<ExecutorAddr> Symbols) {
@@ -850,7 +928,7 @@ Error autojit::RemoteEPC::sendSetupMessage(StringMap<ExecutorAddr> Symbols) {
   using SPSSerialize =
       shared::SPSArgList<shared::SPSSimpleRemoteEPCExecutorInfo>;
   auto SetupPacketBytes =
-      shared::WrapperFunctionResult::allocate(SPSSerialize::size(EI));
+      autojit::WFBuffer::allocate(SPSSerialize::size(EI));
   shared::SPSOutputBuffer OB(SetupPacketBytes.data(), SetupPacketBytes.size());
   if (!SPSSerialize::serialize(OB, EI)) {
     LOG() << "Could not encode setup packet\n";
@@ -863,7 +941,7 @@ Error autojit::RemoteEPC::sendSetupMessage(StringMap<ExecutorAddr> Symbols) {
 }
 
 Error autojit::RemoteEPC::handleResult(uint64_t SeqNo, ExecutorAddr TagAddr,
-                                       SimpleRemoteEPCArgBytesVector ArgBytes) {
+                                       ArgBytesVector ArgBytes) {
   IncomingWFRHandler SendResult;
 
   if (TagAddr != ResultKindValue && TagAddr != ResultKindOutOfBandError)
@@ -885,27 +963,27 @@ Error autojit::RemoteEPC::handleResult(uint64_t SeqNo, ExecutorAddr TagAddr,
 
   if (TagAddr == ResultKindOutOfBandError) {
     std::string Msg(ArgBytes.data(), ArgBytes.size());
-    SendResult(shared::WrapperFunctionResult::createOutOfBandError(Msg));
+    SendResult(autojit::WFBuffer::createOutOfBandError(Msg));
     return Error::success();
   }
 
   auto WFR =
-      shared::WrapperFunctionResult::copyFrom(ArgBytes.data(), ArgBytes.size());
+      autojit::WFBuffer::copyFrom(ArgBytes.data(), ArgBytes.size());
   SendResult(std::move(WFR));
   return Error::success();
 }
 
 void autojit::RemoteEPC::handleCallWrapper(
     uint64_t RemoteSeqNo, ExecutorAddr TagAddr,
-    SimpleRemoteEPCArgBytesVector ArgBytes) {
+    ArgBytesVector ArgBytes) {
   assert(ES && "No ExecutionSession attached");
   D->dispatch(makeGenericNamedTask(
       [this, RemoteSeqNo, TagAddr, ArgBytes = std::move(ArgBytes)]() {
         // Call the wrapper function directly
         using WrapperFnTy =
-            shared::CWrapperFunctionResult (*)(const char *, size_t);
+            autojit::CWFBuffer (*)(const char *, size_t);
         auto *Fn = TagAddr.toPtr<WrapperFnTy>();
-        shared::WrapperFunctionResult WFR(Fn(ArgBytes.data(), ArgBytes.size()));
+        autojit::WFBuffer WFR(Fn(ArgBytes.data(), ArgBytes.size()));
 
         // Check for out-of-band error before calling .data()
         const char *ErrMsg = WFR.getOutOfBandError();
