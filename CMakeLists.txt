@@ -54,6 +54,7 @@ if(AUTOJIT_ENABLE_TPDE)
   set(TPDE_LINK_LLVM_STATIC On)
   # TPDE gets linked into the shared autojit-runtime
   set(CMAKE_POSITION_INDEPENDENT_CODE On)
+  # Pass TPDE_TARGETS if the LLVM we build against lacks X86 or AArch64
   add_subdirectory(deps/tpde)
 endif()
 
