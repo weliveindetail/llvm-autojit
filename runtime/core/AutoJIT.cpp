@@ -661,41 +661,59 @@ deregisterEHFramesAllocAction(const char *ArgData, size_t ArgSize) {
 }
 
 // In-process executor that registers EH frames with the program's unwinder.
+// Subclass only to reach the protected BootstrapSymbols.
 class InProcessControl : public SelfExecutorProcessControl {
 public:
   using SelfExecutorProcessControl::SelfExecutorProcessControl;
 
-  static Expected<std::unique_ptr<InProcessControl>> Create() {
-    auto PageSize = sys::Process::getPageSize();
-    if (!PageSize)
-      return PageSize.takeError();
-#if AUTOJIT_LLVM_21
-    auto EPC = std::make_unique<InProcessControl>(
-        std::make_shared<SymbolStringPool>(),
-        std::make_unique<InPlaceTaskDispatcher>(),
-        Triple(sys::getProcessTriple()), *PageSize, nullptr);
-    EPC->BootstrapSymbols[rt::RegisterEHFrameSectionAllocActionName] =
-        ExecutorAddr::fromPtr(&registerEHFramesAllocAction);
-    EPC->BootstrapSymbols[rt::DeregisterEHFrameSectionAllocActionName] =
-        ExecutorAddr::fromPtr(&deregisterEHFramesAllocAction);
-    EPC->BootstrapSymbols[autojit::GDBRegisterBootstrapName] =
-        ExecutorAddr::fromPtr(&llvm_orc_registerJITLoaderGDBWrapper);
-#else
-    // The default bootstrap symbols include LLVM's GDB JIT registration. C
-    // names need no mangling on Linux.
-    auto EPC = std::make_unique<InProcessControl>(
-        std::make_shared<SymbolStringPool>(),
-        std::make_unique<InPlaceTaskDispatcher>(),
-        Triple(sys::getProcessTriple()), *PageSize);
-    EPC->BootstrapSymbols[rt::RegisterEHFrameSectionAllocActionName.getName()] =
-        ExecutorAddr::fromPtr(&registerEHFramesAllocAction);
-    EPC->BootstrapSymbols[rt::DeregisterEHFrameSectionAllocActionName
-                              .getName()] =
-        ExecutorAddr::fromPtr(&deregisterEHFramesAllocAction);
-#endif
-    return EPC;
-  }
+  static Expected<std::unique_ptr<InProcessControl>> Create();
+  static Expected<std::unique_ptr<InProcessControl>> CreateLegacy();
 };
+
+#if AUTOJIT_LLVM_LEGACY
+Expected<std::unique_ptr<InProcessControl>> InProcessControl::CreateLegacy() {
+  auto PageSize = sys::Process::getPageSize();
+  if (!PageSize)
+    return PageSize.takeError();
+#if AUTOJIT_LLVM_21
+  auto EPC = std::make_unique<InProcessControl>(
+      std::make_shared<SymbolStringPool>(),
+      std::make_unique<InPlaceTaskDispatcher>(),
+      Triple(sys::getProcessTriple()), *PageSize, nullptr);
+  EPC->BootstrapSymbols[autojit::GDBRegisterBootstrapName] =
+      ExecutorAddr::fromPtr(&llvm_orc_registerJITLoaderGDBWrapper);
+#else
+  // The default bootstrap symbols include LLVM's GDB JIT registration
+  auto EPC = std::make_unique<InProcessControl>(
+      std::make_shared<SymbolStringPool>(),
+      std::make_unique<InPlaceTaskDispatcher>(),
+      Triple(sys::getProcessTriple()), *PageSize);
+#endif
+  EPC->BootstrapSymbols[rt::RegisterEHFrameSectionAllocActionName] =
+      ExecutorAddr::fromPtr(&registerEHFramesAllocAction);
+  EPC->BootstrapSymbols[rt::DeregisterEHFrameSectionAllocActionName] =
+      ExecutorAddr::fromPtr(&deregisterEHFramesAllocAction);
+  return EPC;
+}
+#else
+Expected<std::unique_ptr<InProcessControl>> InProcessControl::Create() {
+  auto PageSize = sys::Process::getPageSize();
+  if (!PageSize)
+    return PageSize.takeError();
+  // The default bootstrap symbols include LLVM's GDB JIT registration. C
+  // names need no mangling on Linux.
+  auto EPC = std::make_unique<InProcessControl>(
+      std::make_shared<SymbolStringPool>(),
+      std::make_unique<InPlaceTaskDispatcher>(),
+      Triple(sys::getProcessTriple()), *PageSize);
+  EPC->BootstrapSymbols[rt::RegisterEHFrameSectionAllocActionName.getName()] =
+      ExecutorAddr::fromPtr(&registerEHFramesAllocAction);
+  EPC->BootstrapSymbols[rt::DeregisterEHFrameSectionAllocActionName
+                            .getName()] =
+      ExecutorAddr::fromPtr(&deregisterEHFramesAllocAction);
+  return EPC;
+}
+#endif
 
 autojit::AutoJIT &autojit::AutoJIT::get() {
   static std::mutex Setup;
@@ -705,7 +723,12 @@ autojit::AutoJIT &autojit::AutoJIT::get() {
     std::lock_guard<std::mutex> Lock(Setup);
     if (!Instance.isConstructed()) {
       LLJITBuilder Builder;
-      Builder.setExecutorProcessControl(ExitOnErr(InProcessControl::Create()));
+#if AUTOJIT_LLVM_LEGACY
+      auto EPC = ExitOnErr(InProcessControl::CreateLegacy());
+#else
+      auto EPC = ExitOnErr(InProcessControl::Create());
+#endif
+      Builder.setExecutorProcessControl(std::move(EPC));
       *Instance = std::make_unique<AutoJIT>();
       ExitOnErr(Instance->get()->initialize(Builder));
       std::atexit(llvm_shutdown);

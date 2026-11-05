@@ -4,6 +4,8 @@
 #cmakedefine AUTOJIT_ENABLE_TPDE
 
 // Guards legacy code, LLVM 24 is the default
+#cmakedefine01 AUTOJIT_LLVM_LEGACY
 #cmakedefine01 AUTOJIT_LLVM_21
+#cmakedefine01 AUTOJIT_LLVM_23
 
 #endif // AUTOJIT_CONFIG_H

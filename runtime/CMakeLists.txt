@@ -99,12 +99,20 @@ add_autojit_stub(autojit_static_debug
 
 add_custom_target(autojit-stub ALL DEPENDS ${autojit_stub_outputs})
 
+# Executor process control for the LLVM version we build against
+if(AUTOJIT_LLVM_LEGACY)
+  set(autojit_remote_epc remote/LegacyRemoteEPC.cpp)
+else()
+  set(autojit_remote_epc remote/DefaultRemoteEPC.cpp)
+endif()
+
 # Daemon executable
 add_executable(autojitd
   remote/Daemon.cpp
   remote/Session.cpp
   core/AutoJIT.cpp
   core/ExecutorPlatform.cpp
+  ${autojit_remote_epc}
 )
 set_target_properties(autojitd PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin

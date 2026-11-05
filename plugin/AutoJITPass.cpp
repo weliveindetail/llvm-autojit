@@ -299,7 +299,7 @@ private:
   // we don't check the prototype.
   static bool isLibFunc(Function &F, FunctionAnalysisManager &FAM) {
     const TargetLibraryInfo &TLI = FAM.getResult<TargetLibraryAnalysis>(F);
-#if AUTOJIT_LLVM_21
+#if AUTOJIT_LLVM_21 || AUTOJIT_LLVM_23
     LibFunc Func;
     return TLI.getLibFunc(F.getName(), Func);
 #else
