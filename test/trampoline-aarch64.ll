@@ -21,6 +21,11 @@ target triple = "aarch64-unknown-linux-gnu"
 ; IR: define void @streaming() {{.*}}{
 ; IR:   call ptr @__llvm_autojit_materialize(
 
+; Variadic functions too: GlobalISel would spill vararg registers in a naked
+; function
+; IR: define i32 @variadic(i32 %0, ...) {{.*}}{
+; IR:   call ptr @__llvm_autojit_materialize(
+
 ; The thunk jumps to the resolver in the runtime. It gets BTI from the module
 ; flag, because it's an indirect branch target.
 ; IR: define internal void @__llvm_autojit_resolve_thunk() [[TRAMPOLINE]] {
@@ -63,6 +68,10 @@ define i32 @add(i32 %0, i32 %1) uwtable "branch-target-enforcement" {
 
 define void @streaming() "aarch64_pstate_sm_enabled" "branch-target-enforcement" "target-features"="+sme" {
   ret void
+}
+
+define i32 @variadic(i32 %0, ...) "branch-target-enforcement" {
+  ret i32 %0
 }
 
 !llvm.module.flags = !{!0, !1}

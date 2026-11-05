@@ -448,7 +448,10 @@ private:
     case Triple::x86_64:
       return true;
     case Triple::aarch64:
-      return TT.getEnvironment() != Triple::GNUILP32 && !hasSMEAttrs(F);
+      // GlobalISel spills vararg registers even in naked functions, which
+      // writes into the caller's frame (LLVM 21) or asserts (LLVM 24)
+      return TT.getEnvironment() != Triple::GNUILP32 && !hasSMEAttrs(F) &&
+             !F.isVarArg();
     default:
       return false;
     }
