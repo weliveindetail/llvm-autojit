@@ -2,50 +2,37 @@ if(AUTOJIT_ENABLE_TPDE)
   set(tpde_libs tpde_llvm)
 endif()
 
-# The runtime must not resolve symbols from shared libraries that programs
-# might define themselves, e.g. a program that builds its own zlib with autojit.
-# The executable would export its lazy definitions and they would interpose the
-# ones from the shared library. LLVM's compression support pulls in zlib and
-# zstd, so we link them statically and hide their symbols (--exclude-libs).
-option(AUTOJIT_STATIC_COMPRESSION_LIBS
-       "Link zlib and zstd statically into the runtime, if available" ON)
-if(AUTOJIT_STATIC_COMPRESSION_LIBS)
-  foreach(entry IN ITEMS "ZLIB::ZLIB=libz.a" "zstd::libzstd_shared=libzstd.a")
-    string(REPLACE "=" ";" entry "${entry}")
-    list(GET entry 0 imported_target)
-    list(GET entry 1 archive_name)
-    if(TARGET ${imported_target})
-      find_library(static_lib_${archive_name} NAMES ${archive_name})
-      if(static_lib_${archive_name})
-        message(STATUS "Link ${imported_target} statically: ${static_lib_${archive_name}}")
-        get_target_property(configs ${imported_target} IMPORTED_CONFIGURATIONS)
-        set_target_properties(${imported_target} PROPERTIES
-          IMPORTED_LOCATION "${static_lib_${archive_name}}")
-        foreach(config IN LISTS configs)
-          set_target_properties(${imported_target} PROPERTIES
-            IMPORTED_LOCATION_${config} "${static_lib_${archive_name}}")
-        endforeach()
-      else()
-        message(WARNING "${archive_name} not found, runtime links ${imported_target} dynamically")
-      endif()
-    endif()
-  endforeach()
-endif()
+# The in-process runtime links zlib and zstd statically, so that programs with
+# their own copies don't interpose them (see below). In-tree builds share
+# LLVMSupport with libLLVM.so and the tools, so we swap them only for autojit-so.
+function(autojit_so_link_static libs_var shared_lib static_lib)
+  if(NOT static_lib)
+    message(FATAL_ERROR "LLVM uses ${shared_lib}, but the in-process runtime "
+                        "needs a static library for it")
+  endif()
+  set(is_autojit_so "$<STREQUAL:$<TARGET_PROPERTY:NAME>,autojit-so>")
+  set(replacement "$<IF:${is_autojit_so},${static_lib},${shared_lib}>")
+  set(libs "${${libs_var}}")
+  # In-tree builds wrap the private dependencies of static libraries
+  list(TRANSFORM libs REPLACE "^${shared_lib}$" "${replacement}")
+  list(TRANSFORM libs REPLACE
+    "^\\$<LINK_ONLY:${shared_lib}>$" "$<LINK_ONLY:${replacement}>")
+  set(${libs_var} "${libs}" PARENT_SCOPE)
+endfunction()
 
-llvm_map_components_to_libnames(llvm_libs
-  BitReader
-  BitstreamReader
-  Core
-  IRReader
-  JITLink
-  native
-  OrcDebugging
-  OrcJIT
-  OrcTargetProcess
-  Passes
-  Support
-  TargetParser
-)
+get_target_property(support_libs LLVMSupport INTERFACE_LINK_LIBRARIES)
+if(TARGET ZLIB::ZLIB)
+  find_library(ZLIB_STATIC_LIBRARY NAMES libz.a)
+  autojit_so_link_static(support_libs ZLIB::ZLIB "${ZLIB_STATIC_LIBRARY}")
+endif()
+if(TARGET zstd::libzstd_shared)
+  # LLVM's Findzstd and zstd's own CMake package provide it, if available
+  if(TARGET zstd::libzstd_static)
+    set(zstd_static_target zstd::libzstd_static)
+  endif()
+  autojit_so_link_static(support_libs zstd::libzstd_shared "${zstd_static_target}")
+endif()
+set_target_properties(LLVMSupport PROPERTIES INTERFACE_LINK_LIBRARIES "${support_libs}")
 
 # Static stub: pure C, no LLVM deps
 #
@@ -123,6 +110,21 @@ set_target_properties(autojitd PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+llvm_map_components_to_libnames(llvm_libs
+  BitReader
+  BitstreamReader
+  Core
+  IRReader
+  JITLink
+  native
+  OrcDebugging
+  OrcJIT
+  OrcTargetProcess
+  Passes
+  Support
+  TargetParser
+)
+
 target_link_libraries(autojitd PRIVATE ${llvm_libs} ${tpde_libs})
 
 if(NOT LLVM_ENABLE_RTTI)
@@ -155,17 +157,11 @@ set_target_properties(autojit-so PROPERTIES
 
 target_link_libraries(autojit-so PRIVATE ${llvm_libs} ${tpde_libs})
 
-# The runtime must not call into lazy code of the executable, because it would
-# re-enter materialization. The executable exports its own definitions of
-# libstdc++ symbols (e.g. template instantiations of std::string) and they
-# interpose the ones from libstdc++.so. So we link a private copy of the C++
-# standard library and resolve all references within the runtime. Its
-# unwinder is private as well, so we never pull libgcc_s into programs
-# that use libunwind. We register EH frames of JITed code with the program's
-# unwinder, which we look up at run-time (see common/EHFrames.h). The version
-# script hides all their symbols. We don't use --exclude-libs: it would also
-# hide the symbols from LLVM's archives that exports.txt lists, e.g. the GDB
-# JIT interface, and GDB ignores it if it's local.
+# The in-process runtime must not call lazy code in the executable, it would
+# re-enter materialization. So it links private copies of libstdc++ and the
+# unwinder (see common/EHFrames.h for JITed code) and binds all references
+# locally. exports.txt hides their symbols; --exclude-libs would also hide the
+# GDB JIT interface.
 target_link_options(autojit-so PRIVATE
   -static-libstdc++
   -static-libgcc
