@@ -6,6 +6,7 @@
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/DenseSet.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/ExecutionEngine/Orc/Shared/WrapperFunctionUtils.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/Support/Error.h>
@@ -28,6 +29,16 @@ extern bool g_autojit_debug;
 #endif
 
 #define LOG() ::llvm::errs() << "[autojit-runtime] "
+
+namespace autojit {
+#if AUTOJIT_LLVM_21
+using WFBuffer = llvm::orc::shared::WrapperFunctionResult;
+using CWFBuffer = llvm::orc::shared::CWrapperFunctionResult;
+#else
+using WFBuffer = llvm::orc::shared::WrapperFunctionBuffer;
+using CWFBuffer = llvm::orc::shared::CWrapperFunctionBuffer;
+#endif
+} // namespace autojit
 
 namespace autojit {
 

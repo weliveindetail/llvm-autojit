@@ -1,7 +1,6 @@
 #include "AutoJITConfig.h"
 
 #include "runtime/core/AutoJIT.h"
-#include "runtime/core/OrcCompat.h"
 #include "runtime/remote/Session.h"
 
 #include <llvm/ExecutionEngine/Orc/Core.h>

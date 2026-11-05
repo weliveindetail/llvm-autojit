@@ -1,3 +1,5 @@
+#include "AutoJITConfig.h"
+
 #include <llvm/Analysis/TargetLibraryInfo.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
 #include <llvm/Transforms/IPO/GlobalDCE.h>
@@ -13,17 +15,17 @@
 #include <llvm/MC/TargetRegistry.h>
 #include <llvm/Config/llvm-config.h>
 #include <llvm/Passes/PassBuilder.h>
-#if LLVM_VERSION_MAJOR >= 22
-#include <llvm/Plugins/PassPlugin.h>
-#else
+#if AUTOJIT_LLVM_21
 #include <llvm/Passes/PassPlugin.h>
+#else
+#include <llvm/Plugins/PassPlugin.h>
 #endif
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/Compiler.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/FileSystem.h>
-#if LLVM_VERSION_MAJOR >= 22
+#if !AUTOJIT_LLVM_21
 #include <llvm/Support/IOSandbox.h>
 #endif
 #include <llvm/Support/CodeGen.h>
@@ -37,7 +39,8 @@
 #include "common/LazyModule.h"
 #include "common/Imports.h"
 
-#if defined(AUTOJIT_ENABLE_TPDE)
+// Never defined, only the runtime uses TPDE for now
+#if defined(AUTOJIT_PLUGIN_ENABLE_TPDE)
 #include "TPDEBackends.h"
 #endif
 
@@ -166,14 +169,14 @@ static bool mayBeOutOfRange(const GlobalValue &GV, const Triple &TT,
 }
 
 // Must not be skipped, e.g. for optnone functions
-#if LLVM_VERSION_MAJOR >= 23
-struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
-#else
+#if AUTOJIT_LLVM_21
 struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
   static bool isRequired() { return true; }
+#else
+struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
 #endif
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
-#if LLVM_VERSION_MAJOR >= 22
+#if !AUTOJIT_LLVM_21
     // We write lazy modules next to the object file, not through clang's VFS
     auto BypassSandbox = sys::sandbox::scopedDisable();
 #endif
@@ -301,11 +304,11 @@ private:
   // we don't check the prototype.
   static bool isLibFunc(Function &F, FunctionAnalysisManager &FAM) {
     const TargetLibraryInfo &TLI = FAM.getResult<TargetLibraryAnalysis>(F);
-#if LLVM_VERSION_MAJOR >= 24
-    return TLI.getLibFunc(F.getName()) != NotLibFunc;
-#else
+#if AUTOJIT_LLVM_21
     LibFunc Func;
     return TLI.getLibFunc(F.getName(), Func);
+#else
+    return TLI.getLibFunc(F.getName()) != NotLibFunc;
 #endif
   }
 
@@ -414,12 +417,12 @@ private:
     std::optional<CodeModel::Model> CM = M.getCodeModel();
     uint64_t LargeDataThreshold = M.getLargeDataThreshold().value_or(0);
 
-#if LLVM_VERSION_MAJOR >= 23
-    uint64_t EntriesOffset =
-        M.getDataLayout().getStructLayout(TableTy)->getElementOffset(3);
-#else
+#if AUTOJIT_LLVM_21
     Constant *Zero = ConstantInt::get(I32Ty, 0);
     Constant *EntriesIdx = ConstantInt::get(I32Ty, 3);
+#else
+    uint64_t EntriesOffset =
+        M.getDataLayout().getStructLayout(TableTy)->getElementOffset(3);
 #endif
     for (unsigned I = 0; I < NumEntries; I += 1) {
       GlobalValue *GV = Imports[I];
@@ -442,13 +445,13 @@ private:
       }
       // Offset from the entry to its target: a static relocation that the
       // linker resolves, since both are in the same image
-#if LLVM_VERSION_MAJOR >= 23
-      Constant *Place = ConstantExpr::getInBoundsPtrAdd(
-          Table, ConstantInt::get(I64Ty, EntriesOffset + I * 4));
-#else
+#if AUTOJIT_LLVM_21
       Constant *Idx[] = {Zero, EntriesIdx, ConstantInt::get(I32Ty, I)};
       Constant *Place =
           ConstantExpr::getInBoundsGetElementPtr(TableTy, Table, Idx);
+#else
+      Constant *Place = ConstantExpr::getInBoundsPtrAdd(
+          Table, ConstantInt::get(I64Ty, EntriesOffset + I * 4));
 #endif
       Constant *Offset =
           ConstantExpr::getSub(ConstantExpr::getPtrToInt(Target, I64Ty),
@@ -663,7 +666,7 @@ private:
 
 } // end anonymous namespace
 
-#if defined(AUTOJIT_ENABLE_TPDE)
+#if defined(AUTOJIT_PLUGIN_ENABLE_TPDE)
 namespace llvm {
 
 LLVM_ABI Target &getTheX86_32Target() __attribute__((weak));
@@ -689,7 +692,7 @@ llvmGetPassPluginInfo() {
   if (const char *Var = std::getenv("AUTOJIT_DIR"))
     if (*Var)
       AutoJITDir = Var;
-#if defined(AUTOJIT_ENABLE_TPDE)
+#if defined(AUTOJIT_PLUGIN_ENABLE_TPDE)
   if (getTheX86_32Target && getTheX86_64Target) {
     RegisterTargetMachine<X86TargetMachineTPDE> X(getTheX86_32Target());
     RegisterTargetMachine<X86TargetMachineTPDE> Y(getTheX86_64Target());

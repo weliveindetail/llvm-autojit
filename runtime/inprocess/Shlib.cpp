@@ -1,6 +1,5 @@
 #include "runtime/AutoJITRuntime.h"
 #include "runtime/core/AutoJIT.h"
-#include "runtime/core/OrcCompat.h"
 
 #include <llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h>
 

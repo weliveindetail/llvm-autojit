@@ -20,13 +20,6 @@ if(NOT AUTOJIT_SANITIZE STREQUAL "")
   endif()
 endif()
 
-configure_file(
-  ${CMAKE_CURRENT_SOURCE_DIR}/AutoJITConfig.h.in
-  ${CMAKE_CURRENT_BINARY_DIR}/AutoJITConfig.h
-)
-
-include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-
 if(DEFINED LLVM_MAIN_SRC_DIR)
   set(AUTOJIT_BUILD_EXTERNAL Off)
   set(AUTOJIT_BUILD_UNIFIED On)
@@ -55,6 +48,20 @@ if(NOT LLVM_VERSION_MAJOR IN_LIST AUTOJIT_SUPPORTED_LLVM_VERSIONS)
   message(FATAL_ERROR "LLVM ${LLVM_VERSION_MAJOR} is not supported, "
                       "llvm-autojit supports: ${supported}")
 endif()
+
+# Guards legacy code, LLVM 24 is the default
+if(LLVM_VERSION_MAJOR EQUAL 21)
+  set(AUTOJIT_LLVM_21 On)
+else()
+  set(AUTOJIT_LLVM_21 Off)
+endif()
+
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/AutoJITConfig.h.in
+  ${CMAKE_CURRENT_BINARY_DIR}/AutoJITConfig.h
+)
+
+include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
 
 if(AUTOJIT_ENABLE_TPDE)
   add_compile_options(-Wno-unused-parameter)

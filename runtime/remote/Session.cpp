@@ -1,7 +1,5 @@
 #include "runtime/remote/Session.h"
 
-#include "runtime/core/OrcCompat.h"
-
 #include <llvm/ExecutionEngine/Orc/Core.h>
 #include <llvm/ExecutionEngine/Orc/DylibManager.h>
 #include <llvm/ExecutionEngine/Orc/EPCGenericJITLinkMemoryManager.h>

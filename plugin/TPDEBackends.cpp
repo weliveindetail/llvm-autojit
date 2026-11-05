@@ -3,7 +3,7 @@
 #include <llvm/IR/Module.h>
 #include <llvm/TargetParser/Triple.h>
 
-#if defined(AUTOJIT_ENABLE_TPDE)
+#if defined(AUTOJIT_PLUGIN_ENABLE_TPDE)
 #include "tpde-llvm/LLVMCompiler.hpp"
 #endif
 
@@ -14,7 +14,7 @@ using namespace llvm;
 char TPDEPass::ID;
 
 bool TPDEPass::runOnModule(Module &M) {
-#if defined(AUTOJIT_ENABLE_TPDE)
+#if defined(AUTOJIT_PLUGIN_ENABLE_TPDE)
   std::string ModName = M.getName().str();
   printf("Running TPDE pass on module %s\n", ModName.c_str());
 

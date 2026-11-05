@@ -5,7 +5,6 @@
 
 #include "runtime/core/AutoJIT.h"
 #include "runtime/core/ExecutorPlatform.h"
-#include "runtime/core/OrcCompat.h"
 
 #include <llvm/ADT/SmallSet.h>
 #include <llvm/ADT/StringExtras.h>
