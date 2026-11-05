@@ -1,3 +1,4 @@
+; REQUIRES: aarch64-registered-target
 ; RUN: %opt --load-pass-plugin=%autojit_plugin -passes=AutoJIT,verify -S %s -o %t.ll
 ; RUN: FileCheck --check-prefix=IR %s < %t.ll
 ; RUN: %llc -O0 %t.ll -o - | FileCheck --check-prefix=ASM %s
