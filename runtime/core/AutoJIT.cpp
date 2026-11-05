@@ -374,12 +374,15 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
   }
 
   for (GlobalVariable &GV : M->globals()) {
+    // Keep the linkage of declarations, e.g. extern_weak
+    if (GV.isDeclaration())
+      continue;
     if (GV.hasAtLeastLocalUnnamedAddr()) {
       // A private copy for this module, for the same reason as above. The
       // address of unnamed_addr variables is insignificant.
       DBG() << "Keep definiton for " << GV.getName()
             << " (local copy of unnamed_addr)\n";
-      if (!GV.isDeclaration() && !GV.hasLocalLinkage()) {
+      if (!GV.hasLocalLinkage()) {
         GV.setLinkage(GlobalValue::InternalLinkage);
         GV.setVisibility(GlobalValue::DefaultVisibility);
         GV.setComdat(nullptr);
