@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 /* ============================================================================
  * GDB JIT Interface structures
@@ -96,10 +97,23 @@ static void append_jit_debug_descriptor(const char *obj_addr, uint64_t size) {
  * ============================================================================
  */
 
+/* Without the flag, call __jit_debug_register_code() unless disabled */
+static int default_auto_register(void) {
+  const char *val = getenv("AUTOJIT_DEBUG_NO_AUTOREGISTER");
+  if (!val)
+    return 1;
+  const char *true_values[] = {"1", "on", "true", "yes"};
+  for (int i = 0; i < 4; i++)
+    if (strcasecmp(val, true_values[i]) == 0)
+      return 0;
+  return 1;
+}
+
 __attribute__((used)) ssize_t llvm_orc_registerJITLoaderGDBWrapper(
     const char *data, uint64_t size, sps_buffer_t *Result) {
-  /* We decode 8 + 8 + 1 bytes */
-  if (size < 17)
+  /* We decode 8 + 8 bytes and an optional bool. Since LLVM 22 the alloc
+   * action only passes the range. */
+  if (size < 16)
     return -1;
 
   /* ExecutorAddrRange */
@@ -111,8 +125,7 @@ __attribute__((used)) ssize_t llvm_orc_registerJITLoaderGDBWrapper(
   memcpy(&end_addr, data, 8);
   data += 8;
 
-  /* bool flag */
-  int auto_register = *data;
+  int auto_register = size > 16 ? *data : default_auto_register();
 
   /* Debug object size is between 64 bytes and 1 GB */
   if (check_range_min_max(start_addr, end_addr, 64, 1 << 30) == 0) {

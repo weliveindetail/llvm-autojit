@@ -5,6 +5,7 @@
 
 #include "runtime/core/AutoJIT.h"
 #include "runtime/core/ExecutorPlatform.h"
+#include "runtime/core/OrcCompat.h"
 
 #include <llvm/ADT/SmallSet.h>
 #include <llvm/ADT/StringExtras.h>
@@ -641,7 +642,7 @@ static Error deregisterEHFrames(ExecutorAddrRange EHFrame) {
   return Error::success();
 }
 
-static shared::CWrapperFunctionResult
+static autojit::CWFBuffer
 registerEHFramesAllocAction(const char *ArgData, size_t ArgSize) {
   using namespace shared;
   return WrapperFunction<SPSError(SPSExecutorAddrRange)>::handle(
@@ -649,7 +650,7 @@ registerEHFramesAllocAction(const char *ArgData, size_t ArgSize) {
       .release();
 }
 
-static shared::CWrapperFunctionResult
+static autojit::CWFBuffer
 deregisterEHFramesAllocAction(const char *ArgData, size_t ArgSize) {
   using namespace shared;
   return WrapperFunction<SPSError(SPSExecutorAddrRange)>::handle(
@@ -666,6 +667,19 @@ public:
     auto PageSize = sys::Process::getPageSize();
     if (!PageSize)
       return PageSize.takeError();
+#if AUTOJIT_ORC_V24
+    // The default bootstrap symbols include LLVM's GDB JIT registration. C
+    // names need no mangling on Linux.
+    auto EPC = std::make_unique<InProcessControl>(
+        std::make_shared<SymbolStringPool>(),
+        std::make_unique<InPlaceTaskDispatcher>(),
+        Triple(sys::getProcessTriple()), *PageSize);
+    EPC->BootstrapSymbols[rt::RegisterEHFrameSectionAllocActionName.getName()] =
+        ExecutorAddr::fromPtr(&registerEHFramesAllocAction);
+    EPC->BootstrapSymbols[rt::DeregisterEHFrameSectionAllocActionName
+                              .getName()] =
+        ExecutorAddr::fromPtr(&deregisterEHFramesAllocAction);
+#else
     auto EPC = std::make_unique<InProcessControl>(
         std::make_shared<SymbolStringPool>(),
         std::make_unique<InPlaceTaskDispatcher>(),
@@ -676,6 +690,7 @@ public:
         ExecutorAddr::fromPtr(&deregisterEHFramesAllocAction);
     EPC->BootstrapSymbols[autojit::GDBRegisterBootstrapName] =
         ExecutorAddr::fromPtr(&llvm_orc_registerJITLoaderGDBWrapper);
+#endif
     return EPC;
   }
 };

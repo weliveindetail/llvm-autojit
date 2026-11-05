@@ -1,3 +1,4 @@
+import inspect
 import os
 import lit.formats
 import psutil
@@ -8,13 +9,22 @@ import textwrap
 from pathlib import Path
 
 config.name = 'AutoJIT'
-config.test_format = lit.formats.ShTest(True)
+# Tests use the external shell. Since LLVM 23 lit requires a flag for that.
+# FIXME: Migrate to the internal shell
+if 'force_execute_external' in inspect.signature(lit.formats.ShTest).parameters:
+    config.test_format = lit.formats.ShTest(True, force_execute_external=True)
+else:
+    config.test_format = lit.formats.ShTest(True)
 config.filecheck_opts = '--dump-input=fail --dump-input-filter=all'
 
 # timeout in seconds
 supported, err = lit_config.maxIndividualTestTimeIsSupported
 if supported:
-    lit_config.maxIndividualTestTime = 60
+    # Since LLVM 23 the timeout is per test suite
+    if hasattr(config, 'maxIndividualTestTime'):
+        config.maxIndividualTestTime = 60
+    else:
+        lit_config.maxIndividualTestTime = 60
 else:
     lit_config.warning("Per-test timeout not supported: " + err)
 

@@ -7,8 +7,10 @@
 #include <string>
 
 LLVM_ATTRIBUTE_USED void linkComponents() {
-  LOG() << (void *)&llvm_orc_registerJITLoaderGDBWrapper
-        << (void *)&llvm_orc_registerJITLoaderGDBAllocAction;
+#if LLVM_VERSION_MAJOR < 22
+  LOG() << (void *)&llvm_orc_registerJITLoaderGDBWrapper;
+#endif
+  LOG() << (void *)&llvm_orc_registerJITLoaderGDBAllocAction;
 }
 
 static std::string hexstr(uint64_t Val) {
