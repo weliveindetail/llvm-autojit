@@ -8,6 +8,10 @@
 
 namespace autojit {
 
+// Bootstrap symbol for the GDB JIT registration, named like LLVM 24's
+inline constexpr const char *GDBRegisterBootstrapName =
+    "orc_rt_ci_aa_sps_GDBJITRegistrar_register";
+
 class ExecutorPlatform {
 public:
   ExecutorPlatform(bool EnableDebugging) : EnableDebugging(EnableDebugging) {}

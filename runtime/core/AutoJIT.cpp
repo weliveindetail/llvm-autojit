@@ -674,7 +674,7 @@ public:
         ExecutorAddr::fromPtr(&registerEHFramesAllocAction);
     EPC->BootstrapSymbols[rt::DeregisterEHFrameSectionAllocActionName] =
         ExecutorAddr::fromPtr(&deregisterEHFramesAllocAction);
-    EPC->BootstrapSymbols["llvm_orc_registerJITLoaderGDBWrapper"] =
+    EPC->BootstrapSymbols[autojit::GDBRegisterBootstrapName] =
         ExecutorAddr::fromPtr(&llvm_orc_registerJITLoaderGDBWrapper);
     return EPC;
   }

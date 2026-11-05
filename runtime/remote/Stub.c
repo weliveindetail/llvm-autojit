@@ -568,9 +568,8 @@ static ssize_t stub_dylib_open_wrapper(const char *ArgData, size_t ArgSize,
 
 static ssize_t stub_dylib_lookup_wrapper(const char *ArgData, size_t ArgSize,
                                          sps_buffer_t *Result) {
-  /* Args: (ExecutorAddr Instance, ExecutorAddr Handle,
-   * SPSRemoteSymbolLookupSet) Returns:
-   * SPSExpected<SPSSequence<SPSExecutorSymbolDef>>
+  /* Args: (ExecutorAddr Instance, ExecutorAddr Handle, SPSSymbolLookupSet)
+   * Returns: SPSExpected<SPSSequence<SPSOptional<SPSExecutorAddr>>>
    */
   const uint8_t *ptr = (const uint8_t *)ArgData;
   const uint8_t *end = ptr + ArgSize;
@@ -626,25 +625,14 @@ static ssize_t stub_dylib_lookup_wrapper(const char *ArgData, size_t ArgSize,
     void *sym_addr = dlsym(handle, sym_name);
     free(sym_name);
 
+    /* SPSOptional: [has_value:1_byte][value:8_if_has_value] */
     if (!sym_addr) {
       DEBUG_LOG("    dlsym failed: %s\n", dlerror());
-      /* Write null address and flags
-       * ExecutorSymbolDef: (ExecutorAddr=0, JITSymbolFlags=(0, 0))
-       */
-      sps_write_uint64(Result, 0);
-      sps_write_uint8(Result, 0);
       sps_write_uint8(Result, 0);
     } else {
       DEBUG_LOG("    Found at: 0x%lx\n", (uint64_t)(uintptr_t)sym_addr);
-      /* Write ExecutorSymbolDef: (ExecutorAddr address, JITSymbolFlags flags)
-       * JITSymbolFlags is a tuple of (UnderlyingType, TargetFlagsType)
-       * Both are typically uint8_t, so we write them as 1-byte values
-       */
+      sps_write_uint8(Result, 1);
       sps_write_uint64(Result, (uint64_t)(uintptr_t)sym_addr);
-      /* Exported symbol flag and empty target flag */
-      uint8_t flag_exported = 1 << 4;
-      sps_write_uint8(Result, flag_exported);
-      sps_write_uint8(Result, 0);
     }
   }
 
@@ -701,10 +689,9 @@ static ssize_t stub_mem_reserve_wrapper(const char *ArgData, size_t ArgSize,
   return 0; /* Success */
 }
 
-static ssize_t stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
-                                         sps_buffer_t *Result) {
+/* Applies a finalize request and returns the lowest segment address as key */
+static int mem_initialize(const char *ArgData, size_t ArgSize, uint64_t *key) {
   /* Args: (ExecutorAddr Instance, SPSFinalizeRequest)
-   * Returns: SPSError - empty for success, error message for failure
    *
    * FinalizeRequest format (SPS):
    *   SPSTuple<SPSSequence<SPSSegFinalizeRequest>, SPSSequence<SPSAllocActionCallPair>>
@@ -722,16 +709,18 @@ static ssize_t stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
   /* Read instance pointer (ignored) */
   uint64_t instance;
   if (sps_read_uint64(&ptr, end, &instance) < 0) {
-    DEBUG_LOG("stub_mem_finalize_wrapper: failed to read instance\n");
+    DEBUG_LOG("mem_initialize: failed to read instance\n");
     return -1;
   }
 
-  DEBUG_LOG("stub_mem_finalize_wrapper: processing finalize request\n");
+  DEBUG_LOG("mem_initialize: processing finalize request\n");
+
+  *key = 0;
 
   /* Read number of segments */
   uint64_t num_segments;
   if (sps_read_uint64(&ptr, end, &num_segments) < 0) {
-    DEBUG_LOG("stub_mem_finalize_wrapper: failed to read num_segments\n");
+    DEBUG_LOG("mem_initialize: failed to read num_segments\n");
     return -1;
   }
 
@@ -741,7 +730,7 @@ static ssize_t stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
   for (uint64_t i = 0; i < num_segments; i++) {
     /* Read RemoteAllocGroup flags (1 byte) */
     if (ptr >= end) {
-      DEBUG_LOG("stub_mem_finalize_wrapper: buffer underrun at segment %lu\n", i);
+      DEBUG_LOG("mem_initialize: buffer underrun at segment %lu\n", i);
       return -1;
     }
     uint8_t prot_flags = *ptr++;
@@ -749,27 +738,29 @@ static ssize_t stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
     /* Read segment address */
     uint64_t addr;
     if (sps_read_uint64(&ptr, end, &addr) < 0) {
-      DEBUG_LOG("stub_mem_finalize_wrapper: failed to read address\n");
+      DEBUG_LOG("mem_initialize: failed to read address\n");
       return -1;
     }
+    if (i == 0 || addr < *key)
+      *key = addr;
 
     /* Read segment size */
     uint64_t size;
     if (sps_read_uint64(&ptr, end, &size) < 0) {
-      DEBUG_LOG("stub_mem_finalize_wrapper: failed to read size\n");
+      DEBUG_LOG("mem_initialize: failed to read size\n");
       return -1;
     }
 
     /* Read content sequence length */
     uint64_t content_len;
     if (sps_read_uint64(&ptr, end, &content_len) < 0) {
-      DEBUG_LOG("stub_mem_finalize_wrapper: failed to read content_len\n");
+      DEBUG_LOG("mem_initialize: failed to read content_len\n");
       return -1;
     }
 
     /* Skip content bytes */
     if (ptr + content_len > end) {
-      DEBUG_LOG("stub_mem_finalize_wrapper: content out of bounds\n");
+      DEBUG_LOG("mem_initialize: content out of bounds\n");
       return -1;
     }
 
@@ -814,7 +805,7 @@ static ssize_t stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
    */
   uint64_t num_actions;
   if (sps_read_uint64(&ptr, end, &num_actions) < 0) {
-    DEBUG_LOG("stub_mem_finalize_wrapper: failed to read num_actions\n");
+    DEBUG_LOG("mem_initialize: failed to read num_actions\n");
     return -1;
   }
 
@@ -825,18 +816,18 @@ static ssize_t stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
     /* Read Finalize WrapperFunctionCall */
     uint64_t finalize_fn_addr;
     if (sps_read_uint64(&ptr, end, &finalize_fn_addr) < 0) {
-      DEBUG_LOG("stub_mem_finalize_wrapper: failed to read finalize_fn_addr\n");
+      DEBUG_LOG("mem_initialize: failed to read finalize_fn_addr\n");
       return -1;
     }
 
     uint64_t finalize_arg_size;
     if (sps_read_uint64(&ptr, end, &finalize_arg_size) < 0) {
-      DEBUG_LOG("stub_mem_finalize_wrapper: failed to read finalize_arg_size\n");
+      DEBUG_LOG("mem_initialize: failed to read finalize_arg_size\n");
       return -1;
     }
 
     if (ptr + finalize_arg_size > end) {
-      DEBUG_LOG("stub_mem_finalize_wrapper: finalize args out of bounds\n");
+      DEBUG_LOG("mem_initialize: finalize args out of bounds\n");
       return -1;
     }
 
@@ -846,18 +837,18 @@ static ssize_t stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
     /* Read Dealloc WrapperFunctionCall (we skip execution for now) */
     uint64_t dealloc_fn_addr;
     if (sps_read_uint64(&ptr, end, &dealloc_fn_addr) < 0) {
-      DEBUG_LOG("stub_mem_finalize_wrapper: failed to read dealloc_fn_addr\n");
+      DEBUG_LOG("mem_initialize: failed to read dealloc_fn_addr\n");
       return -1;
     }
 
     uint64_t dealloc_arg_size;
     if (sps_read_uint64(&ptr, end, &dealloc_arg_size) < 0) {
-      DEBUG_LOG("stub_mem_finalize_wrapper: failed to read dealloc_arg_size\n");
+      DEBUG_LOG("mem_initialize: failed to read dealloc_arg_size\n");
       return -1;
     }
 
     if (ptr + dealloc_arg_size > end) {
-      DEBUG_LOG("stub_mem_finalize_wrapper: dealloc args out of bounds\n");
+      DEBUG_LOG("mem_initialize: dealloc args out of bounds\n");
       return -1;
     }
 
@@ -890,7 +881,7 @@ static ssize_t stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
     }
 
     /* Note: Dealloc actions should be saved and executed later during
-     * stub_mem_deallocate_wrapper, but we don't track them yet.
+     * stub_mem_release_wrapper, but we don't track them yet.
      */
     if (dealloc_fn_addr != 0) {
       DEBUG_LOG("  Action %lu: dealloc fn at 0x%lx (deferred, not tracked yet)\n",
@@ -898,13 +889,52 @@ static ssize_t stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
     }
   }
 
-  /* SPSError [has_error:1_byte] */
-  sps_write_uint8(Result, 0);
-
-  return 1; /* Success - SPSError return type (different from SPSExpected) */
+  return 0;
 }
 
-static ssize_t stub_mem_deallocate_wrapper(const char *ArgData, size_t ArgSize,
+static ssize_t stub_mem_initialize_wrapper(const char *ArgData, size_t ArgSize,
+                                           sps_buffer_t *Result) {
+  /* Returns: SPSExpected<SPSExecutorAddr> - the key for deinitialize */
+  uint64_t key;
+  if (mem_initialize(ArgData, ArgSize, &key) < 0)
+    return -1;
+  sps_write_uint8(Result, 1);
+  sps_write_uint64(Result, key);
+  return 0;
+}
+
+/* LLVM 21 finalizes without a key */
+static ssize_t stub_mem_finalize_wrapper(const char *ArgData, size_t ArgSize,
+                                         sps_buffer_t *Result) {
+  /* Returns: SPSError - empty for success */
+  uint64_t key;
+  if (mem_initialize(ArgData, ArgSize, &key) < 0)
+    return -1;
+  sps_write_uint8(Result, 0);
+  return 1;
+}
+
+static ssize_t stub_mem_deinitialize_wrapper(const char *ArgData,
+                                             size_t ArgSize,
+                                             sps_buffer_t *Result) {
+  /* Args: (ExecutorAddr Instance, SPSSequence<SPSExecutorAddr> Keys)
+   * Returns: SPSError
+   *
+   * Dealloc actions aren't tracked yet, so there is nothing to run.
+   */
+  const uint8_t *ptr = (const uint8_t *)ArgData;
+  const uint8_t *end = ptr + ArgSize;
+  uint64_t instance, count;
+  if (sps_read_uint64(&ptr, end, &instance) < 0 ||
+      sps_read_uint64(&ptr, end, &count) < 0)
+    return -1;
+  DEBUG_LOG("stub_mem_deinitialize_wrapper: %lu keys\n", count);
+  sps_write_uint8(Result, 0);
+  return 1;
+}
+
+
+static ssize_t stub_mem_release_wrapper(const char *ArgData, size_t ArgSize,
                                            sps_buffer_t *Result) {
   /* Args: (ExecutorAddr Instance, SPSSequence<SPSExecutorAddr>)
    * Returns: SPSError - empty for success, error message for failure
@@ -915,7 +945,7 @@ static ssize_t stub_mem_deallocate_wrapper(const char *ArgData, size_t ArgSize,
   /* Read instance pointer (ignored) */
   uint64_t instance;
   if (sps_read_uint64(&ptr, end, &instance) < 0) {
-    DEBUG_LOG("stub_mem_deallocate_wrapper: failed to read instance\n");
+    DEBUG_LOG("stub_mem_release_wrapper: failed to read instance\n");
     return -1;
   }
 
@@ -926,11 +956,11 @@ static ssize_t stub_mem_deallocate_wrapper(const char *ArgData, size_t ArgSize,
    */
   uint64_t count;
   if (sps_read_uint64(&ptr, end, &count) < 0) {
-    DEBUG_LOG("stub_mem_deallocate_wrapper: failed to read count\n");
+    DEBUG_LOG("stub_mem_release_wrapper: failed to read count\n");
     return -1;
   }
 
-  DEBUG_LOG("stub_mem_deallocate_wrapper: deallocating %lu addresses\n", count);
+  DEBUG_LOG("stub_mem_release_wrapper: deallocating %lu addresses\n", count);
 
   /* For each address, we'd need to munmap with the right size
    * Since we don't track sizes here, we'll just skip unmapping for now
@@ -939,7 +969,7 @@ static ssize_t stub_mem_deallocate_wrapper(const char *ArgData, size_t ArgSize,
   for (uint64_t i = 0; i < count; i++) {
     uint64_t addr;
     if (sps_read_uint64(&ptr, end, &addr) < 0) {
-      DEBUG_LOG("stub_mem_deallocate_wrapper: failed to read address %lu\n", i);
+      DEBUG_LOG("stub_mem_release_wrapper: failed to read address %lu\n", i);
       return -1;
     }
 
@@ -1022,104 +1052,75 @@ static int send_setup_message(void) {
   /* Bootstrap map - empty for now */
   sps_write_uint64(&setup_data, 0);
 
-  /* Bootstrap symbols - populate with all required symbols */
-  /* Symbol names from llvm/lib/ExecutionEngine/Orc/Shared/OrcRTBridge.cpp */
+  /* Bootstrap symbols with the names of LLVM 24's executor interface (C names,
+   * we target Linux only). LLVM 21 daemons map them. */
+  struct {
+    const char *name;
+    uint64_t addr;
+  } symbols[] = {
+      /* Dispatch for RPC calls back to the stub */
+      {"__orc_rt_jit_dispatch_ctx",
+       (uint64_t)(uintptr_t)&__orc_rt_jit_dispatch_ctx_impl},
+      {"__orc_rt_jit_dispatch", (uint64_t)(uintptr_t)&__orc_rt_jit_dispatch_impl},
 
-  /* Count: 2 dispatch + 6 memory write + 3 dylib mgr + 4 memory mgr + 2 eh-frame
-   * = 17, plus the GDB JIT interface if we have it */
-  const uint64_t num_bootstrap_symbols = 17 + AUTOJIT_STUB_DEBUG_SUPPORT;
-  sps_write_uint64(&setup_data, num_bootstrap_symbols);
+      /* Memory access */
+      {"orc_rt_ci_sps_mem_write_uint8s",
+       (uint64_t)(uintptr_t)stub_mem_write_uint8s_wrapper},
+      {"orc_rt_ci_sps_mem_write_uint16s",
+       (uint64_t)(uintptr_t)stub_mem_write_uint16s_wrapper},
+      {"orc_rt_ci_sps_mem_write_uint32s",
+       (uint64_t)(uintptr_t)stub_mem_write_uint32s_wrapper},
+      {"orc_rt_ci_sps_mem_write_uint64s",
+       (uint64_t)(uintptr_t)stub_mem_write_uint64s_wrapper},
+      {"orc_rt_ci_sps_mem_write_buffers",
+       (uint64_t)(uintptr_t)stub_mem_write_buffers_wrapper},
+      {"orc_rt_ci_sps_mem_write_pointers",
+       (uint64_t)(uintptr_t)stub_mem_write_pointers_wrapper},
 
-  /* __llvm_orc_SimpleRemoteEPC_dispatch_ctx - context for RPC calls back to
-   * stub */
-  sps_write_string(&setup_data, "__llvm_orc_SimpleRemoteEPC_dispatch_ctx");
-  sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)&__orc_rt_jit_dispatch_ctx_impl);
+      /* Dylib manager */
+      {"orc_rt_ci_NativeDylibManager_Instance",
+       (uint64_t)(uintptr_t)&g_dylib_mgr_instance},
+      {"orc_rt_ci_sps_NativeDylibManager_load",
+       (uint64_t)(uintptr_t)stub_dylib_open_wrapper},
+      {"orc_rt_ci_sps_NativeDylibManager_lookup",
+       (uint64_t)(uintptr_t)stub_dylib_lookup_wrapper},
 
-  /* __llvm_orc_SimpleRemoteEPC_dispatch_fn - function for RPC calls back to
-   * stub */
-  sps_write_string(&setup_data, "__llvm_orc_SimpleRemoteEPC_dispatch_fn");
-  sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)&__orc_rt_jit_dispatch_impl);
+      /* Memory manager */
+      {"orc_rt_ci_SimpleNativeMemoryMap_Instance",
+       (uint64_t)(uintptr_t)&g_mem_mgr_instance},
+      {"orc_rt_ci_sps_SimpleNativeMemoryMap_reserve",
+       (uint64_t)(uintptr_t)stub_mem_reserve_wrapper},
+      {"orc_rt_ci_sps_SimpleNativeMemoryMap_initialize",
+       (uint64_t)(uintptr_t)stub_mem_initialize_wrapper},
+      {"orc_rt_ci_sps_SimpleNativeMemoryMap_deinitializeMultiple",
+       (uint64_t)(uintptr_t)stub_mem_deinitialize_wrapper},
+      {"orc_rt_ci_sps_SimpleNativeMemoryMap_releaseMultiple",
+       (uint64_t)(uintptr_t)stub_mem_release_wrapper},
 
-  /* Memory write wrappers */
-  sps_write_string(&setup_data,
-                   "__llvm_orc_bootstrap_mem_write_uint8s_wrapper");
-  sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)stub_mem_write_uint8s_wrapper);
+      /* LLVM 21 only */
+      {"__llvm_orc_SimpleExecutorMemoryManager_finalize_wrapper",
+       (uint64_t)(uintptr_t)stub_mem_finalize_wrapper},
 
-  sps_write_string(&setup_data,
-                   "__llvm_orc_bootstrap_mem_write_uint16s_wrapper");
-  sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)stub_mem_write_uint16s_wrapper);
-
-  sps_write_string(&setup_data,
-                   "__llvm_orc_bootstrap_mem_write_uint32s_wrapper");
-  sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)stub_mem_write_uint32s_wrapper);
-
-  sps_write_string(&setup_data,
-                   "__llvm_orc_bootstrap_mem_write_uint64s_wrapper");
-  sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)stub_mem_write_uint64s_wrapper);
-
-  sps_write_string(&setup_data,
-                   "__llvm_orc_bootstrap_mem_write_buffers_wrapper");
-  sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)stub_mem_write_buffers_wrapper);
-
-  sps_write_string(&setup_data,
-                   "__llvm_orc_bootstrap_mem_write_pointers_wrapper");
-  sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)stub_mem_write_pointers_wrapper);
-
-  /* Dylib manager */
-  sps_write_string(&setup_data,
-                   "__llvm_orc_SimpleExecutorDylibManager_Instance");
-  sps_write_uint64(&setup_data, (uint64_t)(uintptr_t)&g_dylib_mgr_instance);
-
-  sps_write_string(&setup_data,
-                   "__llvm_orc_SimpleExecutorDylibManager_open_wrapper");
-  sps_write_uint64(&setup_data, (uint64_t)(uintptr_t)stub_dylib_open_wrapper);
-
-  sps_write_string(&setup_data,
-                   "__llvm_orc_SimpleExecutorDylibManager_lookup_wrapper");
-  sps_write_uint64(&setup_data, (uint64_t)(uintptr_t)stub_dylib_lookup_wrapper);
-
-  /* Memory manager */
-  sps_write_string(&setup_data,
-                   "__llvm_orc_SimpleExecutorMemoryManager_Instance");
-  sps_write_uint64(&setup_data, (uint64_t)(uintptr_t)&g_mem_mgr_instance);
-
-  sps_write_string(&setup_data,
-                   "__llvm_orc_SimpleExecutorMemoryManager_reserve_wrapper");
-  sps_write_uint64(&setup_data, (uint64_t)(uintptr_t)stub_mem_reserve_wrapper);
-
-  sps_write_string(&setup_data,
-                   "__llvm_orc_SimpleExecutorMemoryManager_finalize_wrapper");
-  sps_write_uint64(&setup_data, (uint64_t)(uintptr_t)stub_mem_finalize_wrapper);
-
-  sps_write_string(&setup_data,
-                   "__llvm_orc_SimpleExecutorMemoryManager_deallocate_wrapper");
-  sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)stub_mem_deallocate_wrapper);
-
-  /* EH-frame registration wrappers */
-  sps_write_string(&setup_data, "llvm_orc_registerEHFrameAllocAction");
-  sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)llvm_orc_registerEHFrameAllocAction);
-
-  sps_write_string(&setup_data, "llvm_orc_deregisterEHFrameAllocAction");
-  sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)llvm_orc_deregisterEHFrameAllocAction);
+      /* EH-frame registration alloc actions */
+      {"orc_rt_ci_aa_sps_DWARFEHFrameRegistrar_registerSection",
+       (uint64_t)(uintptr_t)llvm_orc_registerEHFrameAllocAction},
+      {"orc_rt_ci_aa_sps_DWARFEHFrameRegistrar_deregisterSection",
+       (uint64_t)(uintptr_t)llvm_orc_deregisterEHFrameAllocAction},
 
 #if AUTOJIT_STUB_DEBUG_SUPPORT
-  /* GDB JIT interface. The daemon can't look it up by name, because the
-   * program doesn't export it. */
-  sps_write_string(&setup_data, "llvm_orc_registerJITLoaderGDBWrapper");
-  sps_write_uint64(&setup_data,
-                   (uint64_t)(uintptr_t)llvm_orc_registerJITLoaderGDBWrapper);
+      /* GDB JIT interface. The daemon can't look it up by name, because the
+       * program doesn't export it. */
+      {"orc_rt_ci_aa_sps_GDBJITRegistrar_register",
+       (uint64_t)(uintptr_t)llvm_orc_registerJITLoaderGDBWrapper},
 #endif
+  };
+
+  const uint64_t num_bootstrap_symbols = sizeof(symbols) / sizeof(symbols[0]);
+  sps_write_uint64(&setup_data, num_bootstrap_symbols);
+  for (uint64_t i = 0; i < num_bootstrap_symbols; i++) {
+    sps_write_string(&setup_data, symbols[i].name);
+    sps_write_uint64(&setup_data, symbols[i].addr);
+  }
 
   DEBUG_LOG(
       "Sending Setup message: triple=%s, page_size=%lu, bootstrap_symbols=%lu\n",
