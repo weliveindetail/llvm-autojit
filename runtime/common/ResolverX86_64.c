@@ -60,7 +60,8 @@ __attribute__((visibility("hidden"))) void *
 __llvm_autojit_resolve_entry(const autojit_trampoline_entry_t *Entry) {
   if (ClobberVectorRegs)
     clobberVectorRegs();
-  void **Slot = (void **)((const char *)Entry + Entry->slot_offset);
+  /* The slot is writable, only the entry is const */
+  void **Slot = (void **)((uintptr_t)Entry + Entry->slot_offset);
   const void *Module = (const char *)Entry + Entry->module_offset;
   return __llvm_autojit_materialize(Slot, Entry->guid, Module);
 }
