@@ -1,4 +1,4 @@
-; REQUIRES: x86-registered-target
+; REQUIRES: x86-registered-target, aarch64-registered-target
 ; RUN: %opt --load-pass-plugin=%autojit_plugin -passes=AutoJIT,verify -S %s -o %t.ll
 ; RUN: FileCheck --check-prefix=IR %s < %t.ll
 ; RUN: %llc -relocation-model=pic %t.ll -o - | FileCheck --check-prefix=ASM %s
