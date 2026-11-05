@@ -1,11 +1,11 @@
 #include "runtime/core/ExecutorPlatform.h"
 #include "runtime/core/OrcCompat.h"
 
-#if AUTOJIT_ORC_V24
-#include <llvm/ExecutionEngine/Orc/Debugging/ELFDebugObjectPlugin.h>
-#else
+#if AUTOJIT_LLVM_21
 #include <llvm/ExecutionEngine/Orc/DebugObjectManagerPlugin.h>
 #include <llvm/ExecutionEngine/Orc/EPCDebugObjectRegistrar.h>
+#else
+#include <llvm/ExecutionEngine/Orc/Debugging/ELFDebugObjectPlugin.h>
 #endif
 #include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>
 #include <llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h>
@@ -32,8 +32,8 @@ extern bool g_autojit_debug;
 
 #define LOG() ::llvm::errs() << "[autojit-runtime] "
 
-// The LLVM 24 debug plugin has no auto-register flag
-#if !AUTOJIT_ORC_V24
+// Only the LLVM 21 debug plugin has an auto-register flag
+#if AUTOJIT_LLVM_21
 static bool isEnvVarSet(const char *Name) {
   if (const char *Var = std::getenv(Name)) {
     std::string Val{Var};
@@ -50,21 +50,7 @@ static Error installDebugSupport(ObjectLinkingLayer *JITLinkLayer) {
   // can't look it up by name: it isn't exported from the program.
   auto &ES = JITLinkLayer->getExecutionSession();
   constexpr bool RequireDebugSections = false;
-#if AUTOJIT_ORC_V24
-  // The registration action has no auto-register flag anymore. The remote stub
-  // checks AUTOJIT_DEBUG_NO_AUTOREGISTER itself.
-  Error Err = Error::success();
-  auto Plugin =
-      std::make_unique<ELFDebugObjectPlugin>(ES, RequireDebugSections, Err);
-  if (Err) {
-    consumeError(std::move(Err));
-    return createStringError(inconvertibleErrorCode(),
-                             "Executor has no GDB JIT interface. Link "
-                             "autojit_static_debug instead of autojit_static.");
-  }
-  JITLinkLayer->addPlugin(std::move(Plugin));
-  return Error::success();
-#else
+#if AUTOJIT_LLVM_21
   ExecutorAddr RegisterFn;
   if (auto Err = ES.getExecutorProcessControl().getBootstrapSymbols(
           {{RegisterFn, autojit::GDBRegisterBootstrapName}})) {
@@ -82,6 +68,20 @@ static Error installDebugSupport(ObjectLinkingLayer *JITLinkLayer) {
   }
   auto Plugin = std::make_unique<DebugObjectManagerPlugin>(
       ES, std::move(StubDebug), RequireDebugSections, AutoRegisterCode);
+  JITLinkLayer->addPlugin(std::move(Plugin));
+  return Error::success();
+#else
+  // The registration action has no auto-register flag anymore. The remote stub
+  // checks AUTOJIT_DEBUG_NO_AUTOREGISTER itself.
+  Error Err = Error::success();
+  auto Plugin =
+      std::make_unique<ELFDebugObjectPlugin>(ES, RequireDebugSections, Err);
+  if (Err) {
+    consumeError(std::move(Err));
+    return createStringError(inconvertibleErrorCode(),
+                             "Executor has no GDB JIT interface. Link "
+                             "autojit_static_debug instead of autojit_static.");
+  }
   JITLinkLayer->addPlugin(std::move(Plugin));
   return Error::success();
 #endif

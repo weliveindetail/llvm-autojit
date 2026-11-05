@@ -667,7 +667,18 @@ public:
     auto PageSize = sys::Process::getPageSize();
     if (!PageSize)
       return PageSize.takeError();
-#if AUTOJIT_ORC_V24
+#if AUTOJIT_LLVM_21
+    auto EPC = std::make_unique<InProcessControl>(
+        std::make_shared<SymbolStringPool>(),
+        std::make_unique<InPlaceTaskDispatcher>(),
+        Triple(sys::getProcessTriple()), *PageSize, nullptr);
+    EPC->BootstrapSymbols[rt::RegisterEHFrameSectionAllocActionName] =
+        ExecutorAddr::fromPtr(&registerEHFramesAllocAction);
+    EPC->BootstrapSymbols[rt::DeregisterEHFrameSectionAllocActionName] =
+        ExecutorAddr::fromPtr(&deregisterEHFramesAllocAction);
+    EPC->BootstrapSymbols[autojit::GDBRegisterBootstrapName] =
+        ExecutorAddr::fromPtr(&llvm_orc_registerJITLoaderGDBWrapper);
+#else
     // The default bootstrap symbols include LLVM's GDB JIT registration. C
     // names need no mangling on Linux.
     auto EPC = std::make_unique<InProcessControl>(
@@ -679,17 +690,6 @@ public:
     EPC->BootstrapSymbols[rt::DeregisterEHFrameSectionAllocActionName
                               .getName()] =
         ExecutorAddr::fromPtr(&deregisterEHFramesAllocAction);
-#else
-    auto EPC = std::make_unique<InProcessControl>(
-        std::make_shared<SymbolStringPool>(),
-        std::make_unique<InPlaceTaskDispatcher>(),
-        Triple(sys::getProcessTriple()), *PageSize, nullptr);
-    EPC->BootstrapSymbols[rt::RegisterEHFrameSectionAllocActionName] =
-        ExecutorAddr::fromPtr(&registerEHFramesAllocAction);
-    EPC->BootstrapSymbols[rt::DeregisterEHFrameSectionAllocActionName] =
-        ExecutorAddr::fromPtr(&deregisterEHFramesAllocAction);
-    EPC->BootstrapSymbols[autojit::GDBRegisterBootstrapName] =
-        ExecutorAddr::fromPtr(&llvm_orc_registerJITLoaderGDBWrapper);
 #endif
     return EPC;
   }
