@@ -109,31 +109,6 @@ private:
   std::atomic<bool> LoopFinished{false};
 };
 
-#if !AUTOJIT_ORC_V24
-// The stub's dylib manager has LLVM 24's interface
-class LegacyDylibManager : public DylibManager {
-public:
-  static Expected<std::unique_ptr<LegacyDylibManager>>
-  Create(ExecutorProcessControl &EPC);
-
-  Expected<tpctypes::DylibHandle> loadDylib(const char *DylibPath) override;
-  void lookupSymbolsAsync(ArrayRef<LookupRequest> Request,
-                          SymbolLookupCompleteFn Complete) override;
-
-private:
-  LegacyDylibManager(ExecutorProcessControl &EPC) : EPC(EPC) {}
-
-  void lookupNext(ArrayRef<LookupRequest> Request,
-                  std::vector<tpctypes::LookupResult> Result,
-                  SymbolLookupCompleteFn Complete);
-
-  ExecutorProcessControl &EPC;
-  ExecutorAddr Instance;
-  ExecutorAddr Load;
-  ExecutorAddr Lookup;
-};
-#endif
-
 #if AUTOJIT_ORC_V24
 using ArgBytesVector = WFBuffer;
 #else
@@ -156,16 +131,6 @@ public:
   Expected<int32_t> runAsMain(ExecutorAddr, ArrayRef<std::string>) override {
     llvm_unreachable("Daemon is passive");
   }
-
-#if !AUTOJIT_ORC_V24
-  Expected<int32_t> runAsVoidFunction(ExecutorAddr) override {
-    llvm_unreachable("Daemon is passive");
-  }
-
-  Expected<int32_t> runAsIntFunction(ExecutorAddr, int) override {
-    llvm_unreachable("Daemon is passive");
-  }
-#endif
 
   void handleDisconnect(Error Err) override {
     llvm_unreachable("Daemon is passive");
@@ -201,15 +166,19 @@ public:
   createDefaultMemoryManager() override;
   Expected<std::unique_ptr<DylibManager>> createDefaultDylibMgr() override;
   Expected<std::unique_ptr<MemoryAccess>> createDefaultMemoryAccess() override;
-#else
-  static Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
-  createDefaultMemoryManager(RemoteEPC &SREPC);
-  static Expected<std::unique_ptr<MemoryAccess>>
-  createDefaultMemoryAccess(RemoteEPC &SREPC);
 #endif
 
   Error sendMessage(SimpleRemoteEPCOpcode OpC, uint64_t SeqNo,
                     ExecutorAddr TagAddr, ArrayRef<char> ArgBytes);
+
+protected:
+  // Completes the setup once we received the bootstrap symbols. LLVM 21 has no
+  // default, LegacyRemoteEPC implements it.
+#if AUTOJIT_ORC_V24
+  virtual Error finishSetup();
+#else
+  virtual Error finishSetup() = 0;
+#endif
 
 private:
   Error handleSetup(uint64_t SeqNo, ExecutorAddr TagAddr,
@@ -233,11 +202,6 @@ private:
   bool FullShutdownRequested = false;
 
   SimpleRemoteEPCTransport *T;
-#if !AUTOJIT_ORC_V24
-  std::unique_ptr<DylibManager> OwnedDylibMgr;
-  std::unique_ptr<jitlink::JITLinkMemoryManager> OwnedMemMgr;
-  std::unique_ptr<MemoryAccess> OwnedMemAccess;
-#endif
 
   // Each side numbers the calls it makes. Results carry the number of their
   // call. 0 is the Setup message.
@@ -246,6 +210,205 @@ private:
 };
 
 } // namespace autojit
+
+////////////////////////////////////////////////////////////////// LLVM 21 ///
+
+#if !AUTOJIT_ORC_V24
+namespace autojit {
+
+// The stub's dylib manager has LLVM 24's interface
+class LegacyDylibManager : public DylibManager {
+public:
+  static Expected<std::unique_ptr<LegacyDylibManager>>
+  Create(ExecutorProcessControl &EPC);
+
+  Expected<tpctypes::DylibHandle> loadDylib(const char *DylibPath) override;
+  void lookupSymbolsAsync(ArrayRef<LookupRequest> Request,
+                          SymbolLookupCompleteFn Complete) override;
+
+private:
+  LegacyDylibManager(ExecutorProcessControl &EPC) : EPC(EPC) {}
+
+  void lookupNext(ArrayRef<LookupRequest> Request,
+                  std::vector<tpctypes::LookupResult> Result,
+                  SymbolLookupCompleteFn Complete);
+
+  ExecutorProcessControl &EPC;
+  ExecutorAddr Instance;
+  ExecutorAddr Load;
+  ExecutorAddr Lookup;
+};
+
+// The EPC owns its managers in LLVM 21. The stub speaks LLVM 24's interface,
+// so we map it.
+class LegacyRemoteEPC : public RemoteEPC {
+public:
+  using RemoteEPC::RemoteEPC;
+
+  Expected<int32_t> runAsVoidFunction(ExecutorAddr) override {
+    llvm_unreachable("Daemon is passive");
+  }
+
+  Expected<int32_t> runAsIntFunction(ExecutorAddr, int) override {
+    llvm_unreachable("Daemon is passive");
+  }
+
+private:
+  Error finishSetup() override;
+
+  Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
+  createMemoryManager();
+  Expected<std::unique_ptr<MemoryAccess>> createMemoryAccess();
+
+  std::unique_ptr<DylibManager> OwnedDylibMgr;
+  std::unique_ptr<jitlink::JITLinkMemoryManager> OwnedMemMgr;
+  std::unique_ptr<MemoryAccess> OwnedMemAccess;
+};
+
+using SessionEPC = LegacyRemoteEPC;
+
+} // namespace autojit
+
+Expected<std::unique_ptr<autojit::LegacyDylibManager>>
+autojit::LegacyDylibManager::Create(ExecutorProcessControl &EPC) {
+  std::unique_ptr<LegacyDylibManager> M(new LegacyDylibManager(EPC));
+  if (auto Err = EPC.getBootstrapSymbols(
+          {{M->Instance, "orc_rt_ci_NativeDylibManager_Instance"},
+           {M->Load, "orc_rt_ci_sps_NativeDylibManager_load"},
+           {M->Lookup, "orc_rt_ci_sps_NativeDylibManager_lookup"}}))
+    return std::move(Err);
+  return std::move(M);
+}
+
+Expected<tpctypes::DylibHandle>
+autojit::LegacyDylibManager::loadDylib(const char *DylibPath) {
+  using namespace shared;
+  using SPSSig =
+      SPSExpected<SPSExecutorAddr>(SPSExecutorAddr, SPSString, uint64_t);
+  Expected<ExecutorAddr> Handle((ExecutorAddr()));
+  if (auto Err = EPC.callSPSWrapper<SPSSig>(Load, Handle, Instance,
+                                            StringRef(DylibPath), uint64_t(0)))
+    return std::move(Err);
+  return Handle;
+}
+
+void autojit::LegacyDylibManager::lookupSymbolsAsync(
+    ArrayRef<LookupRequest> Request, SymbolLookupCompleteFn Complete) {
+  lookupNext(Request, {}, std::move(Complete));
+}
+
+// Look up one request after the other
+void autojit::LegacyDylibManager::lookupNext(
+    ArrayRef<LookupRequest> Request, std::vector<tpctypes::LookupResult> Result,
+    SymbolLookupCompleteFn Complete) {
+  if (Request.empty())
+    return Complete(std::move(Result));
+
+  RemoteSymbolLookupSet Symbols;
+  for (const auto &[Name, Flags] : Request.front().Symbols)
+    Symbols.push_back({(*Name).str(), Flags == SymbolLookupFlags::RequiredSymbol});
+
+  using namespace shared;
+  using SPSSig = SPSExpected<SPSSequence<SPSOptional<SPSExecutorAddr>>>(
+      SPSExecutorAddr, SPSExecutorAddr, SPSRemoteSymbolLookupSet);
+  EPC.callSPSWrapperAsync<SPSSig>(
+      Lookup,
+      [this, Request, Result = std::move(Result),
+       Complete = std::move(Complete)](
+          Error SerializationErr,
+          Expected<std::vector<std::optional<ExecutorAddr>>> Addrs) mutable {
+        if (SerializationErr) {
+          cantFail(Addrs.takeError());
+          return Complete(std::move(SerializationErr));
+        }
+        if (!Addrs)
+          return Complete(Addrs.takeError());
+        // LLVM 21 uses null addresses for missing symbols
+        Result.push_back({});
+        for (const auto &Addr : *Addrs)
+          Result.back().push_back(
+              Addr ? ExecutorSymbolDef(*Addr, JITSymbolFlags::Exported)
+                   : ExecutorSymbolDef());
+        lookupNext(Request.drop_front(), std::move(Result),
+                   std::move(Complete));
+      },
+      Instance, Request.front().Handle, Symbols);
+}
+static StringMap<ExecutorAddr> patchSymbolNames(StringMap<ExecutorAddr> Map) {
+  auto RenameEntry = [&Map](StringRef From, StringRef To) {
+    auto It = Map.find(From);
+    if (It != Map.end()) {
+      // Inserting may invalidate the iterator
+      ExecutorAddr Addr = It->second;
+      Map.erase(It);
+      Map.try_emplace(To, Addr);
+    }
+  };
+
+  // LLVM 21 looks up the EH frame alloc actions by these names
+  RenameEntry("orc_rt_ci_aa_sps_DWARFEHFrameRegistrar_registerSection",
+              rt::RegisterEHFrameSectionAllocActionName);
+  RenameEntry("orc_rt_ci_aa_sps_DWARFEHFrameRegistrar_deregisterSection",
+              rt::DeregisterEHFrameSectionAllocActionName);
+
+  return Map;
+}
+Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
+autojit::LegacyRemoteEPC::createMemoryManager() {
+  EPCGenericJITLinkMemoryManager::SymbolAddrs SAs;
+  if (auto Err = getBootstrapSymbols(
+          {{SAs.Allocator, "orc_rt_ci_SimpleNativeMemoryMap_Instance"},
+           {SAs.Reserve, "orc_rt_ci_sps_SimpleNativeMemoryMap_reserve"},
+           // The stub keeps the old finalize for us, LLVM 24 initializes
+           {SAs.Finalize, rt::SimpleExecutorMemoryManagerFinalizeWrapperName},
+           // Release runs the dealloc actions, like deallocate
+           {SAs.Deallocate,
+            "orc_rt_ci_sps_SimpleNativeMemoryMap_releaseMultiple"}}))
+    return std::move(Err);
+
+  return std::make_unique<EPCGenericJITLinkMemoryManager>(*this, SAs);
+}
+
+Expected<std::unique_ptr<MemoryAccess>>
+autojit::LegacyRemoteEPC::createMemoryAccess() {
+  EPCGenericMemoryAccess::FuncAddrs FAs;
+  if (auto Err = getBootstrapSymbols(
+          {{FAs.WriteUInt8s, "orc_rt_ci_sps_mem_write_uint8s"},
+           {FAs.WriteUInt16s, "orc_rt_ci_sps_mem_write_uint16s"},
+           {FAs.WriteUInt32s, "orc_rt_ci_sps_mem_write_uint32s"},
+           {FAs.WriteUInt64s, "orc_rt_ci_sps_mem_write_uint64s"},
+           {FAs.WriteBuffers, "orc_rt_ci_sps_mem_write_buffers"},
+           {FAs.WritePointers, "orc_rt_ci_sps_mem_write_pointers"}}))
+    return std::move(Err);
+
+  return std::make_unique<EPCGenericMemoryAccess>(*this, FAs);
+}
+
+Error autojit::LegacyRemoteEPC::finishSetup() {
+  this->BootstrapSymbols = patchSymbolNames(std::move(this->BootstrapSymbols));
+
+  // Get dispatch symbols for RPC calls back to the stub
+  if (auto Err = getBootstrapSymbols(
+          {{JDI.JITDispatchContext, "__orc_rt_jit_dispatch_ctx"},
+           {JDI.JITDispatchFunction, "__orc_rt_jit_dispatch"}}))
+    return Err;
+
+  OwnedDylibMgr = ExitOnErr(LegacyDylibManager::Create(*this));
+  this->DylibMgr = OwnedDylibMgr.get();
+
+  OwnedMemMgr = ExitOnErr(createMemoryManager());
+  this->MemMgr = OwnedMemMgr.get();
+
+  OwnedMemAccess = ExitOnErr(createMemoryAccess());
+  this->MemAccess = OwnedMemAccess.get();
+
+  return Error::success();
+}
+#else
+namespace autojit {
+using SessionEPC = RemoteEPC;
+} // namespace autojit
+#endif
 
 //////////////////////////////////////////////////////////////////// Session ///
 
@@ -256,7 +419,7 @@ autojit::Session::Session(int InFD, int OutFD,
   auto D = std::make_unique<DynamicThreadPoolTaskDispatcher>(std::nullopt);
   auto SSP = std::make_shared<SymbolStringPool>();
   ES = std::make_unique<ExecutionSession>(
-      std::make_unique<RemoteEPC>(std::move(SSP), std::move(D)));
+      std::make_unique<SessionEPC>(std::move(SSP), std::move(D)));
   EPC_ = static_cast<RemoteEPC *>(&ES->getExecutorProcessControl());
   Transport_ = std::make_unique<Transport>(*EPC_, InFD, OutFD);
   EPC_->setTransport(*Transport_);
@@ -480,74 +643,6 @@ autojit::RemoteEPC::~RemoteEPC() {
 #endif
 }
 
-#if !AUTOJIT_ORC_V24
-Expected<std::unique_ptr<autojit::LegacyDylibManager>>
-autojit::LegacyDylibManager::Create(ExecutorProcessControl &EPC) {
-  std::unique_ptr<LegacyDylibManager> M(new LegacyDylibManager(EPC));
-  if (auto Err = EPC.getBootstrapSymbols(
-          {{M->Instance, "orc_rt_ci_NativeDylibManager_Instance"},
-           {M->Load, "orc_rt_ci_sps_NativeDylibManager_load"},
-           {M->Lookup, "orc_rt_ci_sps_NativeDylibManager_lookup"}}))
-    return std::move(Err);
-  return std::move(M);
-}
-
-Expected<tpctypes::DylibHandle>
-autojit::LegacyDylibManager::loadDylib(const char *DylibPath) {
-  using namespace shared;
-  using SPSSig =
-      SPSExpected<SPSExecutorAddr>(SPSExecutorAddr, SPSString, uint64_t);
-  Expected<ExecutorAddr> Handle((ExecutorAddr()));
-  if (auto Err = EPC.callSPSWrapper<SPSSig>(Load, Handle, Instance,
-                                            StringRef(DylibPath), uint64_t(0)))
-    return std::move(Err);
-  return Handle;
-}
-
-void autojit::LegacyDylibManager::lookupSymbolsAsync(
-    ArrayRef<LookupRequest> Request, SymbolLookupCompleteFn Complete) {
-  lookupNext(Request, {}, std::move(Complete));
-}
-
-// Look up one request after the other
-void autojit::LegacyDylibManager::lookupNext(
-    ArrayRef<LookupRequest> Request, std::vector<tpctypes::LookupResult> Result,
-    SymbolLookupCompleteFn Complete) {
-  if (Request.empty())
-    return Complete(std::move(Result));
-
-  RemoteSymbolLookupSet Symbols;
-  for (const auto &[Name, Flags] : Request.front().Symbols)
-    Symbols.push_back({(*Name).str(), Flags == SymbolLookupFlags::RequiredSymbol});
-
-  using namespace shared;
-  using SPSSig = SPSExpected<SPSSequence<SPSOptional<SPSExecutorAddr>>>(
-      SPSExecutorAddr, SPSExecutorAddr, SPSRemoteSymbolLookupSet);
-  EPC.callSPSWrapperAsync<SPSSig>(
-      Lookup,
-      [this, Request, Result = std::move(Result),
-       Complete = std::move(Complete)](
-          Error SerializationErr,
-          Expected<std::vector<std::optional<ExecutorAddr>>> Addrs) mutable {
-        if (SerializationErr) {
-          cantFail(Addrs.takeError());
-          return Complete(std::move(SerializationErr));
-        }
-        if (!Addrs)
-          return Complete(Addrs.takeError());
-        // LLVM 21 uses null addresses for missing symbols
-        Result.push_back({});
-        for (const auto &Addr : *Addrs)
-          Result.back().push_back(
-              Addr ? ExecutorSymbolDef(*Addr, JITSymbolFlags::Exported)
-                   : ExecutorSymbolDef());
-        lookupNext(Request.drop_front(), std::move(Result),
-                   std::move(Complete));
-      },
-      Instance, Request.front().Handle, Symbols);
-}
-#endif
-
 void autojit::RemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
                                           IncomingWFRHandler OnComplete,
                                           ArrayRef<char> ArgBuffer) {
@@ -727,36 +822,14 @@ autojit::RemoteEPC::createDefaultMemoryAccess() {
   return std::make_unique<EPCGenericMemoryAccess>(getExecutionSession(),
                                                   std::move(F));
 }
-#else
-Expected<std::unique_ptr<jitlink::JITLinkMemoryManager>>
-autojit::RemoteEPC::createDefaultMemoryManager(RemoteEPC &SREPC) {
-  EPCGenericJITLinkMemoryManager::SymbolAddrs SAs;
-  if (auto Err = SREPC.getBootstrapSymbols(
-          {{SAs.Allocator, "orc_rt_ci_SimpleNativeMemoryMap_Instance"},
-           {SAs.Reserve, "orc_rt_ci_sps_SimpleNativeMemoryMap_reserve"},
-           // The stub keeps the old finalize for us, LLVM 24 initializes
-           {SAs.Finalize, rt::SimpleExecutorMemoryManagerFinalizeWrapperName},
-           // Release runs the dealloc actions, like deallocate
-           {SAs.Deallocate,
-            "orc_rt_ci_sps_SimpleNativeMemoryMap_releaseMultiple"}}))
-    return std::move(Err);
 
-  return std::make_unique<EPCGenericJITLinkMemoryManager>(SREPC, SAs);
-}
-
-Expected<std::unique_ptr<MemoryAccess>>
-autojit::RemoteEPC::createDefaultMemoryAccess(RemoteEPC &SREPC) {
-  EPCGenericMemoryAccess::FuncAddrs FAs;
-  if (auto Err = SREPC.getBootstrapSymbols(
-          {{FAs.WriteUInt8s, "orc_rt_ci_sps_mem_write_uint8s"},
-           {FAs.WriteUInt16s, "orc_rt_ci_sps_mem_write_uint16s"},
-           {FAs.WriteUInt32s, "orc_rt_ci_sps_mem_write_uint32s"},
-           {FAs.WriteUInt64s, "orc_rt_ci_sps_mem_write_uint64s"},
-           {FAs.WriteBuffers, "orc_rt_ci_sps_mem_write_buffers"},
-           {FAs.WritePointers, "orc_rt_ci_sps_mem_write_pointers"}}))
-    return std::move(Err);
-
-  return std::make_unique<EPCGenericMemoryAccess>(SREPC, FAs);
+// The session copied the bootstrap symbols when we created it, before we
+// received them
+Error autojit::RemoteEPC::finishSetup() {
+  SymbolMap Symbols;
+  for (const auto &[Name, Addr] : this->BootstrapSymbols)
+    Symbols[ES->intern(Name)] = {Addr, JITSymbolFlags::Exported};
+  return ES->getBootstrapJITDylib().define(absoluteSymbols(std::move(Symbols)));
 }
 #endif
 
@@ -826,28 +899,6 @@ MSVCPError autojit::RemoteEPCExecutorInfo::deserialize(
   return Error::success();
 }
 
-#if !AUTOJIT_ORC_V24
-static StringMap<ExecutorAddr> patchSymbolNames(StringMap<ExecutorAddr> Map) {
-  auto RenameEntry = [&Map](StringRef From, StringRef To) {
-    auto It = Map.find(From);
-    if (It != Map.end()) {
-      // Inserting may invalidate the iterator
-      ExecutorAddr Addr = It->second;
-      Map.erase(It);
-      Map.try_emplace(To, Addr);
-    }
-  };
-
-  // LLVM 21 looks up the EH frame alloc actions by these names
-  RenameEntry("orc_rt_ci_aa_sps_DWARFEHFrameRegistrar_registerSection",
-              rt::RegisterEHFrameSectionAllocActionName);
-  RenameEntry("orc_rt_ci_aa_sps_DWARFEHFrameRegistrar_deregisterSection",
-              rt::DeregisterEHFrameSectionAllocActionName);
-
-  return Map;
-}
-#endif
-
 Error autojit::RemoteEPC::waitForSetup() {
   std::promise<MSVCPError> EIP;
   RemoteEPCExecutorInfo EI;
@@ -888,35 +939,8 @@ Error autojit::RemoteEPC::waitForSetup() {
   this->TargetTriple = Triple(EI.TargetTriple);
   this->PageSize = EI.PageSize;
   this->BootstrapMap = std::move(EI.BootstrapMap);
-#if AUTOJIT_ORC_V24
   this->BootstrapSymbols = std::move(EI.BootstrapSymbols);
-
-  // The session copied the bootstrap symbols when we created it, before we
-  // received them
-  SymbolMap Symbols;
-  for (const auto &[Name, Addr] : this->BootstrapSymbols)
-    Symbols[ES->intern(Name)] = {Addr, JITSymbolFlags::Exported};
-  return ES->getBootstrapJITDylib().define(absoluteSymbols(std::move(Symbols)));
-#else
-  this->BootstrapSymbols = patchSymbolNames(std::move(EI.BootstrapSymbols));
-
-  // Get dispatch symbols for RPC calls back to the stub
-  if (auto Err = getBootstrapSymbols(
-          {{JDI.JITDispatchContext, "__orc_rt_jit_dispatch_ctx"},
-           {JDI.JITDispatchFunction, "__orc_rt_jit_dispatch"}}))
-    return Err;
-
-  OwnedDylibMgr = ExitOnErr(LegacyDylibManager::Create(*this));
-  this->DylibMgr = OwnedDylibMgr.get();
-
-  OwnedMemMgr = ExitOnErr(createDefaultMemoryManager(*this));
-  this->MemMgr = OwnedMemMgr.get();
-
-  OwnedMemAccess = ExitOnErr(createDefaultMemoryAccess(*this));
-  this->MemAccess = OwnedMemAccess.get();
-
-  return Error::success();
-#endif
+  return finishSetup();
 }
 
 Error autojit::RemoteEPC::sendSetupMessage(StringMap<ExecutorAddr> Symbols) {
