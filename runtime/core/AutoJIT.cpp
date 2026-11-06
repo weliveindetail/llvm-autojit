@@ -46,6 +46,9 @@
 #include "tpde-llvm/LLVMCompiler.hpp"
 #endif
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -485,6 +488,17 @@ public:
     if (auto EC =
             sys::fs::createUniqueFile(ObjName + ".tmp%%%%%%", FD, TmpName))
       return Skip("create", EC);
+    // If the program closed stdout or stderr we get their descriptors, and
+    // raw_fd_ostream refuses to close them
+    if (FD <= STDERR_FILENO) {
+      int NewFD = ::fcntl(FD, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+      ::close(FD);
+      if (NewFD < 0) {
+        sys::fs::remove(TmpName);
+        return Skip("create", errnoAsErrorCode());
+      }
+      FD = NewFD;
+    }
     raw_fd_ostream OS(FD, /*shouldClose=*/true);
     OS << Obj.getBuffer();
     OS.close();

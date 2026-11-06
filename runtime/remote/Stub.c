@@ -5,12 +5,14 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -1545,6 +1547,20 @@ static const char *get_daemon_socket_path(void) {
   return socket_path;
 }
 
+/* If the program closed stdin, stdout or stderr, our socket might get one of these
+ * descriptors and then the program's I/O goes to the daemon. */
+static int move_above_stdio(int fd) {
+  if (fd > STDERR_FILENO)
+    return fd;
+  int moved = fcntl(fd, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+  if (moved < 0) {
+    ERROR_LOG("fcntl failed: %s\n", strerror(errno));
+    abort();
+  }
+  close(fd);
+  return moved;
+}
+
 /* Try to connect to an existing autojitd process
  * Returns: file descriptor on success, -1 on failure
  */
@@ -1553,7 +1569,7 @@ static int connect_to_existing_daemon(void) {
 
   DEBUG_LOG("Attempting to connect to existing daemon at %s\n", socket_path);
 
-  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (fd < 0) {
     DEBUG_LOG("Failed to create socket: %s\n", strerror(errno));
     return -1;
@@ -1571,7 +1587,7 @@ static int connect_to_existing_daemon(void) {
   }
 
   DEBUG_LOG("Successfully connected to daemon\n");
-  return fd;
+  return move_above_stdio(fd);
 }
 
 static void initialize_daemon(void) {
@@ -1607,10 +1623,12 @@ static void initialize_daemon(void) {
 
     /* Create socketpair for bidirectional communication */
     int fds[2];
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) < 0) {
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) < 0) {
       ERROR_LOG("socketpair failed: %s\n", strerror(errno));
       abort();
     }
+    fds[0] = move_above_stdio(fds[0]);
+    fds[1] = move_above_stdio(fds[1]);
 
     /* Fork daemon process */
     pid_t pid = fork();
@@ -1626,8 +1644,8 @@ static void initialize_daemon(void) {
       /* Redirect stdin/stdout to socket */
       dup2(fds[0], STDIN_FILENO);
       dup2(fds[0], STDOUT_FILENO);
-      if (fds[0] > STDERR_FILENO)
-        close(fds[0]);
+      /* The daemon must not keep the program's files and pipes open */
+      syscall(SYS_close_range, 3U, ~0U, 0U);
 
       /* Run autojitd executable */
       execlp(daemon_path, "autojitd", "--stdio", NULL);
