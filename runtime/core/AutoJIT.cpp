@@ -745,7 +745,8 @@ autojit::AutoJIT &autojit::AutoJIT::get() {
       Builder.setExecutorProcessControl(std::move(EPC));
       *Instance = std::make_unique<AutoJIT>();
       ExitOnErr(Instance->get()->initialize(Builder));
-      std::atexit(llvm_shutdown);
+      // Don't register llvm_shutdown as exit! Global dtors and exit handlers
+      // might call lazy code for the first time. The OS cleans up.
     }
   }
 
