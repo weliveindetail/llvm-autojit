@@ -1,5 +1,6 @@
 #include "common/EHFrames.h"
 #include "common/LazyModule.h"
+#include "common/MaterializeGuard.h"
 #include "runtime/remote/Stub.h"
 #include "runtime/remote/StubSPS.h"
 
@@ -1646,6 +1647,10 @@ static void initialize_daemon(void) {
       dup2(fds[0], STDOUT_FILENO);
       /* The daemon must not keep the program's files and pipes open */
       syscall(SYS_close_range, 3U, ~0U, 0U);
+      /* Our materialization guard blocks all signals and exec would keep that */
+      sigset_t no_signals;
+      sigemptyset(&no_signals);
+      pthread_sigmask(SIG_SETMASK, &no_signals, NULL);
 
       /* Run autojitd executable */
       execlp(daemon_path, "autojitd", "--stdio", NULL);
@@ -1973,6 +1978,9 @@ void *__llvm_autojit_materialize(void **Slot, uint64_t guid,
     abort();
   }
 
+  autojit_materialize_guard_t guard;
+  autojit_materialize_guard_enter(&guard);
+
   /* Ensure daemon is initialized */
   pthread_once(&g_init_once, initialize_daemon_once);
 
@@ -2043,5 +2051,6 @@ void *__llvm_autojit_materialize(void **Slot, uint64_t guid,
   /* Update pointer with returned address */
   void *fn = (void *)(uintptr_t)func_addr;
   __atomic_store_n(Slot, fn, __ATOMIC_RELEASE);
+  autojit_materialize_guard_leave(&guard);
   return fn;
 }
