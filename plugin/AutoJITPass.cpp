@@ -5,6 +5,7 @@
 #include <llvm/Transforms/IPO/GlobalDCE.h>
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/GlobalIFunc.h>
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Intrinsics.h>
@@ -227,24 +228,7 @@ struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
       return PreservedAnalyses::all();
     }
 
-    // Library functions stay in static code. The runtime learns from the mark
-    // in the lazy module.
-    FunctionAnalysisManager &FAM =
-        MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
-    SmallVector<Function *, 8> KeptStatic;
-    for (Function &F : M) {
-      if (F.isDeclaration() || F.hasLocalLinkage() ||
-          F.hasAvailableExternallyLinkage() || autojit::isStaticInit(F))
-        continue;
-      if (AutoJITStaticLibFuncs && isLibFunc(F, FAM)) {
-        if (LLVM_UNLIKELY(AutoJITDebug)) {
-          errs() << "autojit-plugin: Keep library function " << F.getName()
-                 << " in static code\n";
-        }
-        F.addFnAttr(autojit::KeepStaticAttr);
-        KeptStatic.push_back(&F);
-      }
-    }
+    SmallVector<Function *, 8> KeptStatic = markStaticFunctions(M, MAM);
 
     // Find functions that need trampolines
     autojit::LazyBindings Bindings(M);
@@ -294,8 +278,8 @@ struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
     // stay in the static object.
     SmallVector<GlobalValue *, 8> KeepVars;
     for (GlobalVariable &GV : M.globals())
-      if (!GV.isDeclaration() && !GV.hasLocalLinkage() &&
-          GV.hasAtLeastLocalUnnamedAddr() && autojit::hasLiveUses(GV))
+      if (autojit::hasLazyCopy(GV) && !GV.hasLocalLinkage() &&
+          autojit::hasLiveUses(GV))
         KeepVars.push_back(&GV);
 
     // Save module for function importing at runtime
@@ -358,6 +342,81 @@ struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
 private:
   PassBuilder *PB = nullptr;
   OptimizationLevel Level = OptimizationLevel::O0;
+
+  // Mark what must stay in static code. The runtime learns from the mark in the
+  // lazy module.
+  SmallVector<Function *, 8> markStaticFunctions(Module &M,
+                                                 ModuleAnalysisManager &MAM) {
+    FunctionAnalysisManager &FAM =
+        MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+    SmallVector<Function *, 8> Marked;
+    auto Mark = [&](Function &F, const char *Reason) {
+      if (F.hasFnAttribute(autojit::KeepStaticAttr))
+        return false;
+      if (LLVM_UNLIKELY(AutoJITDebug))
+        errs() << "autojit-plugin: Keep " << F.getName()
+               << " in static code: " << Reason << "\n";
+      F.addFnAttr(autojit::KeepStaticAttr);
+      Marked.push_back(&F);
+      return true;
+    };
+
+    // The dynamic linker calls ifunc resolvers while it relocates the program
+    for (GlobalIFunc &GI : M.ifuncs())
+      if (Function *Resolver = GI.getResolverFunction())
+        if (!Resolver->isDeclaration())
+          Mark(*Resolver, "ifunc resolver");
+
+    SmallVector<Function *, 8> LibFuncs;
+    for (Function &F : M) {
+      if (F.isDeclaration() || F.hasAvailableExternallyLinkage() ||
+          autojit::isStaticInit(F))
+        continue;
+      if (hasAddressTakenLabel(F) || hasInlineAsm(F))
+        Mark(F, "the code depends on its location");
+      if (AutoJITStaticLibFuncs && !F.hasLocalLinkage() && isLibFunc(F, FAM)) {
+        Mark(F, "library function");
+        LibFuncs.push_back(&F);
+      }
+    }
+
+    // The C library and our runtime call library functions while we materialize.
+    // Anything they call in this module must not be lazy, e.g. in allocators.
+    while (!LibFuncs.empty()) {
+      Function *F = LibFuncs.pop_back_val();
+      for (BasicBlock &BB : *F)
+        for (Instruction &I : BB)
+          for (Value *Op : I.operands())
+            if (auto *Callee = dyn_cast<Function>(Op->stripPointerCasts()))
+              if (!Callee->isDeclaration() && !Callee->isIntrinsic() &&
+                  !Callee->hasAvailableExternallyLinkage() &&
+                  Mark(*Callee, "called from a library function"))
+                LibFuncs.push_back(Callee);
+    }
+    return Marked;
+  }
+
+  static bool hasAddressTakenLabel(const Function &F) {
+    for (const BasicBlock &BB : F)
+      if (BB.hasAddressTaken())
+        return true;
+    return false;
+  }
+
+  // The backend must see inline asm at compile-time: the asm text might name
+  // symbols, which bypasses our import table, and it's invalid for other targets.
+  // configure scripts rely on the resulting error, e.g. CPython checks for x87.
+  static bool hasInlineAsm(const Function &F) {
+    for (const BasicBlock &BB : F) {
+      for (const Instruction &I : BB) {
+        auto *CB = dyn_cast<CallBase>(&I);
+        if (CB && CB->isInlineAsm() &&
+            !cast<InlineAsm>(CB->getCalledOperand())->getAsmString().empty())
+          return true;
+      }
+    }
+    return false;
+  }
 
   // We run at pipeline start. The runtime runs everything that follows on the
   // lazy module. Clang registered its own passes with the PassBuilder already,
@@ -531,6 +590,7 @@ private:
       // visibility preemptible, even if -fno-semantic-interposition made them
       // dso_local.
       if (!GV->isDSOLocal() || GV->hasExternalWeakLinkage() ||
+          isa<GlobalIFunc>(GV) ||
           (IsSharedLibCode && !GV->hasLocalLinkage() &&
            GV->hasDefaultVisibility()) ||
           mayBeOutOfRange(*GV, TT, CM, LargeDataThreshold)) {

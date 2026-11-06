@@ -56,6 +56,36 @@ enum class LazyBinding {
   Proxy,
 };
 
+/// Label addresses only have a meaning for the code in the static object. The
+/// lazy module can't get its own copy of a variable that holds them.
+inline bool refersToBlockAddress(const llvm::GlobalVariable &GV) {
+  using namespace llvm;
+  if (!GV.hasInitializer())
+    return false;
+  SmallVector<const Constant *, 8> Worklist = {GV.getInitializer()};
+  SmallPtrSet<const Constant *, 16> Seen;
+  while (!Worklist.empty()) {
+    const Constant *C = Worklist.pop_back_val();
+    if (isa<BlockAddress>(C))
+      return true;
+    if (isa<GlobalValue>(C))
+      continue;
+    for (const Value *Op : C->operands())
+      if (auto *Next = dyn_cast<Constant>(Op))
+        if (Seen.insert(Next).second)
+          Worklist.push_back(Next);
+  }
+  return false;
+}
+
+/// Whether the lazy module gets a copy of a variable. The address of unnamed_addr
+/// variables is insignificant. All other variables are shared with the static
+/// object, including local ones.
+inline bool hasLazyCopy(const llvm::GlobalVariable &GV) {
+  return !GV.isDeclaration() && GV.hasAtLeastLocalUnnamedAddr() &&
+         !refersToBlockAddress(GV);
+}
+
 /// Whether a function has uses other than direct calls to its exact type.
 inline bool hasNonCallUses(const llvm::Function &F) {
   for (const llvm::Use &U : F.uses()) {
@@ -259,12 +289,13 @@ void forEachImport(llvm::Module &M, const LazyBindings &Bindings,
   for (GlobalVariable &GV : M.globals()) {
     if (GV.getName().starts_with("llvm.") || !hasLiveUses(GV))
       continue;
-    // The lazy module gets its own copy of unnamed_addr constants. All other
-    // variables are shared with the static object, including local ones.
-    if (!GV.isDeclaration() && GV.hasAtLeastLocalUnnamedAddr())
+    if (hasLazyCopy(GV))
       continue;
     Callback(static_cast<GlobalValue &>(GV));
   }
+  for (GlobalIFunc &GI : M.ifuncs())
+    if (hasLiveUses(GI))
+      Callback(static_cast<GlobalValue &>(GI));
 }
 
 } // namespace autojit
