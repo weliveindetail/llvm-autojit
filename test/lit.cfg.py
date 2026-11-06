@@ -1,7 +1,6 @@
 import inspect
 import os
 import lit.formats
-import psutil
 import shutil
 import subprocess
 import tempfile
@@ -84,42 +83,31 @@ def is_set(var_name: str) -> bool:
 if is_set('AUTOJIT_DEBUG'):
     config.environment['AUTOJITD_DEBUG'] = 'On'
 
-# Check for existing autojitd daemon process
-daemon_running = False
+# Tests spawn the daemon of this build. Other daemons on the machine may belong
+# to another build, so only use one on request.
 daemon_bin = Path(config.autojit_tools_dir) / 'autojitd'
-for proc in psutil.process_iter(['name', 'exe', 'cmdline']):
-    try:
-        # Daemons with --stdio were spawned by and serve another process
-        if 'autojitd' in proc.info['name'] and not proc.info['exe'] is None \
-                and '--stdio' not in (proc.info['cmdline'] or []):
-            daemon_bin = Path(proc.info['exe'])
-            daemon_running = True
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        continue
-
-# Honor mode as set by user and otherwise choose whether running or not
-daemon_mode = None
-if is_set('AUTOJITD_FORCE_SPAWN'):
-    daemon_mode = False
-elif is_set('AUTOJITD_FORCE_DAEMON'):
-    if not daemon_running:
-        raise RuntimeError("AUTOJITD_FORCE_DAEMON set, but no autojitd process found")
-    daemon_mode = True
-else:
-    daemon_mode = daemon_running
-
-# Force one mode for all tests
-if daemon_mode:
-    daemon_state_str = "is up and running"
-    config.environment['AUTOJITD_FORCE_DAEMON'] = 'On'
-    config.environment['XDG_RUNTIME_DIR'] = os.environ['XDG_RUNTIME_DIR']
-    lit_config.warning("Running tests against external autojitd breaks test isolation")
-else:
-    daemon_state_str = "is spawned for each test"
-    config.environment['AUTOJITD_FORCE_SPAWN'] = 'On'
-
 config.environment['AUTOJIT_DAEMON_PATH'] = str(daemon_bin)
-print(f"Daemon {daemon_state_str}: {str(daemon_bin)}")
+
+if is_set('AUTOJITD_FORCE_DAEMON') and not is_set('AUTOJITD_FORCE_SPAWN'):
+    # Same order as in the stub
+    if 'AUTOJIT_SOCKET_PATH' in os.environ:
+        daemon_socket = Path(os.environ['AUTOJIT_SOCKET_PATH'])
+    elif 'XDG_RUNTIME_DIR' in os.environ:
+        daemon_socket = Path(os.environ['XDG_RUNTIME_DIR']) / 'autojitd.sock'
+    else:
+        daemon_socket = Path(f'/tmp/autojitd-{os.getuid()}.sock')
+    if not daemon_socket.is_socket():
+        raise RuntimeError(f"AUTOJITD_FORCE_DAEMON set, but no socket at {daemon_socket}")
+    config.environment['AUTOJITD_FORCE_DAEMON'] = 'On'
+    lit_config.warning("Running tests against external autojitd breaks test isolation")
+    print(f"Daemon is up and running: {daemon_socket}")
+else:
+    # Nothing listens here, so tests that allow connecting fall back to spawning
+    daemon_socket = Path(config.test_exec_root) / 'no-daemon.sock'
+    config.environment['AUTOJITD_FORCE_SPAWN'] = 'On'
+    print(f"Daemon is spawned for each test: {daemon_bin}")
+
+config.environment['AUTOJIT_SOCKET_PATH'] = str(daemon_socket)
 
 config.environment['AUTOJIT_DISABLE_OBJECT_CACHE'] = 'On'
 
