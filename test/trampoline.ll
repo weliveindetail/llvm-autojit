@@ -4,7 +4,7 @@ source_filename = "/workspace/llvm-autojit/test/trampoline.cpp"
 target triple = "x86_64-pc-linux-gnu"
 
 ; Descriptor of the lazy module with its path
-; CHECK: @__llvm_autojit_module = private constant { i32, i32, i64, [0 x i32], [0 x i8], [49 x i8] } { i32 2, i32 0, i64 {{-?[0-9]+}}, {{.*}}, [49 x i8] c"/tmp/autojit_e897fd8886de1380cf0e7d06010251b0.bc\00" }
+; CHECK: @__llvm_autojit_module = private constant { i32, i32, i64, [1 x i32], [1 x i8], [49 x i8] } { i32 2, i32 1, i64 {{-?[0-9]+}}, {{.*}}, [49 x i8] c"/tmp/autojit_e897fd8886de1380cf0e7d06010251b0.bc\00" }
 
 ; Slots initially point to the resolver thunk. Slots of linkonce functions go
 ; into their comdat.
@@ -28,6 +28,9 @@ $_Z6inlinei = comdat any
 define linkonce_odr i32 @_Z6inlinei(i32 %0) alwaysinline comdat {
   ret i32 %0
 }
+
+; Taking the address needs a stable function pointer, so it gets a trampoline
+@fnptr = global ptr @_Z6inlinei
 
 ; The thunk jumps to the resolver in the runtime
 ; CHECK: define internal void @__llvm_autojit_resolve_thunk() [[NAKED]] {

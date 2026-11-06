@@ -72,5 +72,6 @@ define i32 @caller(i32 %x) {
   %c = load i32, ptr @counter
   %d = load i32, ptr @hidden_var
   %e = icmp eq ptr @wk, null
+  %f = icmp eq ptr @callee, null
   ret i32 %b
 }

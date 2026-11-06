@@ -7,7 +7,14 @@
 // RUN: %clang -fvisibility-inlines-hidden -fpass-plugin=%autojit_plugin -c %s -o %t_autojit.o
 // RUN: %readelf -s --wide %t_plain.o | awk '$5 != "LOCAL" && $8 != "" { print $5, $6, ($7 == "UND" ? "UND" : "DEF"), $8 }' | grep -v -e _Unwind_Resume -e DW.ref. | sort > %t_plain.txt
 // RUN: %readelf -s --wide %t_autojit.o | awk '$5 != "LOCAL" && $8 != "" { print $5, $6, ($7 == "UND" ? "UND" : "DEF"), $8 }' | grep -v -e __llvm_autojit_ -e _Unwind_Resume -e DW.ref. | sort > %t_autojit.txt
-// RUN: diff %t_plain.txt %t_autojit.txt
+// RUN: comm -13 %t_plain.txt %t_autojit.txt | count 0
+// RUN: comm -23 %t_plain.txt %t_autojit.txt | FileCheck %s
+//
+// Only linkonce definitions that nobody but lazy code calls may disappear. A
+// plain optimized build might drop them as well.
+// CHECK-NOT: GLOBAL
+// CHECK: WEAK {{.*}} _ZNK6Widget3getEv
+// CHECK-NOT: GLOBAL
 
 #include <cstdio>
 
