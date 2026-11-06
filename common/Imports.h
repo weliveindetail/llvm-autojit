@@ -8,7 +8,9 @@ namespace autojit {
 
 inline bool isStaticInit(const llvm::Function &F) {
   llvm::StringRef FuncName = F.getName();
-  if (FuncName.starts_with("_GLOBAL__sub_"))
+  // With init_priority they are named _GLOBAL__I_<priority>
+  if (FuncName.starts_with("_GLOBAL__sub_") ||
+      FuncName.starts_with("_GLOBAL__I_") || FuncName.starts_with("_GLOBAL__D_"))
     return true;
   if (FuncName.starts_with("__cxx_global_var_init"))
     return true;
