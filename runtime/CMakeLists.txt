@@ -49,7 +49,11 @@ function(add_autojit_stub name)
   set(script_file ${CMAKE_BINARY_DIR}/lib/lib${lib_name}.a)
 
   add_library(${name}-objs OBJECT ${ARG_SOURCES})
-  set_target_properties(${name}-objs PROPERTIES C_STANDARD 11)
+  # The stub also links into shared libraries
+  set_target_properties(${name}-objs PROPERTIES
+    C_STANDARD 11
+    POSITION_INDEPENDENT_CODE On
+  )
   target_compile_definitions(${name}-objs PRIVATE ${ARG_DEFINES})
   target_compile_options(${name}-objs PRIVATE -Wno-cast-qual)
   if(AUTOJIT_SANITIZE)
