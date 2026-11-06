@@ -35,6 +35,9 @@ inline bool hasLiveUses(llvm::GlobalValue &GV) {
 /// in the lazy module.
 inline constexpr const char *KeepStaticAttr = "autojit-static";
 
+/// Value of the attribute if the JIT may keep the body for inlining.
+inline constexpr const char *KeepStaticWithBody = "with-body";
+
 /// Named metadata in the lazy module with the textual pipeline for the runtime
 /// and the optimization level of the compile as strings.
 inline constexpr const char *PipelineMetadata = "autojit.pipeline";

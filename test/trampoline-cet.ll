@@ -1,5 +1,5 @@
 ; REQUIRES: x86-registered-target
-; RUN: %opt --load-pass-plugin=%autojit_plugin -passes=AutoJIT %s -o - | %llc -O0 -o - | FileCheck %s
+; RUN: env AUTOJIT_STATIC_THRESHOLD=0 %opt --load-pass-plugin=%autojit_plugin -passes=AutoJIT %s -o - | %llc -O0 -o - | FileCheck %s
 
 ; With indirect branch tracking, trampolines and the resolver thunk must start
 ; with exactly one endbr64. The backend inserts it for naked functions too.

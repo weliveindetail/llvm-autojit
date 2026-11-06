@@ -69,6 +69,8 @@
 
 using namespace llvm;
 using namespace llvm::orc;
+using autojit::KeepStaticAttr;
+using autojit::KeepStaticWithBody;
 using autojit::PipelineMetadata;
 
 bool g_autojit_debug = false;
@@ -217,7 +219,7 @@ private:
 };
 
 // Bump this whenever changes in the runtime affect the compiled objects
-static constexpr unsigned CacheVersion = 6;
+static constexpr unsigned CacheVersion = 7;
 
 static std::string getCacheStem(StringRef FilePath, uint64_t Hash) {
   StringRef Stem = FilePath;
@@ -404,7 +406,12 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
     LazyBinding Binding = Bindings.get(F);
     if (Binding == LazyBinding::Static) {
       DBG() << "Import " << F.getName() << " (stays in static code)\n";
-      F.deleteBody();
+      // With a body only for inlining, the backend won't emit it
+      if (F.getFnAttribute(KeepStaticAttr).getValueAsString() ==
+          KeepStaticWithBody)
+        F.setLinkage(GlobalValue::AvailableExternallyLinkage);
+      else
+        F.deleteBody();
       F.setComdat(nullptr);
       continue;
     }
@@ -565,7 +572,8 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
     GlobalValue *Decl = M->getNamedValue(ImportNames[I]);
     if (!Decl)
       continue;
-    assert(Decl->isDeclaration() && "Imports must be declarations");
+    assert((Decl->isDeclaration() || Decl->hasAvailableExternallyLinkage()) &&
+           "Imports must be declarations");
     std::string Name = getImportName(Hash, I);
     DBG() << "Import " << ImportNames[I] << " as " << Name << "\n";
     Diags->addRename(Name, ImportNames[I]);
