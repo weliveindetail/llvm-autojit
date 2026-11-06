@@ -257,13 +257,22 @@ void autojit::Transport::listenLoop() {
     {
       bool IsEOF = false;
       if (auto Err = readBytes(HeaderBuffer, FDMsgHeader::Size, &IsEOF)) {
+        // Closing the connection ourselves interrupts the read
+        if (Disconnected) {
+          consumeError(std::move(Err));
+          break;
+        }
         LOG() << "Failed to read message header: " << toString(std::move(Err))
               << "\n";
-        continue;
+        ::_exit(1);
       }
       if (IsEOF) {
+        // The process exited without a hangup, e.g. it crashed or called _exit.
+        // Our JITed code is gone with it, so nothing can need us anymore. We
+        // might hold on to its stdout and stderr, so we must not linger.
         if (!Disconnected) {
-          LOG() << "Unexpected disconnect\n";
+          DBG() << "Unexpected disconnect\n";
+          ::_exit(0);
         }
         break;
       }
@@ -284,9 +293,10 @@ void autojit::Transport::listenLoop() {
     TagAddr.setValue(
         *((support::ulittle64_t *)(HeaderBuffer + FDMsgHeader::TagAddrOffset)));
 
+    // The stream has no markers, so we can't find the next message after an error
     if (MsgSize < FDMsgHeader::Size) {
       LOG() << "Message size too small: " << MsgSize << " bytes\n";
-      continue;
+      ::_exit(1);
     }
 
     // Read the argument bytes
@@ -294,7 +304,7 @@ void autojit::Transport::listenLoop() {
     if (auto Err = readBytes(ArgBytes.data(), ArgBytes.size())) {
       LOG() << "Failed to read message payload: " << toString(std::move(Err))
             << "\n";
-      continue;
+      ::_exit(1);
     }
 
     auto Status = C.handleMessage(OpC, SeqNo, TagAddr, std::move(ArgBytes));
@@ -330,7 +340,7 @@ void autojit::RemoteEPC::callWrapperAsync(ExecutorAddr WrapperFnAddr,
   {
     std::unique_lock<std::mutex> Lock(ServerStateMutex);
     if (isQuickHangup()) {
-      LOG() << "Warning: ignore RPC invocation after disconnect\n";
+      DBG() << "Warning: ignore RPC invocation after disconnect\n";
       // A zero byte decodes as both, void and ErrorSuccess
       auto Result = autojit::WFBuffer::allocate(1);
       Result.data()[0] = '\0';

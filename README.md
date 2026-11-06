@@ -55,7 +55,6 @@ A shared library is a simple, but not always a practical way to provide our runt
 > clang-21 hello.o -lautojit_static-x86-64 -o hello_c_autojitd
 > ./hello_c_autojitd
 Hello C
-[autojit-runtime] Warning: ignore RPC invocation after disconnect
 ```
 
 In this case the stub spawned `autojitd` in a child process. Alternatively, it can run as a complete separate process in the background and handle all compile requests system-wide.
@@ -105,7 +104,6 @@ And here again, the shared library approach works, but might not be the best sol
         -o hello_rust_autojitd hello.rs
 ./hello_rust_autojitd
 Hello World!
-[autojit-runtime] Warning: ignore RPC invocation after disconnect
 ```
 
 ## Benchmark
