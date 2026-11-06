@@ -13,7 +13,7 @@ RUN echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] https://a
     > /etc/apt/sources.list.d/llvm.list
 
 RUN apt-get update && apt-get install -y \
-    clang-23 lld-23 llvm-23-dev libc++-23-dev libc++abi-23-dev \
+    clang-23 lld-23 llvm-23-dev libclang-rt-23-dev libc++-23-dev libc++abi-23-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN update-alternatives --install /usr/bin/cc  cc  /usr/bin/clang-23   100 && \

@@ -66,6 +66,38 @@ else()
   set(AUTOJIT_LLVM_LEGACY Off)
 endif()
 
+# JITed code can call compiler builtins that programs don't export. They come from
+# compiler-rt of the LLVM that generates the code.
+if(AUTOJIT_BUILD_UNIFIED)
+  if(NOT DEFINED AUTOJIT_BUILTINS_LIB)
+    if(NOT "compiler-rt" IN_LIST LLVM_ENABLE_RUNTIMES AND NOT LLVM_ENABLE_RUNTIMES STREQUAL "all")
+      message(FATAL_ERROR "llvm-autojit requires compiler-rt: add it to "
+                          "LLVM_ENABLE_RUNTIMES or set AUTOJIT_BUILTINS_LIB.")
+    endif()
+    # Runtimes build after we configure, so we can't check that it exists
+    set(AUTOJIT_BUILTINS_FROM_RUNTIMES On)
+    set(rt_dir ${LLVM_BINARY_DIR}/lib/clang/${LLVM_VERSION_MAJOR}/lib)
+    if(LLVM_ENABLE_PER_TARGET_RUNTIME_DIR)
+      set(AUTOJIT_BUILTINS_LIB ${rt_dir}/${LLVM_DEFAULT_TARGET_TRIPLE}/libclang_rt.builtins.a)
+    else()
+      set(AUTOJIT_BUILTINS_LIB ${rt_dir}/linux/libclang_rt.builtins-${CMAKE_SYSTEM_PROCESSOR}.a)
+    endif()
+  endif()
+else()
+  if(NOT DEFINED AUTOJIT_BUILTINS_LIB)
+    execute_process(
+      COMMAND ${LLVM_TOOLS_BINARY_DIR}/clang --rtlib=compiler-rt -print-libgcc-file-name
+      OUTPUT_VARIABLE AUTOJIT_BUILTINS_LIB
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET)
+  endif()
+  if(NOT EXISTS "${AUTOJIT_BUILTINS_LIB}")
+    message(FATAL_ERROR "compiler-rt builtins not found for LLVM ${LLVM_VERSION_MAJOR} "
+                        "in ${LLVM_TOOLS_BINARY_DIR}: '${AUTOJIT_BUILTINS_LIB}'. Install "
+                        "compiler-rt or set AUTOJIT_BUILTINS_LIB.")
+  endif()
+endif()
+
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/AutoJITConfig.h.in
   ${CMAKE_CURRENT_BINARY_DIR}/AutoJITConfig.h

@@ -14,7 +14,7 @@ RUN echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://ap
 
 # Ubuntu clang-21 links LLVM 21.1.5
 RUN apt-get update && apt-get install -y \
-    clang-21 lld-21 llvm-21-dev libc++-21-dev libc++abi-21-dev libstdc++-12-dev \
+    clang-21 lld-21 llvm-21-dev libclang-rt-21-dev libc++-21-dev libc++abi-21-dev libstdc++-12-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Rust nightly 1.91 links LLVM 21.1.0

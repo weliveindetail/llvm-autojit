@@ -110,7 +110,7 @@ Hello World!
 
 Clean `-O0 -g` debug builds of 401.bzip2 from spec2006-CPU on a single x86_64 Linux machine. Take it with a grain of salt.
 
-Build the plugin against your installed LLVM release 21 and test the sample code:
+Build the plugin against your installed LLVM release 21 and test the sample code. This needs compiler-rt of the same release (`libclang-rt-21-dev` on Debian and Ubuntu), because the runtime embeds its builtins:
 ```
 > git clone https://github.com/weliveindetail/llvm-autojit
 > CC=clang-21 CXX=clang++-21 cmake \
