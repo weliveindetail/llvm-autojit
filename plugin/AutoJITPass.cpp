@@ -76,6 +76,14 @@ static cl::opt<bool> AutoJITNoDeplibs(
              "links that add it explicitly, like the compiler wrappers. Also "
              "set via AUTOJIT_NO_DEPLIBS environment variable."));
 
+static cl::opt<std::string> AutoJITPipeline(
+    "autojit-pipeline", cl::init(""), cl::Hidden,
+    cl::desc("Pipeline for the runtime to run on lazy modules, instead of the "
+             "one that the compiler would run on them."));
+
+// Set while we build the pipeline to record it, so we don't add ourselves
+static bool RecordingPipeline = false;
+
 namespace {
 
 static GlobalValue::GUID uniqueGUID(Twine ModName, Function *F) {
@@ -184,6 +192,10 @@ struct AutoJITPass : public PassInfoMixin<AutoJITPass> {
 #else
 struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
 #endif
+  AutoJITPass() = default;
+  AutoJITPass(PassBuilder &PB, OptimizationLevel Level)
+      : PB(&PB), Level(Level) {}
+
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
 #if !AUTOJIT_LLVM_21
     // We write lazy modules next to the object file, not through clang's VFS
@@ -288,8 +300,11 @@ struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
 
     // Save module for function importing at runtime
     M.setModuleIdentifier(FileStem);
+    recordPipeline(M);
     uint64_t Hash;
     std::string FilePath = saveModule(M, FileStem + FileExt, &Hash);
+    if (NamedMDNode *MD = M.getNamedMetadata(autojit::PipelineMetadata))
+      M.eraseNamedMetadata(MD);
 
     // All further changes only affect static code
     GlobalVariable *LazyModule =
@@ -341,6 +356,43 @@ struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
   }
 
 private:
+  PassBuilder *PB = nullptr;
+  OptimizationLevel Level = OptimizationLevel::O0;
+
+  // We run at pipeline start. The runtime runs everything that follows on the
+  // lazy module. Clang registered its own passes with the PassBuilder already,
+  // so they are part of this. We always record the regular per-module pipeline:
+  // the LTO prelink pipelines rely on a postlink stage that never happens here.
+  void recordPipeline(Module &M) {
+    if (AutoJITPipeline.empty() && !PB)
+      return;
+    std::string Pipeline = AutoJITPipeline;
+    if (Pipeline.empty()) {
+      RecordingPipeline = true;
+      ModulePassManager MPM = Level == OptimizationLevel::O0
+                                  ? PB->buildO0DefaultPipeline(Level)
+                                  : PB->buildPerModuleDefaultPipeline(Level);
+      RecordingPipeline = false;
+      PassInstrumentationCallbacks *PIC = PB->getPassInstrumentationCallbacks();
+      raw_string_ostream OS(Pipeline);
+      MPM.printPipeline(OS, [PIC](StringRef ClassName) {
+        StringRef Name =
+            PIC ? PIC->getPassNameForClassName(ClassName) : StringRef();
+        return Name.empty() ? ClassName : Name;
+      });
+    }
+    LLVMContext &Ctx = M.getContext();
+#if AUTOJIT_LLVM_21
+    unsigned CodeGenLevel = Level.getSpeedupLevel();
+#else
+    unsigned CodeGenLevel = static_cast<unsigned>(Level);
+#endif
+    M.getOrInsertNamedMetadata(autojit::PipelineMetadata)
+        ->addOperand(MDNode::get(
+            Ctx, {MDString::get(Ctx, Pipeline),
+                  MDString::get(Ctx, Twine(CodeGenLevel).str())}));
+  }
+
   // The executable exports its definitions of library functions, because the
   // C library defines them as well. They interpose the ones in the C library,
   // so the C library and our runtime call them. Symbols interpose by name, so
@@ -782,10 +834,13 @@ llvmGetPassPluginInfo() {
           .PluginName = "AutoJIT Pass",
           .PluginVersion = "v0.1",
           .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
-            // Register to run automatically at the end of the module pipeline
+            // Register to run automatically at the start of the module
+            // pipeline. PB outlives the pipeline that it builds.
             PB.registerPipelineStartEPCallback(
-                [](ModulePassManager &MPM, OptimizationLevel Level) {
-                  MPM.addPass(AutoJITPass());
+                [&PB](ModulePassManager &MPM, OptimizationLevel Level) {
+                  if (RecordingPipeline)
+                    return;
+                  MPM.addPass(AutoJITPass(PB, Level));
                   MPM.addPass(GlobalDCEPass());
                 });
             PB.registerPipelineParsingCallback(
