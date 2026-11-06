@@ -669,7 +669,7 @@ static Error runRecordedPipeline(Module &M, const JITTargetMachineBuilder &JTMB)
   FunctionAnalysisManager FAM;
   CGSCCAnalysisManager CGAM;
   ModuleAnalysisManager MAM;
-#if AUTOJIT_LLVM_21
+#if AUTOJIT_LLVM_LEGACY
   PassBuilder PB(TM->get());
 #else
   PassBuilder PB(M.getContext(), TM->get());
