@@ -40,6 +40,7 @@ set(AUTOJIT_TEST_DEPENDS
   llvm-config
   clang
   opt
+  llc
   FileCheck
   count
   not
