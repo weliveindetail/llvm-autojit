@@ -22,6 +22,12 @@
 // NOPRELOAD: outer: 1
 // PRELOAD: outer: 42
 //
+// -fno-semantic-interposition makes these dso_local, but the linker still
+// considers them preemptible. So the import table can't refer to them directly.
+// RUN: %clang_c -fPIC -fno-semantic-interposition -fpass-plugin=%autojit_plugin -c %S/Inputs/direct-binding-nosem.c -o %t.dir/nosem.o
+// RUN: %clang_c -shared %t.dir/nosem.o -o %t.dir/libnosem.so
+// RUN: %clang_c -shared -fuse-ld=bfd %t.dir/nosem.o -o %t.dir/libnosem_bfd.so
+//
 // IR-NOT: @__llvm_autojit_ptr__Z10onlyCalledi
 // IR-DAG: @__llvm_autojit_ptr__Z9addrTakeni = {{.*}}comdat($_Z9addrTakeni)
 // IR-DAG: @__llvm_autojit_ptr__ZL8callbacki =

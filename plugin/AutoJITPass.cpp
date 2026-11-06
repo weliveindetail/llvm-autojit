@@ -459,6 +459,8 @@ private:
     const Triple &TT = M.getTargetTriple();
     std::optional<CodeModel::Model> CM = M.getCodeModel();
     uint64_t LargeDataThreshold = M.getLargeDataThreshold().value_or(0);
+    bool IsSharedLibCode =
+        M.getPICLevel() != PICLevel::NotPIC && M.getPIELevel() == PIELevel::Default;
 
 #if AUTOJIT_LLVM_21
     Constant *Zero = ConstantInt::get(I32Ty, 0);
@@ -473,7 +475,12 @@ private:
       // Symbols that might be outside the linked image or out of range for a
       // 32-bit offset go through a GOT-equivalent slot. The backend folds it
       // into a reference to the symbol's GOT entry, which regular code shares.
+      // In shared libraries, the linker considers symbols with default
+      // visibility preemptible, even if -fno-semantic-interposition made them
+      // dso_local.
       if (!GV->isDSOLocal() || GV->hasExternalWeakLinkage() ||
+          (IsSharedLibCode && !GV->hasLocalLinkage() &&
+           GV->hasDefaultVisibility()) ||
           mayBeOutOfRange(*GV, TT, CM, LargeDataThreshold)) {
         auto *Slot = new GlobalVariable(M, PtrTy, true,
                                         GlobalValue::PrivateLinkage, GV,
