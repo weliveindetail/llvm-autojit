@@ -35,6 +35,10 @@ inline bool hasLiveUses(llvm::GlobalValue &GV) {
 /// in the lazy module.
 inline constexpr const char *KeepStaticAttr = "autojit-static";
 
+/// Named metadata in the lazy module with the textual pipeline for the runtime
+/// and the optimization level of the compile as strings.
+inline constexpr const char *PipelineMetadata = "autojit.pipeline";
+
 /// How lazy code binds to a function that the lazy module defines.
 enum class LazyBinding {
   /// Stays in static code, the lazy module imports it

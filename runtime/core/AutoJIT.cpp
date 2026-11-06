@@ -19,6 +19,10 @@
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>
 #include <llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h>
+#include <llvm/Demangle/Demangle.h>
+#include <llvm/IR/DiagnosticHandler.h>
+#include <llvm/IR/DiagnosticInfo.h>
+#include <llvm/IR/DiagnosticPrinter.h>
 #include <llvm/IR/GlobalAlias.h>
 #include <llvm/IR/GlobalValue.h>
 #include <llvm/IR/LLVMContext.h>
@@ -26,6 +30,7 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/IRReader/IRReader.h>
+#include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/Compiler.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/FileSystem.h>
@@ -64,6 +69,7 @@
 
 using namespace llvm;
 using namespace llvm::orc;
+using autojit::PipelineMetadata;
 
 bool g_autojit_debug = false;
 bool g_autojit_debug_initialized = false;
@@ -211,14 +217,16 @@ private:
 };
 
 // Bump this whenever changes in the runtime affect the compiled objects
-static constexpr unsigned CacheVersion = 4;
+static constexpr unsigned CacheVersion = 5;
 
 static std::string getCacheStem(StringRef FilePath, uint64_t Hash) {
   StringRef Stem = FilePath;
   if (Stem.ends_with(".ll") || Stem.ends_with(".bc"))
     Stem = Stem.drop_back(3);
   std::string HashStr = utohexstr(Hash, /*LowerCase=*/true, /*Width=*/16);
-  return (Stem + "_" + HashStr + "_r" + Twine(CacheVersion)).str();
+  // Objects without the recorded passes are a separate variant
+  StringRef Variant = isEnvVarSet("AUTOJIT_SKIP_PASSES") ? "_nopasses" : "";
+  return (Stem + "_" + HashStr + "_r" + Twine(CacheVersion) + Variant).str();
 }
 
 // Imports get module-unique names. They resolve to the addresses from the
@@ -227,6 +235,48 @@ static std::string getImportName(uint64_t Hash, size_t Index) {
   std::string HashStr = utohexstr(Hash, /*LowerCase=*/true, /*Width=*/16);
   return ("__autojit_imp_" + HashStr + "_" + Twine(Index)).str();
 }
+
+namespace {
+// Compiling the lazy module happens later, so this lives in its context
+class LazyModuleDiagnostics : public DiagnosticHandler {
+public:
+  void addRename(StringRef Internal, StringRef Original) {
+    Renames[Internal] = Original.str();
+  }
+
+  bool handleDiagnostics(const DiagnosticInfo &DI) override {
+    // Remarks and warnings belong to the compile, not to the output of the program
+    if (DI.getSeverity() != DS_Error)
+      return true;
+    std::string Message;
+    raw_string_ostream OS(Message);
+    DiagnosticPrinterRawOStream DP(OS);
+    DI.print(DP);
+    LOG() << restoreNames(Message) << "\n";
+    return true;
+  }
+
+private:
+  std::string restoreNames(StringRef Message) const {
+    auto IsNameChar = [](char C) { return isAlnum(C) || C == '_'; };
+    std::string Result;
+    while (!Message.empty()) {
+      StringRef Word = Message.take_while(IsNameChar);
+      if (Word.empty()) {
+        Result += Message.front();
+        Message = Message.drop_front();
+        continue;
+      }
+      auto It = Renames.find(Word);
+      Result += It != Renames.end() ? demangle(It->second) : Word.str();
+      Message = Message.drop_front(Word.size());
+    }
+    return Result;
+  }
+
+  StringMap<std::string> Renames;
+};
+} // namespace
 
 // Clang enables outline atomics for AArch64 Linux by default. Their helpers
 // (e.g. __aarch64_ldadd4_acq_rel) come from libgcc.a or compiler-rt and are
@@ -273,10 +323,14 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
         "Lazy module " + FilePath + " doesn't match the import table of " +
             "its static object. Was it overwritten by another build?");
 
-  // Check if it's a bitcode file by extension
   // The module must be destroyed before its context on early returns
   auto Context = std::make_unique<LLVMContext>();
   std::unique_ptr<Module> M;
+
+  auto Diagnostics = std::make_unique<LazyModuleDiagnostics>();
+  LazyModuleDiagnostics *Diags = Diagnostics.get();
+  Context->setDiagnosticHandler(std::move(Diagnostics));
+
   if (FilePath.ends_with(".bc")) {
     // Parsing as bitcode
     auto ModuleOrError =
@@ -373,6 +427,7 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
     std::string OriginalName = F.getName().str();
     GlobalValue::GUID G = getFunctionGUID(SourcePath, &F);
     std::string ImplName = autojit::guidToFnName(G, Hash);
+    Diags->addRename(ImplName, OriginalName);
     F.setName(ImplName);
     F.setLinkage(GlobalValue::ExternalLinkage);
     F.setVisibility(GlobalValue::DefaultVisibility);
@@ -492,6 +547,7 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
     assert(Decl->isDeclaration() && "Imports must be declarations");
     std::string Name = getImportName(Hash, I);
     DBG() << "Import " << ImportNames[I] << " as " << Name << "\n";
+    Diags->addRename(Name, ImportNames[I]);
     Decl->setName(Name);
     // JITed code is far away from the static code, so it must not access
     // imports PC-relative. The visibility of the declaration has no meaning
@@ -567,6 +623,74 @@ public:
   }
 };
 
+// Run the passes that the compiler would have run on the code in the lazy module
+static Error runRecordedPipeline(Module &M, const JITTargetMachineBuilder &JTMB) {
+  NamedMDNode *MD = M.getNamedMetadata(PipelineMetadata);
+  if (!MD || MD->getNumOperands() == 0)
+    return Error::success();
+  std::string Pipeline =
+      cast<MDString>(MD->getOperand(0)->getOperand(0))->getString().str();
+
+  auto TM = JITTargetMachineBuilder(JTMB).createTargetMachine();
+  if (!TM)
+    return TM.takeError();
+  LoopAnalysisManager LAM;
+  FunctionAnalysisManager FAM;
+  CGSCCAnalysisManager CGAM;
+  ModuleAnalysisManager MAM;
+#if AUTOJIT_LLVM_21
+  PassBuilder PB(TM->get());
+#else
+  PassBuilder PB(M.getContext(), TM->get());
+#endif
+  PB.registerModuleAnalyses(MAM);
+  PB.registerCGSCCAnalyses(CGAM);
+  PB.registerFunctionAnalyses(FAM);
+  PB.registerLoopAnalyses(LAM);
+  PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+  ModulePassManager MPM;
+  if (Error Err = PB.parsePassPipeline(MPM, Pipeline))
+    return createStringError(inconvertibleErrorCode(),
+                             "Failed to run recorded passes on " +
+                                 M.getModuleIdentifier() + ": " +
+                                 toString(std::move(Err)));
+  MPM.run(M, MAM);
+  return Error::success();
+}
+
+// Compiles with the optimization level of the original compile, because each
+// TU might have its own. Each module gets its own TargetMachine, so threads
+// that materialize different modules compile them concurrently.
+class RecordedLevelCompiler : public IRCompileLayer::IRCompiler {
+public:
+  RecordedLevelCompiler(JITTargetMachineBuilder JTMB, ObjectCache *ObjCache)
+      : IRCompiler(irManglingOptionsFromTargetOptions(JTMB.getOptions())),
+        JTMB(std::move(JTMB)), ObjCache(ObjCache) {}
+
+  Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &M) override {
+    JITTargetMachineBuilder ModuleJTMB = JTMB;
+    if (NamedMDNode *MD = M.getNamedMetadata(PipelineMetadata);
+        MD && MD->getNumOperands() != 0) {
+      StringRef Level =
+          cast<MDString>(MD->getOperand(0)->getOperand(1))->getString();
+      ModuleJTMB.setCodeGenOptLevel(Level == "0"   ? CodeGenOptLevel::None
+                                    : Level == "1" ? CodeGenOptLevel::Less
+                                    : Level == "3" ? CodeGenOptLevel::Aggressive
+                                                   : CodeGenOptLevel::Default);
+    }
+    auto TM = ModuleJTMB.createTargetMachine();
+    if (!TM)
+      return TM.takeError();
+    SimpleCompiler C(**TM, ObjCache);
+    return C(M);
+  }
+
+private:
+  JITTargetMachineBuilder JTMB;
+  ObjectCache *ObjCache;
+};
+
 #if defined(AUTOJIT_ENABLE_TPDE)
 class TPDECompiler : public IRCompileLayer::IRCompiler {
 public:
@@ -618,8 +742,8 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B) {
     CacheWriter_ = std::make_unique<ObjectCacheWriter>();
   B.CreateCompileFunction = [&](JITTargetMachineBuilder JTMB)
       -> Expected<std::unique_ptr<IRCompileLayer::IRCompiler>> {
-    return std::make_unique<ConcurrentIRCompiler>(std::move(JTMB),
-                                                  CacheWriter_.get());
+    return std::make_unique<RecordedLevelCompiler>(std::move(JTMB),
+                                                   CacheWriter_.get());
   };
 
   if (isEnvVarSet("AUTOJIT_USE_TPDE")) {
@@ -666,21 +790,23 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B) {
     return Builtins.takeError();
   JIT_->getMainJITDylib().addGenerator(std::move(*Builtins));
 
-#if !defined(NDEBUG)
+  bool SkipPasses = isEnvVarSet("AUTOJIT_SKIP_PASSES");
   JIT_->getIRTransformLayer().setTransform(
-      [](ThreadSafeModule TSM,
-         MaterializationResponsibility &R) -> Expected<ThreadSafeModule> {
+      [JTMB = std::move(JTMB), SkipPasses](
+          ThreadSafeModule TSM,
+          MaterializationResponsibility &R) -> Expected<ThreadSafeModule> {
         auto Err = TSM.withModuleDo([&](Module &M) -> Error {
+#if !defined(NDEBUG)
           for (Function &F : M)
             if (!F.isDeclaration())
               DBG() << "Adding lazy function to JIT: " << F.getName() << "\n";
-          return Error::success();
+#endif
+          return SkipPasses ? Error::success() : runRecordedPipeline(M, JTMB);
         });
         if (Err)
           return std::move(Err);
         return std::move(TSM);
       });
-#endif
 
   return Error::success();
 }
