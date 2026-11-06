@@ -1700,8 +1700,11 @@ static void initialize_daemon(void) {
 
   DEBUG_LOG("Daemon initialization complete\n");
 
-  /* Register cleanup handler */
-  atexit(cleanup_daemon);
+  /* Global destructors and exit handlers might call lazy code for the first time
+   * after this handler ran. So we only hang up on request. Otherwise, the daemon
+   * exits when our connection closes. */
+  if (checkenv("AUTOJITD_FULL_SHUTDOWN"))
+    atexit(cleanup_daemon);
 }
 
 /* ============================================================================

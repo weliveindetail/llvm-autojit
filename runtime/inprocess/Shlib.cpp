@@ -26,6 +26,11 @@ static std::string hexstr(uint64_t Val) {
   return Result;
 }
 
+// Our static destructors must never run. Library destructors run after them, and
+// they might call lazy code for the first time, which needs LLVM's globals. The
+// linker binds this for all of our code and exports.txt hides it from others.
+extern "C" int __cxa_atexit(void (*)(void *), void *, void *) { return 0; }
+
 static llvm::ExitOnError ExitOnErr("[autojit-runtime] ");
 
 extern "C" void *__llvm_autojit_materialize(void **Slot, uint64_t Guid,
