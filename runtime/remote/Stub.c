@@ -1884,6 +1884,41 @@ static module_entry_t *lookup_module(const autojit_lazy_module_t *module,
   return g_modules[idx];
 }
 
+/* The connection belongs to the parent. The child gets its own on demand and
+ * sends its lazy modules again. Other threads are gone, so locks might be held
+ * forever. */
+static void unfollow_fork(void) {
+  if (g_daemon_fd >= 0)
+    close(g_daemon_fd);
+  g_daemon_fd = -1;
+  g_daemon_child_pid = -1;
+  g_next_seqno = 0;
+  g_register_fn_addr = 0;
+  g_materialize_fn_addr = 0;
+  // The next __llvm_autojit_materialize call will run the setup again
+  g_init_once = (pthread_once_t)PTHREAD_ONCE_INIT;
+  g_io_mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+  g_calls_mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+  g_calls_cond = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
+  g_pending_calls = NULL;
+  g_receiving = 0;
+  g_connection_failed = 0;
+  g_modules_mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+  g_modules_cond = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
+  if (g_modules)
+    memset(g_modules, 0, g_modules_capacity * sizeof(*g_modules));
+  g_modules_count = 0;
+}
+
+static void initialize_daemon_once(void) {
+  static int registered = 0;
+  if (!registered) {
+    registered = 1;
+    pthread_atfork(NULL, NULL, unfollow_fork);
+  }
+  initialize_daemon();
+}
+
 /* Send the lazy module to the daemon */
 static void register_module(const autojit_lazy_module_t *module) {
   const char *path = autojit_lazy_module_path(module);
@@ -1939,7 +1974,7 @@ void *__llvm_autojit_materialize(void **Slot, uint64_t guid,
   }
 
   /* Ensure daemon is initialized */
-  pthread_once(&g_init_once, initialize_daemon);
+  pthread_once(&g_init_once, initialize_daemon_once);
 
   /* Send the lazy module to the daemon on first use */
   const autojit_lazy_module_t *module = (const autojit_lazy_module_t *)Module;
