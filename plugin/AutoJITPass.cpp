@@ -46,10 +46,12 @@
 #include <dlfcn.h>
 
 #include <algorithm>
+#include <fstream>
 #include <memory>
 #include <regex>
 #include <string>
 #include <unordered_set>
+#include <utility>
 
 using namespace llvm;
 
@@ -582,18 +584,43 @@ private:
     return Dir;
   }
 
+  // One source file can be compiled in many ways into one directory, e.g. for a
+  // static and a shared library, so the name depends on the compile options.
+  // Options are ordered, because later ones can override earlier ones. Reading
+  // them from the process needs no extra flag: without integrated cc1, these are
+  // the options of the cc1 process, which tell compiles apart just as well.
   std::string getModuleGUID(const Module &M) {
     // Get the original source file path from the module
-    std::string SourcePath = M.getSourceFileName();
+    SmallString<256> SourcePath(M.getSourceFileName());
     if (SourcePath.empty()) {
       errs() << "autojit-plugin error: Invalid source path in module: "
              << SourcePath << "\n";
       exit(1);
     }
+    // Relative paths are the same across projects
+    sys::fs::make_absolute(SourcePath);
 
-    // Generate MD5 hash of the source path
     MD5 Hasher;
     Hasher.update(SourcePath);
+    Hasher.update(ArrayRef<uint8_t>{0});
+    std::ifstream CmdLine("/proc/self/cmdline", std::ios::binary);
+    std::string Arg;
+    bool First = true;
+    bool SkipNext = false;
+    while (std::getline(CmdLine, Arg, '\0')) {
+      if (std::exchange(First, false) || std::exchange(SkipNext, false))
+        continue;
+      // Paths of outputs don't affect the code
+      if (Arg == "-o" || Arg == "-MF" || Arg == "-MT" || Arg == "-MQ") {
+        SkipNext = true;
+        continue;
+      }
+      if (Arg == "-MD" || Arg == "-MMD")
+        continue;
+      Hasher.update(Arg);
+      Hasher.update(ArrayRef<uint8_t>{0});
+    }
+
     MD5::MD5Result Hash;
     Hasher.final(Hash);
 

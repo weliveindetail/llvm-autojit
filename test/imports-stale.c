@@ -1,9 +1,12 @@
-// Check that we detect lazy modules that don't belong to the static object.
-// Both compilations write the same lazy module path, because the source path
-// is the same. The second one has different imports.
+// Check that we detect lazy modules that don't belong to the static object. Both
+// compilations write the same lazy module path, because source path and options
+// are the same. The source changed and the second one has different imports.
 //
-// RUN: %clang_c -fpass-plugin=%autojit_plugin -c %s -o %t_v1.o
-// RUN: %clang_c -fpass-plugin=%autojit_plugin -DV2 -c %s -o %t_v2.o
+// RUN: rm -rf %t.dir && mkdir -p %t.dir
+// RUN: cp %s %t.dir/main.c
+// RUN: %clang_c -fpass-plugin=%autojit_plugin -c %t.dir/main.c -o %t_v1.o
+// RUN: (echo '#define V2'; cat %s) > %t.dir/main.c
+// RUN: %clang_c -fpass-plugin=%autojit_plugin -c %t.dir/main.c -o %t_v2.o
 // RUN: %clang_c %t_v1.o -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_v1.exe
 // RUN: not %t_v1.exe 2>&1 | FileCheck %s
 //
