@@ -241,7 +241,8 @@ static int runSession(int InFD, int OutFD) {
        ExecutorAddr::fromPtr(autojit_rpc_materialize)},
   };
 
-  Instance.store(Session.launch(std::move(ES), std::move(RPCSymbols)));
+  Session.launch(std::move(ES), std::move(RPCSymbols),
+                 [](autojit::AutoJIT *JIT) { Instance.store(JIT); });
 
   DBG() << "Connected: enter event loop\n";
   int ExitCode = Session.waitForDisconnect();
