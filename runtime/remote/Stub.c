@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "common/EHFrames.h"
 #include "common/LazyModule.h"
 #include "common/MaterializeGuard.h"
@@ -1936,14 +1937,15 @@ static void register_module(const autojit_lazy_module_t *module) {
             module->num_imports);
 
   /* Encode arguments:
-   * SPSArgList<SPSString, uint64_t, SPSSequence<uint64_t>> */
+   * SPSArgList<SPSString, uint64_t, SPSSequence<uint64_t>, uint64_t> */
   sps_buffer_t args;
-  sps_buffer_init(&args, 256 + 8 * (size_t)module->num_imports);
+  sps_buffer_init(&args, 264 + 8 * (size_t)module->num_imports);
   sps_write_string(&args, path);
   sps_write_uint64(&args, module->hash);
   sps_write_uint64(&args, module->num_imports);
   for (uint32_t i = 0; i < module->num_imports; i += 1)
     sps_write_uint64(&args, autojit_import_address(module, i));
+  sps_write_uint64(&args, (uint64_t)(uintptr_t)module);
   DEBUG_LOG("Encoded %zu bytes for RPC call\n", args.size);
 
   /* Call RPC function */
@@ -1986,6 +1988,7 @@ void *__llvm_autojit_materialize(void **Slot, uint64_t guid,
 
   /* Send the lazy module to the daemon on first use */
   const autojit_lazy_module_t *module = (const autojit_lazy_module_t *)Module;
+  autojit_pin_image(module);
   int is_new;
   pthread_mutex_lock(&g_modules_mutex);
   module_entry_t *entry = lookup_module(module, &is_new);
@@ -2002,11 +2005,12 @@ void *__llvm_autojit_materialize(void **Slot, uint64_t guid,
 
   DEBUG_LOG("Requesting function: __autojit_fn_%lu\n", guid);
 
-  /* Encode arguments: SPSArgList<uint64_t, uint64_t> */
+  /* Encode arguments: SPSArgList<uint64_t, uint64_t, uint64_t> */
   sps_buffer_t args;
-  sps_buffer_init(&args, 16);
+  sps_buffer_init(&args, 24);
   sps_write_uint64(&args, guid);
   sps_write_uint64(&args, module->hash);
+  sps_write_uint64(&args, (uint64_t)(uintptr_t)module);
 
   /* Call RPC function */
   uint8_t *result;

@@ -80,10 +80,11 @@ autojit_rpc_register(const char *ArgData, size_t ArgSize) {
   std::string FilePath;
   uint64_t ImportsHash;
   std::vector<uint64_t> ImportAddrs;
+  uint64_t ModuleKey;
   shared::SPSInputBuffer IB(ArgData, ArgSize);
   if (!shared::SPSArgList<shared::SPSString, uint64_t,
-                          shared::SPSSequence<uint64_t>>::
-          deserialize(IB, FilePath, ImportsHash, ImportAddrs))
+                          shared::SPSSequence<uint64_t>, uint64_t>::
+          deserialize(IB, FilePath, ImportsHash, ImportAddrs, ModuleKey))
     return outOfBandError("Failed to deserialize module registration");
   DBG() << "autojit_rpc_register module: " << FilePath << " ("
         << ImportAddrs.size() << " imports)\n";
@@ -92,7 +93,8 @@ autojit_rpc_register(const char *ArgData, size_t ArgSize) {
   if (!Inst)
     return outOfBandError("JIT not initialized");
 
-  if (Error Err = Inst->addModule(FilePath, ImportsHash, ImportAddrs)) {
+  if (Error Err =
+          Inst->addModule(FilePath, ImportsHash, ImportAddrs, ModuleKey)) {
     std::string Message = toString(std::move(Err));
     return outOfBandError("Failed to load module from " + FilePath + ": " +
                           Message);
@@ -107,10 +109,11 @@ autojit_rpc_materialize(const char *ArgData, size_t ArgSize) {
 
   uint64_t Guid;
   uint64_t ModuleHash;
+  uint64_t ModuleKey;
   shared::SPSInputBuffer IB(ArgData, ArgSize);
-  if (!shared::SPSArgList<uint64_t, uint64_t>::deserialize(IB, Guid,
-                                                          ModuleHash))
-    return outOfBandError("Failed to deserialize GUID and module hash");
+  if (!shared::SPSArgList<uint64_t, uint64_t, uint64_t>::deserialize(
+          IB, Guid, ModuleHash, ModuleKey))
+    return outOfBandError("Failed to deserialize materialize request");
 
   auto *Inst = Instance.load();
   if (!Inst)
@@ -119,7 +122,7 @@ autojit_rpc_materialize(const char *ArgData, size_t ArgSize) {
   std::string Name = autojit::guidToFnName(Guid, ModuleHash);
   DBG() << "Lookup function: " << Name << "\n";
 
-  uint64_t Addr = Inst->lookup(Name.c_str());
+  uint64_t Addr = Inst->lookup(Name.c_str(), ModuleKey);
   DBG() << "Materialized at address 0x" << format("%016" PRIx64, Addr) << "\n";
 
   size_t ResultSize = shared::SPSArgList<uint64_t>::size(Addr);

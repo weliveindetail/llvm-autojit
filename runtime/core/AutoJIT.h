@@ -54,13 +54,18 @@ public:
 
   static AutoJIT &get();
   llvm::Error initialize(llvm::orc::LLJITBuilder &B);
-  uint64_t lookup(const char *Symbol);
+
+  /// Find a function in the lazy module that was added with the given key.
+  uint64_t lookup(const char *Symbol, uint64_t ModuleKey);
 
   /// Add the lazy module to the JIT, providing the path to the bitcode file,
   /// the hash of its contents and the addresses from the import table in the
-  /// module's static object. Uses the cached object if there is one.
+  /// module's static object. Uses the cached object if there is one. The key
+  /// identifies the static object in the process, because one lazy module can
+  /// be part of several images with different addresses.
   llvm::Error addModule(llvm::StringRef FilePath, uint64_t Hash,
-                        llvm::ArrayRef<uint64_t> ImportAddrs);
+                        llvm::ArrayRef<uint64_t> ImportAddrs,
+                        uint64_t ModuleKey);
 
   /// Add the lazy module that belongs to the given descriptor from a static
   /// object of the host process, unless we added it before.
@@ -80,6 +85,9 @@ private:
     std::once_flag Loaded;
     std::string Error;
   };
+  std::mutex DylibsMutex_;
+  llvm::DenseSet<uint64_t> KnownHashes_;
+  llvm::DenseMap<uint64_t, llvm::orc::JITDylib *> Dylibs_;
   std::mutex ModulesMutex_;
   llvm::DenseMap<const autojit_lazy_module_t *, std::unique_ptr<ModuleState>>
       Modules_;

@@ -166,16 +166,18 @@ static GlobalValue::GUID getFunctionGUID(Twine ModName, Function *F) {
 // which would add thousands of symbols with dependency tracking per module.
 class autojit::ImportResolver : public ObjectLinkingLayer::Plugin {
 public:
-  void addImports(uint64_t Hash, ArrayRef<uint64_t> Addrs) {
+  void addImports(JITDylib &JD, uint64_t Hash, ArrayRef<uint64_t> Addrs) {
     std::lock_guard<std::mutex> Lock(TablesMutex);
-    Tables[Hash].assign(Addrs.begin(), Addrs.end());
+    Tables[{&JD, Hash}].assign(Addrs.begin(), Addrs.end());
   }
 
   void modifyPassConfig(MaterializationResponsibility &MR,
                         jitlink::LinkGraph &G,
                         jitlink::PassConfiguration &Config) override {
     Config.PrePrunePasses.push_back(
-        [this](jitlink::LinkGraph &G) { return resolveImports(G); });
+        [this, JD = &MR.getTargetJITDylib()](jitlink::LinkGraph &G) {
+          return resolveImports(G, *JD);
+        });
   }
 
   Error notifyFailed(MaterializationResponsibility &MR) override {
@@ -188,7 +190,7 @@ public:
                                    ResourceKey SrcKey) override {}
 
 private:
-  Error resolveImports(jitlink::LinkGraph &G) {
+  Error resolveImports(jitlink::LinkGraph &G, JITDylib &JD) {
     SmallVector<std::pair<jitlink::Symbol *, uint64_t>, 32> Resolved;
     std::lock_guard<std::mutex> Lock(TablesMutex);
     for (jitlink::Symbol *Sym : G.external_symbols()) {
@@ -201,7 +203,7 @@ private:
           Name[16] != '_' || Name.drop_front(17).getAsInteger(10, Index))
         return createStringError(inconvertibleErrorCode(),
                                  "Invalid import " + *Sym->getName());
-      auto It = Tables.find(Hash);
+      auto It = Tables.find({&JD, Hash});
       if (It == Tables.end() || Index >= It->second.size())
         return createStringError(inconvertibleErrorCode(),
                                  "Unknown import " + *Sym->getName());
@@ -215,11 +217,11 @@ private:
   }
 
   std::mutex TablesMutex;
-  DenseMap<uint64_t, std::vector<uint64_t>> Tables;
+  DenseMap<std::pair<JITDylib *, uint64_t>, std::vector<uint64_t>> Tables;
 };
 
 // Bump this whenever changes in the runtime affect the compiled objects
-static constexpr unsigned CacheVersion = 7;
+static constexpr unsigned CacheVersion = 8;
 
 static std::string getCacheStem(StringRef FilePath, uint64_t Hash) {
   StringRef Stem = FilePath;
@@ -988,7 +990,8 @@ autojit::AutoJIT::ensureModule(const autojit_lazy_module_t *Module) {
     ImportAddrs.reserve(Module->num_imports);
     for (uint32_t I = 0; I < Module->num_imports; I += 1)
       ImportAddrs.push_back(autojit_import_address(Module, I));
-    if (Error Err = addModule(FilePath, Module->hash, ImportAddrs))
+    if (Error Err = addModule(FilePath, Module->hash, ImportAddrs,
+                              reinterpret_cast<uint64_t>(Module)))
       State->Error = toString(std::move(Err));
   });
 
@@ -998,8 +1001,25 @@ autojit::AutoJIT::ensureModule(const autojit_lazy_module_t *Module) {
 }
 
 llvm::Error autojit::AutoJIT::addModule(StringRef FilePath, uint64_t Hash,
-                                       ArrayRef<uint64_t> ImportAddrs) {
-  Imports_->addImports(Hash, ImportAddrs);
+                                       ArrayRef<uint64_t> ImportAddrs,
+                                       uint64_t ModuleKey) {
+  // One static library can be part of several images. Then we see the same lazy
+  // module again, but its imports have other addresses and its symbols must not
+  // clash, so it goes into its own JITDylib.
+  JITDylib *JD = &JIT_->getMainJITDylib();
+  {
+    std::lock_guard<std::mutex> Lock(DylibsMutex_);
+    if (!KnownHashes_.insert(Hash).second) {
+      auto NewJD = JIT_->createJITDylib(
+          ("autojit_module_" + Twine::utohexstr(ModuleKey)).str());
+      if (!NewJD)
+        return NewJD.takeError();
+      NewJD->addToLinkOrder(JIT_->getMainJITDylib());
+      JD = &*NewJD;
+    }
+    Dylibs_[ModuleKey] = JD;
+  }
+  Imports_->addImports(*JD, Hash, ImportAddrs);
 
   // Cached objects are named after the contents of the lazy module. We don't
   // need the IR then: imports are named by index.
@@ -1010,18 +1030,24 @@ llvm::Error autojit::AutoJIT::addModule(StringRef FilePath, uint64_t Hash,
     std::string ObjName = CacheStem + ".o";
     if (auto Obj = MemoryBuffer::getFile(ObjName, IsText, RequiresNullTerm)) {
       DBG() << "Loading module from cache " << ObjName << "\n";
-      return JIT_->addObjectFile(std::move(*Obj));
+      return JIT_->addObjectFile(*JD, std::move(*Obj));
     }
   }
 
   auto TSM = loadModule(FilePath, Hash, ImportAddrs.size(), CacheStem);
   if (!TSM)
     return TSM.takeError();
-  return JIT_->addIRModule(std::move(*TSM));
+  return JIT_->addIRModule(*JD, std::move(*TSM));
 }
 
-uint64_t autojit::AutoJIT::lookup(const char *Symbol) {
-  auto Fn = JIT_->lookup(Symbol);
+uint64_t autojit::AutoJIT::lookup(const char *Symbol, uint64_t ModuleKey) {
+  JITDylib *JD;
+  {
+    std::lock_guard<std::mutex> Lock(DylibsMutex_);
+    auto It = Dylibs_.find(ModuleKey);
+    JD = It != Dylibs_.end() ? It->second : &JIT_->getMainJITDylib();
+  }
+  auto Fn = JIT_->lookup(*JD, Symbol);
   if (!Fn) {
     LOG() << toString(Fn.takeError()) << "\n";
     exit(1);
