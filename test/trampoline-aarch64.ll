@@ -1,9 +1,9 @@
 ; REQUIRES: aarch64-registered-target
-; RUN: %opt --load-pass-plugin=%autojit_plugin -passes=AutoJIT,verify -S %s -o %t.ll
+; RUN: env AUTOJIT_STATIC_THRESHOLD=0 %opt --load-pass-plugin=%autojit_plugin -passes=AutoJIT,verify -S %s -o %t.ll
 ; RUN: FileCheck --check-prefix=IR %s < %t.ll
 ; RUN: %llc -O0 %t.ll -o - | FileCheck --check-prefix=ASM %s
 ; RUN: sed -e 's/i32 1, !"Code Model", i32 1/i32 1, !"Code Model", i32 4/' %s \
-; RUN:   | %opt --load-pass-plugin=%autojit_plugin -passes=AutoJIT,verify -S -o - \
+; RUN:   | env AUTOJIT_STATIC_THRESHOLD=0 %opt --load-pass-plugin=%autojit_plugin -passes=AutoJIT,verify -S -o - \
 ; RUN:   | FileCheck --check-prefix=LARGE %s
 
 source_filename = "/workspace/llvm-autojit/test/trampoline-aarch64.cpp"

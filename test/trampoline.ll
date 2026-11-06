@@ -1,4 +1,4 @@
-; RUN: %opt --load-pass-plugin=%autojit_plugin -passes=AutoJIT,verify -S %s -o - | FileCheck %s
+; RUN: env AUTOJIT_STATIC_THRESHOLD=0 %opt --load-pass-plugin=%autojit_plugin -passes=AutoJIT,verify -S %s -o - | FileCheck %s
 
 source_filename = "/workspace/llvm-autojit/test/trampoline.cpp"
 target triple = "x86_64-pc-linux-gnu"

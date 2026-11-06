@@ -11,6 +11,7 @@
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/InlineAsm.h>
+#include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/MC/TargetRegistry.h>
@@ -76,6 +77,18 @@ static cl::opt<bool> AutoJITNoDeplibs(
     cl::desc("Don't put the runtime on the link line through .deplibs. For "
              "links that add it explicitly, like the compiler wrappers. Also "
              "set via AUTOJIT_NO_DEPLIBS environment variable."));
+
+static cl::opt<unsigned> AutoJITStaticThreshold(
+    "autojit-static-threshold", cl::init(12), cl::Hidden,
+    cl::desc("Keep leaf functions with up to this many IR instructions in "
+             "static code, where they are no bigger than a trampoline and "
+             "don't force a lazy module to compile. 0 disables it. Also set "
+             "via AUTOJIT_STATIC_THRESHOLD environment variable."));
+
+static cl::opt<std::string> AutoJITStats(
+    "autojit-stats", cl::init(""), cl::Hidden,
+    cl::desc("Append statistics for each module to this file. Also set via "
+             "AUTOJIT_STATS environment variable."));
 
 static cl::opt<std::string> AutoJITPipeline(
     "autojit-pipeline", cl::init(""), cl::Hidden,
@@ -232,6 +245,7 @@ struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
 
     // Find functions that need trampolines
     autojit::LazyBindings Bindings(M);
+    writeStats(M, Bindings);
     SmallVector<Function *, 16> LazifyFns;
     SmallVector<Function *, 16> PrivateFns;
     for (Function &F : M) {
@@ -393,7 +407,57 @@ private:
                   Mark(*Callee, "called from a library function"))
                 LibFuncs.push_back(Callee);
     }
+    // Linkonce functions with only calls don't get trampolines anyway. They are
+    // private to the JIT and get inlined there.
+    if (AutoJITStaticThreshold != 0) {
+      for (Function &F : M) {
+        F.removeDeadConstantUsers();
+        if (!isSmallLeaf(F) ||
+            (F.hasLinkOnceODRLinkage() && !autojit::hasNonCallUses(F)))
+          continue;
+        // The JIT can inline it, if the definition can't be interposed
+        bool Exact = F.hasLinkOnceODRLinkage() || F.hasWeakODRLinkage() ||
+                     F.isDSOLocal();
+        if (Mark(F, "small leaf function") && Exact)
+          F.addFnAttr(autojit::KeepStaticAttr, autojit::KeepStaticWithBody);
+      }
+    }
     return Marked;
+  }
+
+  static bool isSmallLeaf(const Function &F) {
+    if (F.isDeclaration() || F.hasAvailableExternallyLinkage() ||
+        autojit::isStaticInit(F) || F.isVarArg() || F.hasPersonalityFn() ||
+        F.hasFnAttribute(Attribute::Naked))
+      return false;
+    unsigned Count = 0;
+    for (const BasicBlock &BB : F) {
+      for (const Instruction &I : BB) {
+        auto *CB = dyn_cast<CallBase>(&I);
+        if (CB && !isa<IntrinsicInst>(CB))
+          return false;
+        if (++Count > AutoJITStaticThreshold)
+          return false;
+      }
+    }
+    return true;
+  }
+
+  // One line per module, for scripts that sum up the share of lazy functions
+  void writeStats(const Module &M, const autojit::LazyBindings &Bindings) {
+    if (AutoJITStats.empty())
+      return;
+    unsigned Counts[5] = {0, 0, 0, 0, 0};
+    for (const Function &F : M)
+      if (!F.isDeclaration() && !F.hasAvailableExternallyLinkage())
+        Counts[static_cast<unsigned>(Bindings.get(F))] += 1;
+    std::error_code EC;
+    raw_fd_ostream OS(AutoJITStats, EC, sys::fs::OF_Append);
+    if (EC)
+      return;
+    OS << "static=" << Counts[0] << " local=" << Counts[1]
+       << " private=" << Counts[2] << " direct=" << Counts[3]
+       << " proxy=" << Counts[4] << " " << M.getSourceFileName() << "\n";
   }
 
   static bool hasAddressTakenLabel(const Function &F) {
@@ -880,6 +944,14 @@ llvmGetPassPluginInfo() {
   if (const char *Var = std::getenv("AUTOJIT_DIR"))
     if (*Var)
       AutoJITDir = Var;
+  if (const char *Var = std::getenv("AUTOJIT_STATIC_THRESHOLD")) {
+    unsigned Threshold;
+    if (!StringRef(Var).getAsInteger(10, Threshold))
+      AutoJITStaticThreshold = Threshold;
+  }
+  if (const char *Var = std::getenv("AUTOJIT_STATS"))
+    if (*Var)
+      AutoJITStats = Var;
   if (const char *Var = std::getenv("AUTOJIT_RUNTIME"))
     if (*Var)
       AutoJITRuntime = Var;
