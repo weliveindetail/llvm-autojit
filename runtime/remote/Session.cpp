@@ -112,18 +112,19 @@ autojit::Session::Session(int InFD, int OutFD,
 
 autojit::Session::~Session() {}
 
-autojit::AutoJIT *autojit::Session::launch(std::unique_ptr<ExecutionSession> ES,
-                                           StringMap<ExecutorAddr> Symbols) {
+void autojit::Session::launch(std::unique_ptr<ExecutionSession> ES,
+                              StringMap<ExecutorAddr> Symbols,
+                              function_ref<void(AutoJIT *)> OnReady) {
   // Start message queue and wait for setup from target process
   ExitOnErr(EPC_->waitForSetup());
 
   LLJITBuilder Builder;
   Builder.setExecutionSession(std::move(ES));
   ExitOnErr(AutoJIT_.initialize(Builder));
+  OnReady(&AutoJIT_);
 
   // Send our own setup message to the target process
   ExitOnErr(EPC_->sendSetupMessage(std::move(Symbols)));
-  return &AutoJIT_;
 }
 
 int autojit::Session::waitForDisconnect() { return EPC_->waitForDisconnect(); }

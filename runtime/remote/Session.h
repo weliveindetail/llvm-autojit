@@ -4,6 +4,7 @@
 
 #include "runtime/core/AutoJIT.h"
 
+#include <llvm/ADT/STLFunctionalExtras.h>
 #include <llvm/ADT/StringMap.h>
 #include <llvm/ExecutionEngine/Orc/Core.h>
 #include <llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h>
@@ -21,8 +22,11 @@ public:
           std::unique_ptr<llvm::orc::ExecutionSession> &ES);
   ~Session();
 
-  autojit::AutoJIT *launch(std::unique_ptr<llvm::orc::ExecutionSession> ES,
-                           llvm::StringMap<llvm::orc::ExecutorAddr> Symbols);
+  // OnReady runs before the stub learns about the RPC symbols. The stub calls
+  // them as soon as it receives our setup message.
+  void launch(std::unique_ptr<llvm::orc::ExecutionSession> ES,
+              llvm::StringMap<llvm::orc::ExecutorAddr> Symbols,
+              llvm::function_ref<void(autojit::AutoJIT *)> OnReady);
   int waitForDisconnect();
 
 private:
