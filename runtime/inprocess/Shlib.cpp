@@ -1,3 +1,4 @@
+#include "common/MaterializeGuard.h"
 #include "runtime/AutoJITRuntime.h"
 #include "runtime/core/AutoJIT.h"
 
@@ -40,6 +41,9 @@ extern "C" void *__llvm_autojit_materialize(void **Slot, uint64_t Guid,
     exit(1);
   }
 
+  autojit_materialize_guard_t Guard;
+  autojit_materialize_guard_enter(&Guard);
+
   // Load the lazy module on first use
   static auto &JIT = autojit::AutoJIT::get();
   auto *LazyModule = static_cast<const autojit_lazy_module_t *>(Module);
@@ -54,5 +58,6 @@ extern "C" void *__llvm_autojit_materialize(void **Slot, uint64_t Guid,
   // Patch the pointer that is checked by the function frame in static code
   void *Fn = reinterpret_cast<void *>(Addr);
   __atomic_store_n(Slot, Fn, __ATOMIC_RELEASE);
+  autojit_materialize_guard_leave(&Guard);
   return Fn;
 }
