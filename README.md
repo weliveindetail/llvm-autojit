@@ -74,7 +74,7 @@ The plugin writes the lazy part of each translation unit to `/tmp` by default an
 > AUTOJIT_DIR=build/autojit clang-21 -O0 -g -fpass-plugin=/usr/local/lib/autojit.so -o hello.o -c hello.c
 ```
 
-Definitions of library functions like `malloc` or `memcpy` stay in static code, because the C library and the runtime might call them. Set `AUTOJIT_STATIC_LIBFUNCS=Off` at compile-time to make them lazy as well.
+Definitions of library functions like `malloc` or `memcpy` stay in static code, because the C library and the runtime might call them. Set `AUTOJIT_STATIC_LIBFUNCS=Off` at compile-time to make them lazy as well. Code that can't run in the JIT stays there too, e.g. functions with computed gotos. To add your own, set `AUTOJIT_IGNORELIST` at compile-time to a file with lines like `fun:my_allocator*` or `src:*/alloc/*`. Small leaf functions stay static as well, `AUTOJIT_STATIC_THRESHOLD` sets the limit in IR instructions (0 disables it) and `AUTOJIT_STATS` names a file that gets one line of numbers per module.
 
 The runtime runs the passes on lazy code that the compiler would have run, so it gets the optimization of the original build. Set `AUTOJIT_SKIP_PASSES=On` at run-time to compare (coroutines need them, though).
 

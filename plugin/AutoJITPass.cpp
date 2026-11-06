@@ -32,6 +32,8 @@
 #endif
 #include <llvm/Support/CodeGen.h>
 #include <llvm/Support/MD5.h>
+#include <llvm/Support/SpecialCaseList.h>
+#include <llvm/Support/VirtualFileSystem.h>
 #include <llvm/Support/Path.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/xxhash.h>
@@ -44,6 +46,7 @@
 #include <dlfcn.h>
 
 #include <algorithm>
+#include <memory>
 #include <regex>
 #include <string>
 #include <unordered_set>
@@ -84,6 +87,12 @@ static cl::opt<unsigned> AutoJITStaticThreshold(
              "static code, where they are no bigger than a trampoline and "
              "don't force a lazy module to compile. 0 disables it. Also set "
              "via AUTOJIT_STATIC_THRESHOLD environment variable."));
+
+static cl::opt<std::string> AutoJITIgnoreList(
+    "autojit-ignorelist", cl::init(""), cl::Hidden,
+    cl::desc("Special case list with what must stay in static code: fun:<name> "
+             "for functions and src:<path> for whole translation units. Also "
+             "set via AUTOJIT_IGNORELIST environment variable."));
 
 static cl::opt<std::string> AutoJITStats(
     "autojit-stats", cl::init(""), cl::Hidden,
@@ -241,7 +250,16 @@ struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
       return PreservedAnalyses::all();
     }
 
-    SmallVector<Function *, 8> KeptStatic = markStaticFunctions(M, MAM);
+    const SpecialCaseList *IgnoreList = getIgnoreList();
+    if (IgnoreList && IgnoreList->inSection("", "src", M.getSourceFileName())) {
+      if (LLVM_UNLIKELY(AutoJITDebug))
+        errs() << "autojit-plugin: Skipping module " << M.getName()
+               << " (in the ignore list)\n";
+      return PreservedAnalyses::all();
+    }
+
+    SmallVector<Function *, 8> KeptStatic =
+        markStaticFunctions(M, MAM, IgnoreList);
 
     // Find functions that need trampolines
     autojit::LazyBindings Bindings(M);
@@ -357,10 +375,22 @@ private:
   PassBuilder *PB = nullptr;
   OptimizationLevel Level = OptimizationLevel::O0;
 
+  static const SpecialCaseList *getIgnoreList() {
+    static const std::unique_ptr<SpecialCaseList> List = [] {
+      std::unique_ptr<SpecialCaseList> L;
+      if (!AutoJITIgnoreList.empty())
+        L = SpecialCaseList::createOrDie({AutoJITIgnoreList},
+                                         *vfs::getRealFileSystem());
+      return L;
+    }();
+    return List.get();
+  }
+
   // Mark what must stay in static code. The runtime learns from the mark in the
   // lazy module.
-  SmallVector<Function *, 8> markStaticFunctions(Module &M,
-                                                 ModuleAnalysisManager &MAM) {
+  SmallVector<Function *, 8>
+  markStaticFunctions(Module &M, ModuleAnalysisManager &MAM,
+                      const SpecialCaseList *IgnoreList) {
     FunctionAnalysisManager &FAM =
         MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
     SmallVector<Function *, 8> Marked;
@@ -388,6 +418,8 @@ private:
         continue;
       if (hasAddressTakenLabel(F) || hasInlineAsm(F))
         Mark(F, "the code depends on its location");
+      if (IgnoreList && IgnoreList->inSection("", "fun", F.getName()))
+        Mark(F, "in the ignore list");
       if (AutoJITStaticLibFuncs && !F.hasLocalLinkage() && isLibFunc(F, FAM)) {
         Mark(F, "library function");
         LibFuncs.push_back(&F);
@@ -949,6 +981,9 @@ llvmGetPassPluginInfo() {
     if (!StringRef(Var).getAsInteger(10, Threshold))
       AutoJITStaticThreshold = Threshold;
   }
+  if (const char *Var = std::getenv("AUTOJIT_IGNORELIST"))
+    if (*Var)
+      AutoJITIgnoreList = Var;
   if (const char *Var = std::getenv("AUTOJIT_STATS"))
     if (*Var)
       AutoJITStats = Var;
