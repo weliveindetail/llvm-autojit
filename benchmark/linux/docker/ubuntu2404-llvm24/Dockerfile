@@ -14,7 +14,7 @@ RUN echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] https://a
     > /etc/apt/sources.list.d/llvm.list
 
 RUN apt-get update && apt-get install -y \
-    clang-24 lld-24 llvm-24-dev libc++-24-dev libc++abi-24-dev \
+    clang-24 lld-24 llvm-24-dev libclang-rt-24-dev libc++-24-dev libc++abi-24-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN update-alternatives --install /usr/bin/cc  cc  /usr/bin/clang-24   100 && \

@@ -12,6 +12,7 @@
 #include <llvm/ExecutionEngine/ObjectCache.h>
 #include <llvm/ExecutionEngine/Orc/CompileUtils.h>
 #include <llvm/ExecutionEngine/Orc/Core.h>
+#include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/IRTransformLayer.h>
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
@@ -74,6 +75,10 @@ namespace llvm {
 #endif
 
 static ExitOnError ExitOnErr("[autojit-runtime] ");
+
+// See BuiltinsArchive.cpp
+extern "C" const char autojit_builtins_start[];
+extern "C" const char autojit_builtins_end[];
 
 static bool isEnvVarSet(const char *Name) {
   if (const char *Var = std::getenv(Name)) {
@@ -607,8 +612,20 @@ Error autojit::AutoJIT::initialize(LLJITBuilder &B) {
   // Host symbols come from import tables
   auto Resolver = std::make_shared<ImportResolver>();
   Imports_ = Resolver.get();
-  cast<ObjectLinkingLayer>(JIT_->getObjLinkingLayer())
-      .addPlugin(std::move(Resolver));
+  auto &ObjLayer = cast<ObjectLinkingLayer>(JIT_->getObjLinkingLayer());
+  ObjLayer.addPlugin(std::move(Resolver));
+
+  // Code generation calls builtins, e.g. __multf3 for long double on AArch64.
+  // They are hidden in the program, if it has them at all. So we link our own
+  // copies from the compiler-rt that we embed.
+  StringRef BuiltinsArchive(autojit_builtins_start,
+                            autojit_builtins_end - autojit_builtins_start);
+  auto Builtins = StaticLibraryDefinitionGenerator::Create(
+      ObjLayer, MemoryBuffer::getMemBuffer(BuiltinsArchive, "builtins",
+                                           /*RequiresNullTerminator=*/false));
+  if (!Builtins)
+    return Builtins.takeError();
+  JIT_->getMainJITDylib().addGenerator(std::move(*Builtins));
 
 #if !defined(NDEBUG)
   JIT_->getIRTransformLayer().setTransform(

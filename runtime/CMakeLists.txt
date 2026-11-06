@@ -111,10 +111,27 @@ else()
 endif()
 
 # Daemon executable
+# The copy gives us a target to depend on. Unified builds produce the original in
+# the runtimes build, which runs after we configure.
+set(builtins_copy ${CMAKE_CURRENT_BINARY_DIR}/builtins.a)
+add_custom_target(autojit-builtins
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${AUTOJIT_BUILTINS_LIB} ${builtins_copy}
+  BYPRODUCTS ${builtins_copy}
+  COMMENT "Update embedded compiler builtins"
+)
+if(AUTOJIT_BUILTINS_FROM_RUNTIMES)
+  add_dependencies(autojit-builtins runtimes)
+endif()
+set_source_files_properties(core/BuiltinsArchive.cpp PROPERTIES
+  COMPILE_DEFINITIONS "AUTOJIT_BUILTINS_ARCHIVE=\"${builtins_copy}\""
+  OBJECT_DEPENDS ${builtins_copy}
+)
+
 add_executable(autojitd
   remote/Daemon.cpp
   remote/Session.cpp
   core/AutoJIT.cpp
+  core/BuiltinsArchive.cpp
   core/ExecutorPlatform.cpp
   ${autojit_remote_epc}
 )
@@ -138,6 +155,7 @@ llvm_map_components_to_libnames(llvm_libs
 )
 
 target_link_libraries(autojitd PRIVATE ${llvm_libs} ${tpde_libs})
+add_dependencies(autojitd autojit-builtins)
 
 if(NOT LLVM_ENABLE_RTTI)
   target_compile_options(autojitd PRIVATE -fno-rtti -fno-exceptions)
@@ -159,6 +177,7 @@ add_library(autojit-so SHARED
   inprocess/Shlib.cpp
   ${autojit_resolver}
   core/AutoJIT.cpp
+  core/BuiltinsArchive.cpp
   core/ExecutorPlatform.cpp
 )
 set_target_properties(autojit-so PROPERTIES
@@ -168,6 +187,7 @@ set_target_properties(autojit-so PROPERTIES
 )
 
 target_link_libraries(autojit-so PRIVATE ${llvm_libs} ${tpde_libs})
+add_dependencies(autojit-so autojit-builtins)
 
 # The in-process runtime must not call lazy code in the executable, it would
 # re-enter materialization. So it links private copies of libstdc++ and the
