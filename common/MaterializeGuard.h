@@ -6,6 +6,7 @@
  * re-enters the JIT in the middle of loading a module, so handlers wait until
  * we are done. This must stay valid C, because the stub uses it as well. */
 
+#include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
@@ -27,4 +28,12 @@ static inline void
 autojit_materialize_guard_leave(const autojit_materialize_guard_t *guard) {
   pthread_sigmask(SIG_SETMASK, &guard->saved_mask, NULL);
   errno = guard->saved_errno;
+}
+
+/* JITed code refers to the image of its lazy module, so that must never unload.
+ * dlclose() has no effect on it afterwards. */
+static inline void autojit_pin_image(const void *module) {
+  Dl_info info;
+  if (dladdr(module, &info) && info.dli_fname)
+    dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE);
 }

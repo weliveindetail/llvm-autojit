@@ -47,11 +47,13 @@ extern "C" void *__llvm_autojit_materialize(void **Slot, uint64_t Guid,
   // Load the lazy module on first use
   static auto &JIT = autojit::AutoJIT::get();
   auto *LazyModule = static_cast<const autojit_lazy_module_t *>(Module);
+  autojit_pin_image(LazyModule);
   ExitOnErr(JIT.ensureModule(LazyModule));
 
   // Look up the function symbol
   std::string Symbol = autojit::guidToFnName(Guid, LazyModule->hash);
-  uint64_t Addr = JIT.lookup(Symbol.c_str());
+  uint64_t Addr =
+      JIT.lookup(Symbol.c_str(), reinterpret_cast<uint64_t>(LazyModule));
   DBG() << "Materialized " << Symbol << " at address 0x" << hexstr(Addr)
         << "\n";
 
