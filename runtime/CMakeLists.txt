@@ -38,15 +38,17 @@ set_target_properties(LLVMSupport PROPERTIES INTERFACE_LINK_LIBRARIES "${support
 #
 # Each variant is a single relocatable object, so it's linked as a whole. The
 # daemon looks up symbols by name in the stub process, which aren't referenced
-# statically. The library itself is an implicit linker script that adds the
-# object to the link.
+# statically. There are two ways to add it to a link. The archive is for .deplibs:
+# lld adds dependent libraries once per object, but pulls the member only once.
+# The _ldscript library is an implicit linker script for -l, so it works at any
+# position on the link line.
 set(autojit_stub_outputs)
 
 function(add_autojit_stub name)
   cmake_parse_arguments(ARG "" "" "SOURCES;DEFINES" ${ARGN})
-  set(lib_name ${name}-${CMAKE_SYSTEM_PROCESSOR})
-  set(obj_file ${CMAKE_BINARY_DIR}/lib/${lib_name}.o)
-  set(script_file ${CMAKE_BINARY_DIR}/lib/lib${lib_name}.a)
+  set(obj_file ${CMAKE_BINARY_DIR}/lib/${name}.o)
+  set(script_file ${CMAKE_BINARY_DIR}/lib/lib${name}_ldscript.a)
+  set(archive_file ${CMAKE_BINARY_DIR}/lib/lib${name}.a)
 
   add_library(${name}-objs OBJECT ${ARG_SOURCES})
   # The stub also links into shared libraries
@@ -65,19 +67,25 @@ function(add_autojit_stub name)
     COMMAND ${CMAKE_C_COMPILER} -r -nostdlib $<TARGET_OBJECTS:${name}-objs> -o ${obj_file}
     DEPENDS $<TARGET_OBJECTS:${name}-objs>
     COMMAND_EXPAND_LISTS
-    COMMENT "Linking relocatable object ${lib_name}.o"
+    COMMENT "Linking relocatable object ${name}.o"
+  )
+  add_custom_command(
+    OUTPUT ${archive_file}
+    COMMAND ${CMAKE_AR} rcs ${archive_file} ${obj_file}
+    DEPENDS ${obj_file}
+    COMMENT "Creating archive lib${name}.a"
   )
   file(WRITE ${script_file}
     "/* Implicit linker script: link the AutoJIT stub object as a whole */\n"
-    "INPUT(${lib_name}.o)\n"
+    "INPUT(${name}.o)\n"
   )
 
   install(
-    FILES ${obj_file} ${script_file}
+    FILES ${obj_file} ${script_file} ${archive_file}
     DESTINATION lib
     COMPONENT autojit-stub
   )
-  set(autojit_stub_outputs ${autojit_stub_outputs} ${obj_file} PARENT_SCOPE)
+  set(autojit_stub_outputs ${autojit_stub_outputs} ${obj_file} ${archive_file} PARENT_SCOPE)
 endfunction()
 
 # Resolver for lean trampolines, the plugin only emits them for these
@@ -101,7 +109,38 @@ add_autojit_stub(autojit_static_debug
   DEFINES AUTOJIT_STUB_DEBUG_SUPPORT=1
 )
 
-add_custom_target(autojit-stub ALL DEPENDS ${autojit_stub_outputs})
+# Shared stub, e.g. for .deplibs with AUTOJIT_RUNTIME at compile time
+function(add_autojit_stub_so name)
+  cmake_parse_arguments(ARG "" "" "SOURCES;DEFINES" ${ARGN})
+  add_library(${name}-so SHARED ${ARG_SOURCES})
+  set_target_properties(${name}-so PROPERTIES
+    C_STANDARD 11
+    LIBRARY_OUTPUT_NAME ${name}
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+    NO_SONAME On
+  )
+  target_compile_definitions(${name}-so PRIVATE ${ARG_DEFINES})
+  target_compile_options(${name}-so PRIVATE -Wno-cast-qual)
+  # Programs must not interpose the stub's internals
+  target_link_options(${name}-so PRIVATE -Wl,-Bsymbolic)
+  install(
+    TARGETS ${name}-so
+    LIBRARY DESTINATION lib
+    COMPONENT autojit-stub
+  )
+endfunction()
+
+add_autojit_stub_so(autojit-stub
+  SOURCES remote/Stub.c remote/StubSPS.c ${autojit_resolver}
+  DEFINES AUTOJIT_STUB_DEBUG_SUPPORT=0
+)
+add_autojit_stub_so(autojit-stub-debug
+  SOURCES remote/Stub.c remote/StubDebug.c remote/StubSPS.c ${autojit_resolver}
+  DEFINES AUTOJIT_STUB_DEBUG_SUPPORT=1
+)
+
+add_custom_target(autojit-stub ALL
+  DEPENDS ${autojit_stub_outputs} autojit-stub-so autojit-stub-debug-so)
 
 # Executor process control for the LLVM version we build against
 if(AUTOJIT_LLVM_LEGACY)
@@ -184,6 +223,9 @@ set_target_properties(autojit-so PROPERTIES
   LIBRARY_OUTPUT_NAME "autojit-runtime"
   VERSION "${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}"
   LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+  # AUTOJIT_RUNTIME passes the absolute path in .deplibs. With a soname, programs
+  # would record that instead and need an rpath to start.
+  NO_SONAME On
 )
 
 target_link_libraries(autojit-so PRIVATE ${llvm_libs} ${tpde_libs})

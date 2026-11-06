@@ -6,7 +6,7 @@
 // RUN: %clang -fpass-plugin=%autojit_plugin -c %S/Inputs/exit-order-lib.cpp -o %t.dir/lib.o
 // RUN: %clang %t.dir/main.o %t.dir/lib.o -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t.dir/inprocess
 // RUN: %t.dir/inprocess | FileCheck %s
-// RUN: %clang %t.dir/main.o %t.dir/lib.o -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t.dir/remote
+// RUN: %clang %t.dir/main.o %t.dir/lib.o -L%autojit_runtime_dir -lautojit_static_ldscript %fsanitize -o %t.dir/remote
 // RUN: %t.dir/remote | FileCheck %s
 //
 // CHECK: main

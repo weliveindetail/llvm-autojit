@@ -39,6 +39,8 @@
 #include "common/LazyModule.h"
 #include "common/Imports.h"
 
+#include <dlfcn.h>
+
 #include <algorithm>
 #include <regex>
 #include <string>
@@ -61,6 +63,18 @@ static cl::opt<std::string> AutoJITDir(
     "autojit-dir", cl::init("/tmp"), cl::Hidden,
     cl::desc("Directory for lazy modules (and the runtime's object cache). "
              "Also set via AUTOJIT_DIR environment variable."));
+
+static cl::opt<std::string> AutoJITRuntime(
+    "autojit-runtime", cl::init(""), cl::Hidden,
+    cl::desc("Library to put on the link line through .deplibs. Defaults to "
+             "the static stub next to the plugin. Also set via AUTOJIT_RUNTIME "
+             "environment variable."));
+
+static cl::opt<bool> AutoJITNoDeplibs(
+    "autojit-no-deplibs", cl::init(false), cl::Hidden,
+    cl::desc("Don't put the runtime on the link line through .deplibs. For "
+             "links that add it explicitly, like the compiler wrappers. Also "
+             "set via AUTOJIT_NO_DEPLIBS environment variable."));
 
 namespace {
 
@@ -183,8 +197,14 @@ struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
       saveModule(M, FileStem + "_incoming" + FileExt);
     }
 
-    if (M.getNamedValue("__llvm_autojit_materialize")) {
-      errs() << "autojit-plugin: Skipping module " << M.getName() << " (uses reserved __llvm_autojit names)\n";
+    // Build systems might pass the plugin twice, e.g. in CFLAGS and CPPFLAGS. The
+    // second run must leave our trampolines alone.
+    if (M.getNamedValue("__llvm_autojit_materialize") ||
+        M.getNamedValue("__llvm_autojit_resolve") ||
+        M.getNamedValue("__llvm_autojit_module")) {
+      if (LLVM_UNLIKELY(AutoJITDebug))
+        errs() << "autojit-plugin: Skipping module " << M.getName()
+               << " (uses reserved __llvm_autojit names)\n";
       return PreservedAnalyses::all();
     }
 
@@ -279,6 +299,8 @@ struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
         lazifyFn(F, FnGUID, MaterializeFn, LazyModule);
       }
     }
+
+    addRuntimeDependency(M);
 
     // Add all at once: each call rebuilds the entire llvm.used array
     SmallVector<GlobalValue *, 16> Used(LazifyFns.begin(), LazifyFns.end());
@@ -509,6 +531,37 @@ private:
     return F;
   }
 
+  // lld adds it once per object, so the default is an archive and not the
+  // stub's linker script. Its only member gets pulled once and only if nothing
+  // else on the link line defines our entry points.
+  static std::string getRuntimePath() {
+    if (!AutoJITRuntime.empty())
+      return AutoJITRuntime;
+    Dl_info Info;
+    if (!dladdr(reinterpret_cast<void *>(&getRuntimePath), &Info) ||
+        !Info.dli_fname)
+      return "";
+    SmallString<256> Path(Info.dli_fname);
+    sys::path::remove_filename(Path);
+    sys::path::append(Path, "libautojit_static.a");
+    sys::fs::make_absolute(Path);
+    return std::string(Path);
+  }
+
+  // Put the runtime on the link line of linkers that support .deplibs, i.e.
+  // lld. Other linkers ignore it and need the compiler wrappers or explicit
+  // flags. Only absolute paths work without further linker flags.
+  static void addRuntimeDependency(Module &M) {
+    if (AutoJITNoDeplibs)
+      return;
+    std::string Path = getRuntimePath();
+    if (!sys::path::is_absolute(Path))
+      return;
+    LLVMContext &Ctx = M.getContext();
+    M.getOrInsertNamedMetadata("llvm.dependent-libraries")
+        ->addOperand(MDNode::get(Ctx, MDString::get(Ctx, Path)));
+  }
+
   // Slots of lean trampolines initially point to this thunk. It's local to
   // the module, so the slots get relative relocations. The resolver is in the
   // runtime (see runtime/common/Resolver*.c). On x86-64, the backend emits
@@ -519,23 +572,27 @@ private:
     FunctionType *FnTy = FunctionType::get(Type::getVoidTy(Context), false);
     Function *Thunk = createNakedFunction(Function::Create(
         FnTy, GlobalValue::InternalLinkage, "__llvm_autojit_resolve_thunk", M));
+    FunctionCallee Resolver =
+        M.getOrInsertFunction("__llvm_autojit_resolve", FnTy);
     StringRef AsmStr;
     if (M.getTargetTriple().getArch() == Triple::aarch64) {
       // x16 holds the entry, so we can only use x17
-      AsmStr = "adrp x17, :got:__llvm_autojit_resolve\n"
-               "ldr x17, [x17, :got_lo12:__llvm_autojit_resolve]\n"
+      AsmStr = "adrp x17, :got:${0:c}\n"
+               "ldr x17, [x17, :got_lo12:${0:c}]\n"
                "br x17";
       auto *BTI = mdconst::extract_or_null<ConstantInt>(
           M.getModuleFlag("branch-target-enforcement"));
       if (BTI && !BTI->isZero())
         Thunk->addFnAttr("branch-target-enforcement");
     } else {
-      AsmStr = "jmpq *__llvm_autojit_resolve@GOTPCREL(%rip)";
+      AsmStr = "jmpq *${0:P}@GOTPCREL(%rip)";
     }
     IRBuilder<> Builder(BasicBlock::Create(Context, "entry", Thunk));
-    InlineAsm *Asm = InlineAsm::get(FnTy, AsmStr, "",
-                                    /*hasSideEffects=*/true);
-    Builder.CreateCall(Asm);
+    PointerType *PtrTy = PointerType::get(Context, 0);
+    InlineAsm *Asm = InlineAsm::get(
+        FunctionType::get(Type::getVoidTy(Context), {PtrTy}, false), AsmStr,
+        "s", /*hasSideEffects=*/true);
+    Builder.CreateCall(Asm, {Resolver.getCallee()});
     Builder.CreateUnreachable();
     return Thunk;
   }
@@ -678,6 +735,16 @@ llvmGetPassPluginInfo() {
   if (const char *Var = std::getenv("AUTOJIT_DIR"))
     if (*Var)
       AutoJITDir = Var;
+  if (const char *Var = std::getenv("AUTOJIT_RUNTIME"))
+    if (*Var)
+      AutoJITRuntime = Var;
+  if (const char *Var = std::getenv("AUTOJIT_NO_DEPLIBS")) {
+    StringRef Val(Var);
+    AutoJITNoDeplibs = !Val.empty() && !Val.equals_insensitive("0") &&
+                       !Val.equals_insensitive("off") &&
+                       !Val.equals_insensitive("false") &&
+                       !Val.equals_insensitive("no");
+  }
   return {.APIVersion = LLVM_PLUGIN_API_VERSION,
           .PluginName = "AutoJIT Pass",
           .PluginVersion = "v0.1",

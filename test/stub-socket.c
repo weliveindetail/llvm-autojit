@@ -2,7 +2,7 @@
 // standard stream that the program closed and programs that we exec don't inherit
 // it. This holds for a spawned and for a standalone daemon.
 //
-// RUN: %clang_c -fpass-plugin=%autojit_plugin %s -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t.exe
+// RUN: %clang_c -fpass-plugin=%autojit_plugin %s -L%autojit_runtime_dir -lautojit_static_ldscript %fsanitize -o %t.exe
 // RUN: %t.exe | FileCheck %s
 // RUN: sh %S/Inputs/with-daemon.sh %t.sock %t.exe | FileCheck %s
 //

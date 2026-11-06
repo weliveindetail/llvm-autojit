@@ -1,0 +1,40 @@
+#!/bin/sh
+# Clang with the AutoJIT plugin and runtime for any linker. Set AUTOJIT_MODE to
+# select the runtime: stub (default), stub-debug or inprocess.
+prefix=$(dirname "$(dirname "$(readlink -f "$0")")")
+lib=$prefix/lib
+
+case "$0" in
+*++) clang=@LLVM_TOOLS_BINARY_DIR@/clang++ ;;
+*) clang=@LLVM_TOOLS_BINARY_DIR@/clang ;;
+esac
+
+mode=${AUTOJIT_MODE:-stub}
+case "$mode" in
+stub | stub-debug | inprocess) ;;
+*)
+  echo "autojit-clang: unknown AUTOJIT_MODE '$mode'" >&2
+  exit 1
+  ;;
+esac
+
+# The stub in a relocatable object would collide with the one in the final link
+link=1
+for arg in "$@"; do
+  case "$arg" in
+  -c | -S | -E | -M | -MM | -fsyntax-only | '-###' | -r | -nostdlib | -nodefaultlibs) link=0 ;;
+  --version | -dumpversion | -dumpmachine | -print-* | --print-*) link=0 ;;
+  -v | --help) [ $# -gt 1 ] || link=0 ;;
+  esac
+done
+
+if [ $link = 1 ]; then
+  case "$mode" in
+  stub) set -- "$@" -L"$lib" -lautojit_static_ldscript ;;
+  stub-debug) set -- "$@" -L"$lib" -lautojit_static_debug_ldscript ;;
+  inprocess) set -- "$@" -L"$lib" -Wl,-rpath,"$lib" -lautojit-runtime ;;
+  esac
+fi
+
+# We add the runtime ourselves, so lld must not add it again
+AUTOJIT_NO_DEPLIBS=On exec "$clang" -fpass-plugin="$lib/autojit.so" "$@"

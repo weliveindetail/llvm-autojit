@@ -4,7 +4,7 @@ clang="@AUTOJIT_BENCH_TOOLS_DIR@/clang"
 CFLAGS="-O0 -g -fpass-plugin=@CMAKE_INSTALL_PREFIX@/lib/autojit.so"
 
 if [ "$AUTOJIT_LINK_STATIC_RUNTIME" = "On" ]; then
-  LDFLAGS="-L@CMAKE_INSTALL_PREFIX@/lib -lautojit_static-@CMAKE_SYSTEM_PROCESSOR@"
+  LDFLAGS="-L@CMAKE_INSTALL_PREFIX@/lib -lautojit_static_ldscript"
 else
   LDFLAGS="-Wl,-rpath=@CMAKE_INSTALL_PREFIX@/lib -L@CMAKE_INSTALL_PREFIX@/lib -lautojit-runtime"
 fi

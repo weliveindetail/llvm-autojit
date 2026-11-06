@@ -7,7 +7,7 @@
 // RUN: %t_inprocess.exe
 // RUN: %t_inprocess.exe catch-me-if-you-can | FileCheck %s
 //
-// RUN: %clang -stdlib=libc++ %t.o -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
+// RUN: %clang -stdlib=libc++ %t.o -L%autojit_runtime_dir -lautojit_static_ldscript %fsanitize -o %t_remote.exe
 // RUN: %t_remote.exe
 // RUN: %t_remote.exe catch-me-if-you-can | FileCheck %s
 

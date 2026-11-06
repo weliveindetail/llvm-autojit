@@ -31,7 +31,7 @@ target triple = "aarch64-unknown-linux-gnu"
 ; flag, because it's an indirect branch target.
 ; IR: define internal void @__llvm_autojit_resolve_thunk() [[TRAMPOLINE]] {
 ; IR-NEXT: entry:
-; IR-NEXT:   call void asm sideeffect "adrp x17, :got:__llvm_autojit_resolve\0Aldr x17, [x17, :got_lo12:__llvm_autojit_resolve]\0Abr x17", ""()
+; IR-NEXT:   call void asm sideeffect "adrp x17, :got:${0:c}\0Aldr x17, [x17, :got_lo12:${0:c}]\0Abr x17", "s"(ptr @__llvm_autojit_resolve)
 
 ; IR: attributes [[TRAMPOLINE]] = { naked noinline nounwind "branch-target-enforcement" }
 

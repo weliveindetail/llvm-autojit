@@ -29,7 +29,7 @@
 // RUN: %clang_c -fpass-plugin=%autojit_plugin -Xclang -load -Xclang %autojit_plugin -mllvm -autojit-dir=%t.opt -c %s -o %t_opt.o
 // RUN: ls %t.opt | FileCheck --check-prefix=LAZY %s
 //
-// RUN: %clang_c %t.o -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
+// RUN: %clang_c %t.o -L%autojit_runtime_dir -lautojit_static_ldscript %fsanitize -o %t_remote.exe
 // RUN: %t_remote.exe | FileCheck --check-prefix=OUT %s
 //
 // OUT: Hello from the output directory
