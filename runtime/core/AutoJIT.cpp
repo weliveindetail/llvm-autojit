@@ -482,7 +482,7 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
     Ctors->eraseFromParent();
   }
   for (Function *F : DropFunctions) {
-    F->removeFromParent();
+    F->eraseFromParent();
   }
 
   // The static object defines what's in module-level asm, and repeating it might
