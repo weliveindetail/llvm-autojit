@@ -17,10 +17,12 @@ Download a [release package](https://github.com/weliveindetail/llvm-autojit/rele
 ./bin/
 ./bin/autojitd
 ./lib/
-./lib/autojit_static-x86_64.o
-./lib/autojit_static_debug-x86_64.o
-./lib/libautojit_static-x86_64.a
-./lib/libautojit_static_debug-x86_64.a
+./lib/autojit_static.o
+./lib/autojit_static_debug.o
+./lib/libautojit_static.a
+./lib/libautojit_static_debug.a
+./lib/libautojit_static_debug_ldscript.a
+./lib/libautojit_static_ldscript.a
 ./lib/libautojit-runtime.so.21.1
 ./lib/autojit.so
 ./lib/libautojit-runtime.so
@@ -49,10 +51,18 @@ Install a llvm-autojit release along with [clang release 21](https://weliveindet
 Hello C
 ```
 
-A shared library is a simple, but not always a practical way to provide our runtime. That's why we have another option: We can statically link a RPC stub that forwards all compile requests to `autojitd`. The stub is a single object file and `libautojit_static-x86_64.a` is a linker script that adds it to the link, so it works at any position on the link line. Link `autojit_static_debug-x86_64` instead to add support for the GDB JIT interface. Run with `AUTOJIT_DEBUG=On` to register JITed code with the debugger.
+With lld, the linker flags are optional: the plugin puts the static RPC stub described below on the link line through `.deplibs`, so `clang -fuse-ld=lld -fpass-plugin=/usr/local/lib/autojit.so hello.c` links and runs as well. A runtime that you link explicitly takes precedence. Set `AUTOJIT_RUNTIME` at compile-time to an absolute path to use another library by default, e.g. `/usr/local/lib/libautojit-runtime.so`.
+
+GNU ld and gold ignore `.deplibs` and report undefined references without the flags. For them, and for build systems where linker flags are hard to add, use the compiler wrappers `autojit-clang` and `autojit-clang++`. They add the plugin and the runtime and work with any linker:
+```
+> CC=autojit-clang CXX=autojit-clang++ cmake -S . -B build
+```
+The wrappers link the static RPC stub as well. Set `AUTOJIT_MODE=inprocess` for the shared library or `AUTOJIT_MODE=stub-debug` for GDB JIT interface support. They disable `.deplibs` with `AUTOJIT_NO_DEPLIBS`.
+
+A shared library is a simple, but not always a practical way to provide our runtime. That's why we have another option: We can statically link a RPC stub that forwards all compile requests to `autojitd`. The stub is a single object file and `libautojit_static_ldscript.a` is a linker script that adds it to the link, so it works at any position on the link line. Link `autojit_static_debug_ldscript` instead to add support for the GDB JIT interface. Run with `AUTOJIT_DEBUG=On` to register JITed code with the debugger.
 ```
 > clang-21 -O0 -g -fpass-plugin=/usr/local/lib/autojit.so -o hello.o -c hello.c
-> clang-21 hello.o -lautojit_static-x86-64 -o hello_c_autojitd
+> clang-21 hello.o -lautojit_static_ldscript -o hello_c_autojitd
 > ./hello_c_autojitd
 Hello C
 ```
@@ -100,7 +110,7 @@ Hello World!
 And here again, the shared library approach works, but might not be the best solution. Remember it's written in C++! Rustaceans might prefer to keep it in the separate `autojitd` process 🤓
 ```
 > rustc -Z llvm-plugins="/usr/local/lib/autojit.so" \
-        -L /usr/local/lib -lautojit_static-x86_64
+        -L /usr/local/lib -lautojit_static_ldscript
         -o hello_rust_autojitd hello.rs
 ./hello_rust_autojitd
 Hello World!

@@ -10,7 +10,7 @@
 // RUN: %clang -mavx -fpass-plugin=%autojit_plugin -c %s -o %t.o
 // RUN: %clang %t.o %t_callees.o -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
 // RUN: env AUTOJIT_TEST_CLOBBER_VECTOR_REGS=1 %t_inprocess.exe | FileCheck %s
-// RUN: %clang %t.o %t_callees.o -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
+// RUN: %clang %t.o %t_callees.o -L%autojit_runtime_dir -lautojit_static_ldscript %fsanitize -o %t_remote.exe
 // RUN: env AUTOJIT_TEST_CLOBBER_VECTOR_REGS=1 %t_remote.exe | FileCheck %s
 //
 // CHECK: vector: 11 22 33 44

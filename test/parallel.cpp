@@ -17,7 +17,7 @@
 // RUN: %clang %t/main.autojit.o %t/tu*.autojit.o -pthread -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t/inprocess.exe
 // RUN: for I in 1 2 3 4 5; do %t/inprocess.exe > %t/inprocess.txt && diff %t/expected.txt %t/inprocess.txt || exit 1; done
 //
-// RUN: %clang %t/main.autojit.o %t/tu*.autojit.o -pthread -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t/remote.exe
+// RUN: %clang %t/main.autojit.o %t/tu*.autojit.o -pthread -L%autojit_runtime_dir -lautojit_static_ldscript %fsanitize -o %t/remote.exe
 // RUN: for I in 1 2 3; do %t/remote.exe > %t/remote.txt && diff %t/expected.txt %t/remote.txt || exit 1; done
 //
 // CHECK: thread 0:

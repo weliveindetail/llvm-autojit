@@ -1,7 +1,7 @@
 // A spawned daemon must exit when its process goes away without a hangup. If it
 // lingered, then it would hold on to the program's stderr and hang the pipeline.
 //
-// RUN: %clang_c -fpass-plugin=%autojit_plugin %s -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t.exe
+// RUN: %clang_c -fpass-plugin=%autojit_plugin %s -L%autojit_runtime_dir -lautojit_static_ldscript %fsanitize -o %t.exe
 // RUN: %t.exe 2>&1 | FileCheck %s
 // RUN: not --crash %t.exe crash 2>&1 | FileCheck %s
 //

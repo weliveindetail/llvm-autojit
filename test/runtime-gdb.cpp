@@ -7,7 +7,7 @@
 // XFAIL: tpde
 //
 // RUN: %clang -g %s -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
-// RUN: %clang -g %s -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -lautojit_static_debug-%arch %fsanitize -o %t_remote.exe
+// RUN: %clang -g %s -fpass-plugin=%autojit_plugin -L%autojit_runtime_dir -lautojit_static_debug_ldscript %fsanitize -o %t_remote.exe
 //
 // RUN: env AUTOJIT_DEBUG=On %gdb -ex 'set breakpoint pending on' \
 // RUN:     -ex "break runtime-gdb.cpp:$(grep -n 'break here$' %s | head -1 | cut -d: -f1)" \

@@ -7,7 +7,7 @@
 // RUN: %clang_c -fpass-plugin=%autojit_plugin -c %S/Inputs/fork-first.c -o %t.dir/first.o
 // RUN: %clang_c -fpass-plugin=%autojit_plugin -c %S/Inputs/fork-second.c -o %t.dir/second.o
 // RUN: %clang_c -fpass-plugin=%autojit_plugin -c %S/Inputs/fork-third.c -o %t.dir/third.o
-// RUN: %clang_c %t.dir/main.o %t.dir/first.o %t.dir/second.o %t.dir/third.o -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t.exe
+// RUN: %clang_c %t.dir/main.o %t.dir/first.o %t.dir/second.o %t.dir/third.o -L%autojit_runtime_dir -lautojit_static_ldscript %fsanitize -o %t.exe
 // RUN: %t.exe | FileCheck %s
 // RUN: env -u AUTOJITD_FORCE_SPAWN %t.exe | FileCheck %s
 //

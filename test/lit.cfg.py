@@ -34,7 +34,8 @@ config.test_source_root = os.path.dirname(__file__)
 config.substitutions.append(('%autojit_plugin', config.autojit_plugin))
 config.substitutions.append(('%autojit_runtime_dir', config.autojit_runtime_dir))
 config.substitutions.append(('%autojit_tools_dir', config.autojit_tools_dir))
-config.substitutions.append(('%arch', config.host_arch))
+config.substitutions.append(('%autojit_clangxx', str(Path(config.autojit_tools_dir) / 'autojit-clang++')))
+config.substitutions.append(('%autojit_clang', str(Path(config.autojit_tools_dir) / 'autojit-clang')))
 config.available_features.add(config.host_arch)
 try:
     with open('/proc/cpuinfo') as cpuinfo:
@@ -55,6 +56,7 @@ config.substitutions.append(('%ar', str(bin / 'llvm-ar')))
 config.substitutions.append(('%opt', str(bin / 'opt')))
 config.substitutions.append(('%llc', str(bin / 'llc')))
 config.substitutions.append(('%readelf', str(bin / 'llvm-readelf')))
+config.substitutions.append(('%llvm-nm', str(bin / 'llvm-nm')))
 config.substitutions.append(('FileCheck', str(bin / 'FileCheck')))
 
 # Tests with IR for a specific target need its backend, e.g. x86-registered-target
@@ -64,6 +66,11 @@ for target in targets.split():
     config.available_features.add(target.lower() + '-registered-target')
 
 config.environment['PATH'] = config.llvm_tools_dir + ":/usr/bin"
+
+if shutil.which('ld.lld', path=config.llvm_tools_dir):
+    config.available_features.add('lld')
+if shutil.which('ld.gold', path='/usr/bin'):
+    config.available_features.add('gold')
 
 if 'AUTOJIT_USE_TPDE' in os.environ:
     use_tpde = os.environ.get('AUTOJIT_USE_TPDE')

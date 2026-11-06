@@ -32,7 +32,7 @@ define linkonce_odr i32 @_Z6inlinei(i32 %0) alwaysinline comdat {
 ; The thunk jumps to the resolver in the runtime
 ; CHECK: define internal void @__llvm_autojit_resolve_thunk() [[NAKED]] {
 ; CHECK-NEXT: entry:
-; CHECK-NEXT:   call void asm sideeffect "jmpq *__llvm_autojit_resolve@GOTPCREL(%rip)", ""()
+; CHECK-NEXT:   call void asm sideeffect "jmpq *${0:P}@GOTPCREL(%rip)", "s"(ptr @__llvm_autojit_resolve)
 
 ; No frames and no unwind info
 ; CHECK: attributes [[TRAMPOLINE]] = { naked noinline nounwind optnone }

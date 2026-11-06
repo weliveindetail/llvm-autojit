@@ -4,7 +4,7 @@
 // RUN: env AUTOJIT_DIR=%t.dir %clang_c -fpass-plugin=%autojit_plugin -c %s -o %t.o
 // RUN: %clang_c %t.o -L%autojit_runtime_dir -Wl,-rpath=%autojit_runtime_dir -lautojit-runtime -o %t_inprocess.exe
 // RUN: %t_inprocess.exe | FileCheck %s
-// RUN: %clang_c %t.o -L%autojit_runtime_dir -lautojit_static-%arch %fsanitize -o %t_remote.exe
+// RUN: %clang_c %t.o -L%autojit_runtime_dir -lautojit_static_ldscript %fsanitize -o %t_remote.exe
 // RUN: %t_remote.exe | FileCheck %s
 //
 // CHECK: WeakVar: null
