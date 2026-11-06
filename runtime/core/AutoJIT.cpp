@@ -217,7 +217,7 @@ private:
 };
 
 // Bump this whenever changes in the runtime affect the compiled objects
-static constexpr unsigned CacheVersion = 5;
+static constexpr unsigned CacheVersion = 6;
 
 static std::string getCacheStem(StringRef FilePath, uint64_t Hash) {
   StringRef Stem = FilePath;
@@ -405,6 +405,7 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
     if (Binding == LazyBinding::Static) {
       DBG() << "Import " << F.getName() << " (stays in static code)\n";
       F.deleteBody();
+      F.setComdat(nullptr);
       continue;
     }
     if (Binding == LazyBinding::Local) {
@@ -475,14 +476,35 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
     F->removeFromParent();
   }
 
+  // The static object defines what's in module-level asm, and repeating it might
+  // not work, e.g. symbol versions
+#if AUTOJIT_LLVM_21
+  M->setModuleInlineAsm("");
+#else
+  M->removeModuleInlineAsm();
+#endif
+
+  // ifuncs resolve in the static object
+  SmallVector<GlobalIFunc *, 2> IFuncs;
+  for (GlobalIFunc &GI : M->ifuncs())
+    IFuncs.push_back(&GI);
+  for (GlobalIFunc *GI : IFuncs) {
+    std::string Name = GI->getName().str();
+    GI->setName("");
+    Function *Decl = Function::Create(cast<FunctionType>(GI->getValueType()),
+                                      Function::ExternalLinkage, Name, *M);
+    GI->replaceAllUsesWith(Decl);
+    GI->eraseFromParent();
+  }
+
   for (GlobalVariable &GV : M->globals()) {
     // Keep the linkage of declarations, e.g. extern_weak
     if (GV.isDeclaration())
       continue;
-    if (GV.hasAtLeastLocalUnnamedAddr()) {
+    if (hasLazyCopy(GV)) {
       // A private copy for this module, for the same reason as above. The
       // address of unnamed_addr variables is insignificant.
-      DBG() << "Keep definiton for " << GV.getName()
+      DBG() << "Keep definition for " << GV.getName()
             << " (local copy of unnamed_addr)\n";
       if (!GV.hasLocalLinkage()) {
         GV.setLinkage(GlobalValue::InternalLinkage);
@@ -500,8 +522,7 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
 
   SmallSet<GlobalAlias *, 16> DropAliases;
   for (GlobalAlias &GA : M->aliases()) {
-    if (GA.hasExternalLinkage() || GA.hasExternalWeakLinkage() ||
-        GA.hasWeakODRLinkage()) {
+    if (!GA.hasLocalLinkage()) {
       // Static executable has both, the definition and the alias
       DBG() << "Drop global alias " << GA.getName() << "\n";
       DropAliases.insert(&GA);
