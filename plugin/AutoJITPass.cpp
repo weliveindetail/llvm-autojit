@@ -215,35 +215,52 @@ struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
       return PreservedAnalyses::all();
     }
 
-    // Find functions that need trampolines
+    // Library functions stay in static code. The runtime learns from the mark
+    // in the lazy module.
     FunctionAnalysisManager &FAM =
         MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
-    SmallVector<Function *, 16> LazifyFns;
+    SmallVector<Function *, 8> KeptStatic;
     for (Function &F : M) {
-      if (F.isDeclaration())
-        continue;
-      if (autojit::isStaticInit(F))
-        continue;
-      if (F.hasLocalLinkage()) {
-        continue;
-      }
-      if (F.hasAvailableExternallyLinkage())
+      if (F.isDeclaration() || F.hasLocalLinkage() ||
+          F.hasAvailableExternallyLinkage() || autojit::isStaticInit(F))
         continue;
       if (AutoJITStaticLibFuncs && isLibFunc(F, FAM)) {
         if (LLVM_UNLIKELY(AutoJITDebug)) {
           errs() << "autojit-plugin: Keep library function " << F.getName()
                  << " in static code\n";
         }
-        continue;
+        F.addFnAttr(autojit::KeepStaticAttr);
+        KeptStatic.push_back(&F);
       }
+    }
 
-      LazifyFns.push_back(&F);
+    // Find functions that need trampolines
+    autojit::LazyBindings Bindings(M);
+    SmallVector<Function *, 16> LazifyFns;
+    SmallVector<Function *, 16> PrivateFns;
+    for (Function &F : M) {
+      if (F.isDeclaration() || F.hasAvailableExternallyLinkage())
+        continue;
+      switch (Bindings.get(F)) {
+      case autojit::LazyBinding::Static:
+      case autojit::LazyBinding::Local:
+        break;
+      case autojit::LazyBinding::Private:
+        PrivateFns.push_back(&F);
+        break;
+      case autojit::LazyBinding::Direct:
+      case autojit::LazyBinding::Proxy:
+        LazifyFns.push_back(&F);
+        break;
+      }
     }
 
     if (LazifyFns.empty()) {
       if (LLVM_UNLIKELY(AutoJITDebug)) {
         errs() << "autojit-plugin: Skipping module " << M.getName() << " (no functions to lazify)\n";
       }
+      for (Function *F : KeptStatic)
+        F->removeFnAttr(autojit::KeepStaticAttr);
       return PreservedAnalyses::all();
     }
 
@@ -256,7 +273,8 @@ struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
     // this on the same IR that we save: the runtime repeats it on the loaded
     // module and matches the entries in our import table by index.
     SmallVector<GlobalValue *, 32> Imports;
-    autojit::forEachImport(M, [&](GlobalValue &GV) { Imports.push_back(&GV); });
+    autojit::forEachImport(M, Bindings,
+                           [&](GlobalValue &GV) { Imports.push_back(&GV); });
 
     // Lazy modules get their own copies of unnamed_addr variables, so they
     // aren't imports. Static code might not use them anymore, but other
@@ -301,6 +319,14 @@ struct AutoJITPass : public RequiredPassInfoMixin<AutoJITPass> {
     }
 
     addRuntimeDependency(M);
+
+    // Static code doesn't use them and objects that do have their own copies
+    for (Function *F : PrivateFns) {
+      F->deleteBody();
+      F->setComdat(nullptr);
+    }
+    for (Function *F : KeptStatic)
+      F->removeFnAttr(autojit::KeepStaticAttr);
 
     // Add all at once: each call rebuilds the entire llvm.used array
     SmallVector<GlobalValue *, 16> Used(LazifyFns.begin(), LazifyFns.end());

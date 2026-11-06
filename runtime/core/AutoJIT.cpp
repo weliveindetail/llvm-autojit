@@ -6,6 +6,7 @@
 #include "runtime/core/AutoJIT.h"
 #include "runtime/core/ExecutorPlatform.h"
 
+#include <llvm/ADT/SmallPtrSet.h>
 #include <llvm/ADT/SmallSet.h>
 #include <llvm/ADT/StringExtras.h>
 #include <llvm/Bitcode/BitcodeReader.h>
@@ -210,7 +211,7 @@ private:
 };
 
 // Bump this whenever changes in the runtime affect the compiled objects
-static constexpr unsigned CacheVersion = 3;
+static constexpr unsigned CacheVersion = 4;
 
 static std::string getCacheStem(StringRef FilePath, uint64_t Hash) {
   StringRef Stem = FilePath;
@@ -307,8 +308,9 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
 
   // Match the import table from the static object. The plugin collected the
   // imports on the same IR that we loaded.
+  LazyBindings Bindings(*M);
   SmallVector<std::string, 32> ImportNames;
-  forEachImport(*M, [&](GlobalValue &GV) {
+  forEachImport(*M, Bindings, [&](GlobalValue &GV) {
     ImportNames.push_back(GV.getName().str());
   });
   if (ImportNames.size() != NumImports)
@@ -345,8 +347,21 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
         continue;
       }
     }
-    if (F.hasLocalLinkage()) {
+    LazyBinding Binding = Bindings.get(F);
+    if (Binding == LazyBinding::Static) {
+      DBG() << "Import " << F.getName() << " (stays in static code)\n";
+      F.deleteBody();
+      continue;
+    }
+    if (Binding == LazyBinding::Local) {
       DBG() << "Keep " << F.getName() << " (local definition)\n";
+      continue;
+    }
+    if (Binding == LazyBinding::Private) {
+      DBG() << "Keep " << F.getName() << " (only used in this module)\n";
+      F.setLinkage(GlobalValue::InternalLinkage);
+      F.setVisibility(GlobalValue::DefaultVisibility);
+      F.setComdat(nullptr);
       continue;
     }
 
@@ -371,7 +386,31 @@ autojit::AutoJIT::loadModule(StringRef FilePath, uint64_t Hash,
           << "\n";
     Function *ProxyDecl = Function::Create(
         F.getFunctionType(), Function::ExternalLinkage, OriginalName, *M);
-    F.replaceAllUsesWith(ProxyDecl);
+    if (Binding == LazyBinding::Proxy) {
+      F.replaceAllUsesWith(ProxyDecl);
+      continue;
+    }
+
+    // Calls bind directly to the definition, so we can optimize them
+    F.setDSOLocal(true);
+    SmallVector<Use *, 8> Uses;
+    SmallPtrSet<Constant *, 8> ConstantUsers;
+    for (Use &U : F.uses()) {
+      auto *CB = dyn_cast<CallBase>(U.getUser());
+      if (CB && CB->isCallee(&U) &&
+          CB->getFunctionType() == F.getFunctionType())
+        continue;
+      // Constants are uniqued, so we must not change them in place
+      auto *C = dyn_cast<Constant>(U.getUser());
+      if (C && !isa<GlobalValue>(C))
+        ConstantUsers.insert(C);
+      else
+        Uses.push_back(&U);
+    }
+    for (Use *U : Uses)
+      U->set(ProxyDecl);
+    for (Constant *C : ConstantUsers)
+      C->handleOperandChange(&F, ProxyDecl);
   }
 
   if (GlobalVariable *Ctors = M->getNamedGlobal("llvm.global_ctors")) {

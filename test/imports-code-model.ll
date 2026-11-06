@@ -29,6 +29,7 @@ define i32 @caller() {
   %d = load i32, ptr @ldata
   %e = load i32, ptr @attr_large
   %f = load i8, ptr @attr_small
+  %g = icmp eq ptr @callee, null
   ret i32 %a
 }
 
