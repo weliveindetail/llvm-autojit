@@ -273,6 +273,8 @@ int main(int argc, char *argv[]) {
   // Standalone mode: multiple connections via Unix domain socket
   std::string SocketPath = getDaemonSocketPath();
   int ListenFd = AutoCleanupSocket::listen(SocketPath, PID);
+  // We don't wait for the sessions, they must not stay around as zombies
+  std::signal(SIGCHLD, SIG_IGN);
   LOG() << "Daemon process " << PID << " runs in standalone mode on socket: "
         << SocketPath << "\n";
   while (true) {
